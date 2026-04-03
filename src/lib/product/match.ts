@@ -30,25 +30,6 @@ const SOFT_BRAND_CATEGORIES = new Set<ProductCategory>([
   "general",
 ]);
 
-function jaccard(a: string[], b: string[]): number {
-  const sa = new Set(a);
-  const sb = new Set(b);
-  let inter = 0;
-  for (const x of sa) if (sb.has(x)) inter += 1;
-  const union = sa.size + sb.size - inter;
-  return union === 0 ? 0 : inter / union;
-}
-
-function modelOverlap(a: string[], b: string[]): number {
-  if (a.length === 0 || b.length === 0) return 0;
-  const sb = new Set(b);
-  let hit = 0;
-  for (const t of a) {
-    if (sb.has(t)) hit += 1;
-  }
-  return hit / Math.max(a.length, b.length);
-}
-
 function normSku(s: string | null | undefined): string {
   if (!s) return "";
   return s.toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -59,11 +40,47 @@ function normFam(s: string | null | undefined): string {
   return s.toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
-function familiesHighlySimilar(a: string, b: string): boolean {
-  if (!a || !b) return false;
-  if (a === b) return true;
-  if (a.length >= 6 && b.length >= 6 && (a.includes(b) || b.includes(a))) return true;
-  return false;
+/** Sorted normalized model tokens for strict identity checks (non-TV). */
+function normalizedModelKey(tokens: string[]): string {
+  const u = [...new Set(tokens.map((t) => normSku(t)).filter((t) => t.length > 0))].sort();
+  return u.join("|");
+}
+
+/**
+ * When either side has extractable model/SKU fragments in the title, both must list the same
+ * normalized identity (MVP — no fuzzy family or partial overlap).
+ */
+export function checkGenericModelIdentityGate(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): HardGateResult {
+  if (source.category === "tv" && candidate.category === "tv") {
+    return { ok: true };
+  }
+  const a = source.modelTokens;
+  const b = candidate.modelTokens;
+  if (a.length === 0 && b.length === 0) return { ok: true };
+  if (a.length === 0 || b.length === 0) {
+    return { ok: false, reason: "model_identity_asymmetric" };
+  }
+  if (normalizedModelKey(a) !== normalizedModelKey(b)) {
+    return {
+      ok: false,
+      reason: `model_identity_mismatch(source=${normalizedModelKey(a)},candidate=${normalizedModelKey(b)})`,
+    };
+  }
+  return { ok: true };
+}
+
+/** Stricter than Jaccard: what fraction of the shorter token list is covered by the other title. */
+function tokenContainmentRatio(a: string[], b: string[]): number {
+  if (a.length === 0 || b.length === 0) return 0;
+  const sa = new Set(a);
+  let inter = 0;
+  for (const x of b) {
+    if (sa.has(x)) inter += 1;
+  }
+  return inter / Math.min(a.length, b.length);
 }
 
 export function displayTechsComparable(
@@ -179,7 +196,8 @@ export function checkTvResolutionGate(
 }
 
 /**
- * Same lineup: full SKU match, or same model family key, or highly similar family strings.
+ * Same lineup: exact normalized full SKU when both present, else exact model family key, else an
+ * exact normalized token pair from TV family extraction (no substring / fuzzy family match).
  */
 export function checkTvStructuredModelGate(
   source: NormalizedProduct,
@@ -204,7 +222,7 @@ export function checkTvStructuredModelGate(
   const sFam = normFam(s.modelFamily);
   const cFam = normFam(c.modelFamily);
   if (sFam && cFam) {
-    if (sFam === cFam || familiesHighlySimilar(sFam, cFam)) return { ok: true };
+    if (sFam === cFam) return { ok: true };
     return {
       ok: false,
       reason: `tv_model_family_mismatch(source=${s.modelFamily},candidate=${c.modelFamily})`,
@@ -221,8 +239,10 @@ export function checkTvStructuredModelGate(
     return { ok: false, reason: "tv_model_family_unknown" };
   }
   for (const x of sa) {
+    const nx = normFam(x);
+    if (!nx) continue;
     for (const y of ca) {
-      if (x === y || familiesHighlySimilar(x, y)) return { ok: true };
+      if (nx === normFam(y)) return { ok: true };
     }
   }
   return {
@@ -300,13 +320,15 @@ export function checkPackHardGate(
   return { ok: true };
 }
 
+/**
+ * TV-specific gates after {@link checkTvSizeStrictGate} (size runs first in {@link runHardGates}).
+ */
 export function runTvHardGates(
   source: NormalizedProduct,
   candidate: NormalizedProduct
 ): HardGateResult {
   const gates: Array<() => HardGateResult> = [
     () => checkTvBrandStrictGate(source, candidate),
-    () => checkTvSizeStrictGate(source, candidate),
     () => checkTvDisplayTechGate(source, candidate),
     () => checkTvResolutionGate(source, candidate),
     () => checkTvStructuredModelGate(source, candidate),
@@ -418,13 +440,12 @@ function scoreApparelStructured(
     reasons.push("color_partial=5");
   }
 
-  const jac = jaccard(
-    source.titleNorm.split(/\s+/).filter((w) => w.length >= 3),
-    candidate.titleNorm.split(/\s+/).filter((w) => w.length >= 3)
-  );
-  const jScore = Math.round(jac * 10);
-  score += jScore;
-  reasons.push(`title_overlap=${jScore}`);
+  const titleTokA = source.titleNorm.split(/\s+/).filter((w) => w.length >= 3);
+  const titleTokB = candidate.titleNorm.split(/\s+/).filter((w) => w.length >= 3);
+  const ctr = tokenContainmentRatio(titleTokA, titleTokB);
+  const tScore = Math.round(ctr * 10);
+  score += tScore;
+  reasons.push(`title_containment=${ctr.toFixed(2)}(×10=${tScore})`);
 
   reasons.push(`apparel_total=${score}`);
   return { score, reasons };
@@ -437,9 +458,9 @@ function scoreGenericStructured(
   const reasons: string[] = [];
   const srcTokens = source.titleNorm.split(/\s+/).filter((w) => w.length >= 3);
   const candTokens = candidate.titleNorm.split(/\s+/).filter((w) => w.length >= 3);
-  const jac = jaccard(srcTokens, candTokens);
-  const jacScore = Math.round(jac * 35);
-  reasons.push(`title_jaccard=${jac.toFixed(3)}(×35=${jacScore})`);
+  const ctr = tokenContainmentRatio(srcTokens, candTokens);
+  const titleScore = Math.round(ctr * 28);
+  reasons.push(`title_containment=${ctr.toFixed(3)}(×28=${titleScore})`);
 
   let b = 0;
   if (!source.brand && !candidate.brand) b = 12;
@@ -448,9 +469,14 @@ function scoreGenericStructured(
   else if (SOFT_BRAND_CATEGORIES.has(source.category)) b = 6;
   reasons.push(`brand=${b}`);
 
-  const mt = modelOverlap(source.modelTokens, candidate.modelTokens);
-  const modelScore = Math.round(mt * 22);
-  reasons.push(`model_overlap=${mt.toFixed(2)}(×22=${modelScore})`);
+  const bothNoModel =
+    source.modelTokens.length === 0 && candidate.modelTokens.length === 0;
+  const modelScore = bothNoModel ? 11 : 22;
+  reasons.push(
+    bothNoModel
+      ? "model_identity=11(no_tokens)"
+      : "model_identity=22(exact_gate)"
+  );
 
   let pk = 10;
   if (source.packCount != null && candidate.packCount != null) {
@@ -458,7 +484,7 @@ function scoreGenericStructured(
   }
   reasons.push(`pack=${pk}`);
 
-  const raw = jacScore + b + modelScore + pk;
+  const raw = titleScore + b + modelScore + pk;
   const score = Math.min(100, Math.round(raw));
   reasons.push(`generic_total=${score}`);
   return { score, reasons };
@@ -471,11 +497,19 @@ export function runHardGates(
   const bucket = checkComparisonCategoryGate(source, candidate);
   if (!bucket.ok) return bucket;
 
+  if (source.category === "tv" && candidate.category === "tv") {
+    const tvSize = checkTvSizeStrictGate(source, candidate);
+    if (!tvSize.ok) return tvSize;
+  }
+
   const apparelGender = checkApparelGenderGate(source, candidate);
   if (!apparelGender.ok) return apparelGender;
 
   const pack = checkPackHardGate(source, candidate);
   if (!pack.ok) return pack;
+
+  const modelId = checkGenericModelIdentityGate(source, candidate);
+  if (!modelId.ok) return modelId;
 
   if (source.category === "tv" && candidate.category === "tv") {
     return runTvHardGates(source, candidate);
