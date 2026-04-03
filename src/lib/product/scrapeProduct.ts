@@ -5,7 +5,7 @@ export type ScrapedProduct = {
 };
 
 /** Chrome-on-macOS fingerprint: matches real navigation from a desktop browser. */
-const STEALTH_HEADERS: HeadersInit = {
+export const STEALTH_HEADERS: HeadersInit = {
   "User-Agent":
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   Accept:
@@ -297,8 +297,6 @@ export async function scrapeProduct(url: string): Promise<ScrapedProduct | null>
     if (ogTitle?.trim()) productName = ogTitle.trim();
   }
 
-  console.log('Scraped Product:', productName);
-
   if (!productName) {
     return null;
   }
@@ -308,4 +306,21 @@ export async function scrapeProduct(url: string): Promise<ScrapedProduct | null>
     price,
     currency: currency || "USD",
   };
+}
+
+/**
+ * Fetches store pages (e.g. search SERP) with the same stealth fingerprint as PDP scraping.
+ */
+export async function fetchSearchPageHtml(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, {
+      headers: STEALTH_HEADERS,
+      cache: "no-store",
+      redirect: "follow",
+    });
+    if (!res.ok) return null;
+    return await res.text();
+  } catch {
+    return null;
+  }
 }
