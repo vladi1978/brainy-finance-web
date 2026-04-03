@@ -46,15 +46,13 @@ function extractImportantQuery(input: string): string {
   return cleaned;
 }
 
-function isSamsungTvWalmartDemo(input: string): boolean {
+function isSamsung55TvDemo(input: string): boolean {
   const normalized = normalizeText(input);
-
-  const hasWalmartUrl =
-    normalized.includes("walmart.com") || normalized.includes("www.walmart.com");
-  const mentionsSamsung = normalized.includes("samsung");
-  const mentionsTv = normalized.includes("tv");
-
-  return hasWalmartUrl && mentionsSamsung && mentionsTv;
+  return (
+    normalized.includes("samsung") &&
+    normalized.includes("55") &&
+    normalized.includes("tv")
+  );
 }
 
 function scoreResult(query: string, result: ProductSearchResult): number {
@@ -81,36 +79,32 @@ export async function compareProduct(
     throw new Error("Missing product input");
   }
 
-  if (DEMO_MODE && isSamsungTvWalmartDemo(input)) {
+  if (DEMO_MODE && isSamsung55TvDemo(input)) {
+    const demoNormalizedTitle = "samsung 55 inch tv";
+    const demoAmazonUrl = "demo://amazon-samsung-tv";
+
     const demoSourceProduct: ExtractedSourceProduct = {
-      sourceUrl: input,
+      sourceUrl: "demo://walmart-samsung-tv",
       store: "walmart",
       title: "Samsung 55-inch TV",
-      normalizedTitle: normalizeText("Samsung 55-inch TV"),
+      normalizedTitle: demoNormalizedTitle,
       originalPrice: 599,
       currency: "USD",
       image: null,
-      sku: null,
-      brand: "Samsung",
-      model: null,
-      upc: null,
     };
 
     const demoBestDeal: ProductSearchResult = {
       store: "amazon",
       title: "Samsung 55-inch TV",
-      normalizedTitle: normalizeText("Samsung 55-inch TV"),
+      normalizedTitle: demoNormalizedTitle,
       price: 549,
       currency: "USD",
-      productUrl: "https://www.amazon.com/samsung-55-inch-tv-demo",
+      productUrl: demoAmazonUrl,
+      sourceUrl: demoAmazonUrl,
       affiliateUrl:
         "https://brainyfinance.app/deal?query=Samsung%2055-inch%20TV&ref=demo",
       image: null,
       inStock: true,
-      sku: null,
-      brand: "Samsung",
-      model: null,
-      upc: null,
       sourceConfidence: 0.99,
       matchConfidence: 0.99,
     };
