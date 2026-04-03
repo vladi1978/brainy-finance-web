@@ -618,6 +618,10 @@ function confidenceFromScore(
   return "equivalent";
 }
 
+/**
+ * @deprecated Used only for legacy tests or manual inspection. The live API scores
+ * search relevance (`scoreQueryRelevance`) instead of structured exact-equivalence.
+ */
 export function evaluateCandidate(
   source: NormalizedProduct,
   candidate: CandidateProduct

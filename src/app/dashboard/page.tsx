@@ -1,19 +1,31 @@
 "use client";
 
 import { useState } from "react";
+import type { CompareApiCandidate, CompareProductResponse } from "@/lib/product/types";
 
-type DashboardResult = {
-  title: string;
-  originalPrice: number | null;
-  bestPrice: number | null;
-  store: string;
-  savings: number | null;
-  link?: string;
-};
+function formatPrice(n: number | null): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  return `$${n.toFixed(2)}`;
+}
+
+function MatchBadge({ type }: { type: CompareApiCandidate["matchType"] }) {
+  const colors = {
+    high: "bg-green-500/20 text-green-300 border-green-500/40",
+    medium: "bg-amber-500/20 text-amber-200 border-amber-500/40",
+    low: "bg-white/10 text-white/60 border-white/20",
+  };
+  return (
+    <span
+      className={`text-xs font-medium px-2 py-0.5 rounded-md border ${colors[type]}`}
+    >
+      {type}
+    </span>
+  );
+}
 
 export default function DashboardPage() {
   const [inputValue, setInputValue] = useState("");
-  const [result, setResult] = useState<DashboardResult | null>(null);
+  const [result, setResult] = useState<CompareProductResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
@@ -33,37 +45,15 @@ export default function DashboardPage() {
         body: JSON.stringify({ input: inputValue }),
       });
 
-      const data = await response.json();
+      const data = (await response.json()) as CompareProductResponse & {
+        error?: string;
+      };
 
       if (!response.ok) {
         throw new Error(data?.error || "Failed to compare product");
       }
 
-      console.log("API RESULT:", data);
-
-      if (data.bestDeal) {
-        const originalPrice = data.sourceProduct?.originalPrice ?? null;
-        const bestPrice = data.bestDeal.price ?? null;
-
-        setResult({
-          title: data.bestDeal.title,
-          originalPrice,
-          bestPrice,
-          store: data.bestDeal.store,
-          savings:
-            originalPrice != null && bestPrice != null
-              ? originalPrice - bestPrice
-              : null,
-          link: data.bestDeal.affiliateUrl || data.bestDeal.productUrl,
-        });
-      } else {
-        setErrorMessage(
-          typeof data.comparisonMessage === "string" &&
-            data.comparisonMessage.trim()
-            ? data.comparisonMessage
-            : "No comparable match found yet"
-        );
-      }
+      setResult(data);
     } catch (error) {
       console.error("Compare error:", error);
       setErrorMessage("Something went wrong while comparing this product.");
@@ -71,6 +61,9 @@ export default function DashboardPage() {
       setLoading(false);
     }
   };
+
+  const best = result?.bestDeal;
+  const showBest = Boolean(result?.showBestDeal && best);
 
   return (
     <main className="min-h-screen bg-black text-white px-6 py-10">
@@ -89,33 +82,24 @@ export default function DashboardPage() {
 
           <div className="rounded-2xl border border-white/10 p-6 bg-white/5">
             <h2 className="text-xl font-semibold mb-3">Best Product Deal</h2>
-            {result ? (
+            {showBest && best ? (
               <div>
-                <p className="text-3xl font-bold mb-1">{result.title}</p>
-                <p className="text-white/80">
-                  Original Price:{" "}
-                  <span className="font-semibold">
-                    {result.originalPrice != null
-                      ? `$${result.originalPrice}`
-                      : "Not detected"}
-                  </span>
-                </p>
+                <p className="text-lg font-bold mb-1 line-clamp-2">{best.title}</p>
                 <p className="text-green-400 font-semibold mt-1">
-                  Best Deal:{" "}
-                  {result.bestPrice != null ? `$${result.bestPrice}` : "N/A"} (
-                  {result.store})
+                  {formatPrice(best.price)} · {best.store}
                 </p>
-                <p className="text-white/70 mt-2">
-                  Savings:{" "}
-                  <span className="font-semibold">
-                    {result.savings != null ? `$${result.savings}` : "Not available"}
-                  </span>
-                </p>
+                {result!.savings != null && result!.savings > 0 && (
+                  <p className="text-white/70 text-sm mt-2">
+                    Up to {formatPrice(result!.savings)} spread among strong matches
+                  </p>
+                )}
               </div>
             ) : (
               <div>
-                <p className="text-white/80">
-                  Run a comparison to see the best deal across stores.
+                <p className="text-white/80 text-sm">
+                  {result && !showBest
+                    ? "Showing closest store matches — open a listing to verify."
+                    : "Run a search to see store listings side by side."}
                 </p>
               </div>
             )}
@@ -137,7 +121,7 @@ export default function DashboardPage() {
             <input
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
-              placeholder="Paste Amazon, Walmart, Target, Temu URL OR type a product name / description"
+              placeholder="Paste a store URL or type a product name"
               className="flex-1 rounded-xl bg-black border border-white/15 px-4 py-3 text-white outline-none"
             />
 
@@ -145,7 +129,7 @@ export default function DashboardPage() {
               onClick={handleCompare}
               className="rounded-xl bg-green-500 px-6 py-3 font-semibold text-black hover:bg-green-400 transition"
             >
-              {loading ? "Comparing..." : "Compare Now"}
+              {loading ? "Searching..." : "Compare Now"}
             </button>
           </div>
 
@@ -156,41 +140,106 @@ export default function DashboardPage() {
           )}
 
           {result && (
-            <div className="rounded-2xl border border-white/10 p-6 bg-black/30">
-              <h3 className="text-3xl font-bold mb-3">{result.title}</h3>
-
-              <p className="text-white/80 text-lg">
-                Original Price:{" "}
-                <span className="font-semibold">
-                  {result.originalPrice != null
-                    ? `$${result.originalPrice}`
-                    : "Not detected yet"}
-                </span>
-              </p>
-
-              <p className="text-green-400 text-xl font-bold mt-2">
-                Best Deal:{" "}
-                {result.bestPrice != null ? `$${result.bestPrice}` : "N/A"} (
-                {result.store})
-              </p>
-
-              <p className="text-white/80 mt-2">
-                Savings:{" "}
-                <span className="font-semibold">
-                  {result.savings != null ? `$${result.savings}` : "Not available"}
-                </span>
-              </p>
-
-              {result.link && (
-                <a
-                  href={result.link}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-block mt-5 rounded-xl bg-green-500 px-5 py-3 font-semibold text-black hover:bg-green-400 transition"
-                >
-                  Buy & Save
-                </a>
+            <div className="space-y-6">
+              {result.normalizedQuery && (
+                <p className="text-white/50 text-sm">
+                  Search:{" "}
+                  <span className="text-white/80">{result.normalizedQuery}</span>
+                </p>
               )}
+
+              {showBest && best && (
+                <p className="text-green-400/95 text-sm font-medium">
+                  Best deal (among {result.candidates.filter((x) => x.matchType === "high").length}{" "}
+                  strong matches): {formatPrice(best.price)} at {best.store}
+                </p>
+              )}
+
+              {!showBest && result.candidates.length > 0 && (
+                <div>
+                  <h3 className="text-xl font-semibold text-white mb-1">
+                    {result.comparisonMessage ?? "Closest matches found"}
+                  </h3>
+                  <p className="text-white/50 text-sm mb-4">
+                    We need at least two strong matches to highlight a single best deal.
+                  </p>
+                </div>
+              )}
+
+              {result.message && (
+                <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-amber-100 text-sm">
+                  {result.message}
+                </div>
+              )}
+
+              {result.candidates.length > 0 && (
+                <div>
+                  <h4 className="text-lg font-semibold mb-3 text-white/90">
+                    Store results
+                  </h4>
+                  <ul className="space-y-3">
+                    {result.candidates.map((c) => {
+                      const isWinner =
+                        showBest &&
+                        best &&
+                        c.productUrl === best.productUrl &&
+                        c.store === best.store;
+                      return (
+                      <li
+                        key={`${c.store}-${c.productUrl}`}
+                        className={`flex gap-4 rounded-xl border p-4 ${
+                          isWinner
+                            ? "border-green-500/50 bg-green-500/10"
+                            : "border-white/10 bg-black/30"
+                        }`}
+                      >
+                        {c.imageUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={c.imageUrl}
+                            alt=""
+                            className="h-20 w-20 rounded-lg object-contain bg-white/5 shrink-0"
+                          />
+                        ) : (
+                          <div className="h-20 w-20 rounded-lg bg-white/5 shrink-0" />
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex flex-wrap items-center gap-2 mb-1">
+                            {isWinner && (
+                              <span className="text-xs font-semibold text-green-400 uppercase">
+                                Best price
+                              </span>
+                            )}
+                            <span className="text-white/50 text-sm uppercase">
+                              {c.store}
+                            </span>
+                            <MatchBadge type={c.matchType} />
+                            <span className="text-white/40 text-sm">
+                              {Math.round(c.confidence * 100)}%
+                            </span>
+                          </div>
+                          <p className="font-medium text-white line-clamp-2">
+                            {c.title}
+                          </p>
+                          <p className="text-green-400 font-semibold mt-1">
+                            {formatPrice(c.price)}
+                          </p>
+                          <a
+                            href={c.affiliateUrl || c.productUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-sm text-green-400/90 hover:text-green-300 mt-2 inline-block"
+                          >
+                            Open link
+                          </a>
+                        </div>
+                      </li>
+                    );
+                    })}
+                  </ul>
+                </div>
+              )}
+
             </div>
           )}
         </div>

@@ -56,6 +56,9 @@ export type StructuredProduct = {
 /** User-facing match level for MVP comparisons. */
 export type MatchConfidenceLabel = "exact" | "equivalent" | "alternative";
 
+/** Search relevance bucket (query vs listing) — used by the comparison API. */
+export type SearchMatchType = "high" | "medium" | "low";
+
 /** Buckets for display-type strict matching (TVs). */
 export type TvDisplayTechBucket =
   | "mini_led"
@@ -228,12 +231,12 @@ export type CompareProductDeal = {
   productUrl: string;
   affiliateUrl: string;
   imageUrl: string | null;
-  /** 0–100 overall match score */
-  matchScore: number;
-  /** exact | equivalent | alternative */
-  matchConfidence: MatchConfidenceLabel;
-  /** Short explanation for the user */
-  comparisonReason: string;
+  /** 0–1 relevance to the search query */
+  confidence: number;
+  matchType: SearchMatchType;
+  /** 0–100 display score */
+  relevanceScore: number;
+  relevanceReason: string;
 };
 
 /** Search-first API candidate (shared shape across stores). */
@@ -246,24 +249,29 @@ export type CompareApiCandidate = {
   affiliateUrl: string;
   imageUrl: string | null;
   normalized: NormalizedProduct;
-  matchScore: number;
-  matchConfidence: MatchConfidenceLabel | "none";
-  includedInBestDealConsideration: boolean;
-  rejectReason: string | null;
+  /** 0–1 relevance to the search query */
+  confidence: number;
+  matchType: SearchMatchType;
+  relevanceScore: number;
+  relevanceReason: string;
 };
 
 export type CompareConfidence = "high" | "medium" | "low";
 
-/** API payload — dashboard reads `bestDeal`, `sourceProduct`, `comparisonMessage`. */
+/** API payload — dashboard reads `bestDeal`, `candidates`, `comparisonMessage`. */
 export type CompareProductResponse = {
   /** Original product query (text or URL-derived) */
   query: string;
   /** Normalized multi-field search string sent to stores */
   normalizedQuery: string;
-  /** All candidates considered (with scores / reject reasons) */
+  /** All candidates (search relevance scored), sorted by match strength then price */
   candidates: CompareApiCandidate[];
+  /** Same listings grouped by retailer */
+  resultsByStore: { store: StoreId; candidates: CompareApiCandidate[] }[];
   bestDeal: CompareProductDeal | null;
-  /** Overall certainty of a single best pick */
+  /** True only when ≥2 high-confidence matches exist and a cheapest pick is highlighted */
+  showBestDeal: boolean;
+  /** Overall certainty of the highlighted best deal when present */
   confidence: CompareConfidence | null;
   /** User-facing summary when ambiguous or empty */
   message: string | null;
@@ -275,13 +283,15 @@ export type CompareProductResponse = {
     currency: string;
     normalizedTitle: string;
   } | null;
+  /** Other high-confidence listings when `showBestDeal` (excluding the chosen row) */
   alternatives: CompareProductDeal[];
-  /** Benchmark vs best among comparables when no PDP price exists */
+  /** Spread among high-tier priced listings when best deal is shown (max − min price) */
   savings: number | null;
+  /** e.g. "Closest matches found" when no best-deal banner */
   comparisonMessage?: string | null;
-  /** When true, UI may label the result as “Closest Similar Deal” */
+  /** @deprecated retained for trace compatibility only */
   closestSimilarDealOnly?: boolean;
-  /** Top reasons the pipeline could not rank higher-confidence matches (debug) */
+  /** @deprecated retained for trace compatibility only */
   rejectionReasons?: string[];
   comparisonTrace?: ComparisonTrace;
 };
