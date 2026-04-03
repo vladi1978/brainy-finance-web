@@ -21,7 +21,7 @@ const STOPWORDS = new Set([
 
 /** Known consumer brands — extend as needed. */
 const BRAND_PATTERN =
-  /\b(samsung|lg|sony|tcl|hisense|vizio|insignia|onn|apple|google|beats|bose|jbl|sonos|anker|nike|adidas|reebok|puma|new balance|asics|crocs|ugg|microsoft|dell|hp|lenovo|asus|acer|msi)\b/i;
+  /\b(samsung|lg|sony|tcl|hisense|vizio|insignia|onn|apple|google|beats|bose|jbl|sonos|anker|nike|adidas|reebok|puma|new balance|asics|crocs|ugg|hanes|gildan|champion|microsoft|dell|hp|lenovo|asus|acer|msi)\b/i;
 
 /**
  * Lowercase, strip punctuation noise, collapse whitespace (search / matching).
@@ -45,7 +45,7 @@ export function tokenizeSignificant(text: string): string[] {
 
 export function extractBrand(title: string): string | null {
   const m = title.match(BRAND_PATTERN);
-  return m ? m[1]!.toLowerCase() : null;
+  return m ? m[1]!.toLowerCase().replace(/\s+/g, " ") : null;
 }
 
 /**
@@ -86,19 +86,46 @@ export function extractSizeInches(title: string): number | null {
   return null;
 }
 
+const HOUSEHOLD_RE =
+  /\b(detergent|cleaner|bleach|disinfectant|paper towel|trash bag|garbage bag|sponge|mop|broom|laundry|dish soap|soap|ziploc|aluminum foil|batteries aa|batteries aaa|aa battery|aaa battery|light bulb|led bulb)\b/i;
+
+const APPAREL_RE =
+  /\b(shirt|tee|t-shirt|hoodie|sweatshirt|jacket|coat|pants|jeans|shorts|dress|skirt|underwear|bra|legging|joggers|sweater|polo)\b/i;
+
+const SOCKS_RE = /\b(sock|socks|crew|ankle sock|no show|quarter sock)\b/i;
+
+export function extractGender(title: string): string | null {
+  const n = normalizeTitle(title);
+  if (/\b(men|mens|man|male)\b/.test(n)) return "men";
+  if (/\b(women|womens|woman|female|ladies|lady)\b/.test(n)) return "women";
+  if (/\b(kids|kid|boys|girls|toddler|youth|junior)\b/.test(n)) return "kids";
+  if (/\bunisex\b/.test(n)) return "unisex";
+  return null;
+}
+
 export function extractCategory(title: string): ProductCategory {
   const n = normalizeTitle(title);
   if (
-    /\b(smart tv|oled|qled|4k tv|8k tv|uhd tv|television|tv)\b/.test(n) ||
-    (/\btv\b/.test(n) && extractSizeInches(title) != null)
+    /\b(smart tv|oled|qled|4k tv|8k tv|uhd tv|television)\b/.test(n) ||
+    (/\btv\b/.test(n) && extractSizeInches(title) != null) ||
+    (/\bneo qled\b/.test(n) && /\b\d{2,3}\b/.test(n))
   ) {
     return "tv";
   }
-  if (/\b(shoe|sneaker|boot|sandal|cleat|air max|yeezy)\b/.test(n)) {
+  if (SOCKS_RE.test(n)) {
+    return "socks";
+  }
+  if (/\b(shoe|sneaker|boot|sandal|cleat|air max|yeezy|loafer|slip-on)\b/.test(n)) {
     return "footwear";
   }
-  if (/\b(headphone|earbud|speaker|soundbar|subwoofer)\b/.test(n)) {
+  if (/\b(headphone|earbud|ear buds|airpods|speaker|soundbar|subwoofer)\b/.test(n)) {
     return "audio";
+  }
+  if (HOUSEHOLD_RE.test(n)) {
+    return "household";
+  }
+  if (APPAREL_RE.test(n)) {
+    return "apparel";
   }
   return "general";
 }
@@ -118,6 +145,9 @@ export function extractPackCount(title: string): number | null {
   const p3 = n.match(/\b(\d{1,3})\s*x\s*(?:count|ct)\b/);
   if (p3) return parseInt(p3[1]!, 10);
 
+  const p4 = n.match(/\b(\d{1,3})\s*[- ]\s*pair\b/);
+  if (p4) return parseInt(p4[1]!, 10);
+
   return null;
 }
 
@@ -130,6 +160,7 @@ export function buildNormalizedProduct(title: string): NormalizedProduct {
     sizeInches: extractSizeInches(title),
     category: extractCategory(title),
     packCount: extractPackCount(title),
+    gender: extractGender(title),
   };
 }
 
@@ -145,7 +176,7 @@ export function extractSearchQuery(input: string): string {
   );
   const sizeMatch = cleaned.match(/\b\d{2,3}(?:\s*-\s*)?(?:inch|inches|")\b/i);
   const typeMatch = cleaned.match(
-    /\b(tv|smart tv|shoes|socks|speaker|headphones|laptop)\b/i
+    /\b(tv|smart tv|shoes|socks|crew socks|speaker|headphones|earbuds|laptop|detergent|hoodie|sneakers)\b/i
   );
 
   const parts = [

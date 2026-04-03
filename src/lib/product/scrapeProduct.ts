@@ -185,21 +185,35 @@ function extractFromJsonLd(html: string): {
 }
 
 function tryAmazonDirectTitle(html: string): string | null {
-  const m =
-    html.match(/id=["']productTitle["'][^>]*>([\s\S]*?)<\/span>/i) ||
-    html.match(/data-cy=["']product-title["'][^>]*>([\s\S]*?)<\/[^>]+>/i);
-  if (!m) return null;
-  const t = stripTags(m[1]);
-  return t.length > 0 ? t : null;
+  const patterns = [
+    /id=["']productTitle["'][^>]*>([\s\S]*?)<\/span>/i,
+    /data-cy=["']product-title["'][^>]*>([\s\S]*?)<\/[^>]+>/i,
+    /id=["']title["'][^>]*class=["'][^"']*product[^"']*["'][^>]*>([\s\S]*?)<\/h1>/i,
+    /<span[^>]*id=["']productTitle["'][^>]*>([\s\S]*?)<\/span>/i,
+    /<h1[^>]*class=["'][^"']*a-size-large[^"']*product[^"']*title[^"']*["'][^>]*>([\s\S]*?)<\/h1>/i,
+  ];
+  for (const re of patterns) {
+    const m = html.match(re);
+    if (!m?.[1]) continue;
+    const t = stripTags(m[1]);
+    if (t.length > 3) return t;
+  }
+  return null;
 }
 
 function tryWalmartDirectTitle(html: string): string | null {
-  const m = html.match(
-    /data-automation-id=["']product-title["'][^>]*>([\s\S]*?)<\/[^>]+>/i
-  );
-  if (!m) return null;
-  const t = stripTags(m[1]);
-  return t.length > 0 ? t : null;
+  const patterns = [
+    /data-automation-id=["']product-title["'][^>]*>([\s\S]*?)<\/[^>]+>/i,
+    /<h1[^>]*itemprop=["']name["'][^>]*>([\s\S]*?)<\/h1>/i,
+    /class=["'][^"']*prod-ProductTitle[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/i,
+  ];
+  for (const re of patterns) {
+    const m = html.match(re);
+    if (!m?.[1]) continue;
+    const t = stripTags(m[1]);
+    if (t.length > 3) return t;
+  }
+  return null;
 }
 
 function tryDirectPrice(html: string): number | null {
@@ -295,6 +309,17 @@ export async function scrapeProduct(url: string): Promise<ScrapedProduct | null>
   if (!productName) {
     const ogTitle = getMetaProperty(html, "og:title");
     if (ogTitle?.trim()) productName = ogTitle.trim();
+  }
+
+  if (!productName) {
+    const docTitle = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    if (docTitle?.[1]) {
+      const t = stripTags(docTitle[1])
+        .replace(/\s*[|\u2013\u2014-]\s*Walmart\.com.*$/i, "")
+        .replace(/\s*[|\u2013\u2014-]\s*Amazon\.com.*$/i, "")
+        .trim();
+      if (t.length > 3) productName = t;
+    }
   }
 
   if (!productName) {

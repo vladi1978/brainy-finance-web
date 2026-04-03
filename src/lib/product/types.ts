@@ -10,7 +10,13 @@ export type ProductCategory =
   | "tv"
   | "footwear"
   | "audio"
+  | "socks"
+  | "apparel"
+  | "household"
   | "general";
+
+/** User-facing match level for MVP comparisons. */
+export type MatchConfidenceLabel = "exact" | "equivalent" | "alternative";
 
 export type NormalizedProduct = {
   /** Lowercased, punctuation-stripped title for display/debug */
@@ -22,6 +28,8 @@ export type NormalizedProduct = {
   category: ProductCategory;
   /** `null` when not confidently extractable */
   packCount: number | null;
+  /** men | women | kids | unisex when detectable */
+  gender: string | null;
 };
 
 export type SourceProduct = {
@@ -47,12 +55,13 @@ export type CandidateProduct = {
   sourceConfidence: number;
 };
 
-export type MatchTier = "exact" | "strong" | "weak" | "none";
+/** @deprecated Prefer MatchConfidenceLabel — kept for internal scoring migration */
+export type MatchTier = MatchConfidenceLabel | "none";
 
 export type ScoredCandidate = {
   candidate: CandidateProduct;
   score: number;
-  tier: MatchTier;
+  tier: MatchConfidenceLabel | "none";
   /** Human-readable match factors */
   reasons: string[];
   /** Hard rejection — must not be selected as best deal */
@@ -106,7 +115,7 @@ export type CandidateStepTrace = {
     | "evaluated"
     | "rejected_hard_gate"
     | "skipped_duplicate_source_url";
-  matchTier?: MatchTier;
+  matchConfidence?: MatchConfidenceLabel | "none";
   matchScore?: number;
   matchReasons?: string[];
   eligibleForComparable?: boolean;
@@ -117,6 +126,8 @@ export type SelectionTrace = {
   trustworthyCount: number;
   pickedStore: string | null;
   reasonNoDeal: string | null;
+  /** When the pick is only an alternative-tier match */
+  pickedAsClosestSimilar?: boolean;
 };
 
 export type ComparisonTrace = {
@@ -137,6 +148,21 @@ export type ComparisonTrace = {
   selection: SelectionTrace;
 };
 
+export type CompareProductDeal = {
+  store: string;
+  title: string;
+  price: number | null;
+  currency: string;
+  productUrl: string;
+  affiliateUrl: string;
+  /** 0–100 overall match score */
+  matchScore: number;
+  /** exact | equivalent | alternative */
+  matchConfidence: MatchConfidenceLabel;
+  /** Short explanation for the user */
+  comparisonReason: string;
+};
+
 /** API payload — dashboard reads `bestDeal`, `sourceProduct`, `comparisonMessage`. */
 export type CompareProductResponse = {
   sourceProduct: {
@@ -147,26 +173,12 @@ export type CompareProductResponse = {
     currency: string;
     normalizedTitle: string;
   } | null;
-  bestDeal: {
-    store: string;
-    title: string;
-    price: number | null;
-    currency: string;
-    productUrl: string;
-    affiliateUrl: string;
-    matchConfidence: number;
-    matchType: MatchTier;
-  } | null;
-  alternatives: {
-    store: string;
-    title: string;
-    price: number | null;
-    currency: string;
-    productUrl: string;
-    affiliateUrl: string;
-    matchConfidence: number;
-    matchType: MatchTier;
-  }[];
+  bestDeal: CompareProductDeal | null;
+  alternatives: CompareProductDeal[];
   comparisonMessage?: string | null;
+  /** When true, UI may label the result as “Closest Similar Deal” */
+  closestSimilarDealOnly?: boolean;
+  /** Top reasons the pipeline could not rank higher-confidence matches (debug) */
+  rejectionReasons?: string[];
   comparisonTrace?: ComparisonTrace;
 };

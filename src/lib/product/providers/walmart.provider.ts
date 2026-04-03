@@ -38,6 +38,25 @@ function cleanWalmartTitleFromUrl(input: string): string {
     .trim();
 }
 
+function rankRowsByQueryRelevance<
+  T extends { title: string },
+>(rows: T[], searchQuery: string): T[] {
+  const q = normalizeTitle(searchQuery)
+    .split(/\s+/)
+    .filter((w) => w.length >= 2);
+  if (q.length === 0) return rows;
+  const scored = rows.map((row) => {
+    const t = normalizeTitle(row.title);
+    let hits = 0;
+    for (const w of q) {
+      if (t.includes(w)) hits += 1;
+    }
+    return { row, hits };
+  });
+  scored.sort((a, b) => b.hits - a.hits);
+  return scored.map((s) => s.row);
+}
+
 function rowToCandidate(
   row: { title: string; price: number | null; currency: string; productUrl: string },
   searchQuery: string
@@ -89,17 +108,19 @@ export const walmartProvider: ProductProvider = {
   },
 
   async searchCandidates(ctx: ProviderSearchContext): Promise<ProviderResult> {
-    const query =
-      ctx.sourceProduct?.title || ctx.searchQuery || ctx.rawInput;
-    const normalizedQuery = normalizeTitle(query);
-    const effectiveQuery = ctx.searchQuery || normalizedQuery;
+    /** Prefer compact normalized query so SERP matches real product type, not URL slug noise. */
+    const effectiveQuery =
+      ctx.searchQuery?.trim() ||
+      normalizeTitle(ctx.sourceProduct?.title || "") ||
+      ctx.rawInput;
     const { candidates, diagnostics } = await fetchWalmartSerpWithDiagnostics(
-      query,
-      12
+      effectiveQuery,
+      24
     );
+    const ranked = rankRowsByQueryRelevance(candidates, effectiveQuery);
 
     return {
-      candidates: candidates.map((c) => rowToCandidate(c, effectiveQuery)),
+      candidates: ranked.map((c) => rowToCandidate(c, effectiveQuery)),
       diagnostics: toDiagnostics(effectiveQuery, diagnostics),
     };
   },
