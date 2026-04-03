@@ -113,14 +113,15 @@ export function checkComparisonCategoryGate(
 export type HardGateResult = { ok: true } | { ok: false; reason: string };
 
 function hardGateFail(reason: string): HardGateResult {
-  console.log(reason);
+  console.log("Failing Gate:", reason);
   return { ok: false, reason };
 }
 
-/** Normalized blob of candidate TV model-related fields for substring containment checks. */
-function tvModelBlobNorm(p: NormalizedProduct): string {
+/** Normalized search text: title + structured model fields (for substring / fuzzy model-id match). */
+function tvSearchBlob(p: NormalizedProduct): string {
   const st = p.structured;
   const parts = [
+    p.titleNorm,
     st.fullModel,
     st.modelFamily,
     ...(p.tv?.modelFamilyTokens ?? []),
@@ -128,21 +129,49 @@ function tvModelBlobNorm(p: NormalizedProduct): string {
   return normSku(parts.filter(Boolean).join(" "));
 }
 
-/** Core lineup id (e.g. M70HB) from structured TV fields. */
-function tvCoreModelId(st: StructuredProduct): string {
-  const fromFull = inferTvFamilyFromFullModel(st.fullModel);
-  if (fromFull) return normSku(fromFull);
-  if (st.modelFamily) return normFam(st.modelFamily);
-  return "";
+function tvModelNeedlesFromSide(p: NormalizedProduct): string[] {
+  const st = p.structured;
+  const out = new Set<string>();
+  const add = (raw: string | null | undefined) => {
+    const n = normSku(raw ?? "");
+    if (n.length >= 4) out.add(n);
+  };
+  add(inferTvFamilyFromFullModel(st.fullModel));
+  add(st.modelFamily);
+  add(st.fullModel);
+  for (const t of p.tv?.modelFamilyTokens ?? []) add(t);
+  return [...out];
 }
 
-function tvCoreContainedInPeerModelBlob(
-  coreNorm: string,
-  peer: NormalizedProduct
-): boolean {
-  if (coreNorm.length < 4) return false;
-  const blob = tvModelBlobNorm(peer);
-  return blob.includes(coreNorm);
+/** Substring match, then single-character typo within a same-length window (e.g. OCR). */
+function needleFuzzyInBlob(needle: string, blob: string): boolean {
+  if (needle.length < 4) return false;
+  if (blob.includes(needle)) return true;
+  const n = needle.length;
+  for (let i = 0; i + n <= blob.length; i++) {
+    let diff = 0;
+    for (let j = 0; j < n; j++) {
+      if (blob[i + j] !== needle[j]) diff++;
+      if (diff > 1) break;
+    }
+    if (diff <= 1) return true;
+  }
+  return false;
+}
+
+/** True if any model id from either side appears in the peer's title or model string (fuzzy). */
+function tvModelIdsMatchFuzzy(a: NormalizedProduct, b: NormalizedProduct): boolean {
+  const needlesA = tvModelNeedlesFromSide(a);
+  const needlesB = tvModelNeedlesFromSide(b);
+  const blobB = tvSearchBlob(b);
+  const blobA = tvSearchBlob(a);
+  for (const n of needlesA) {
+    if (needleFuzzyInBlob(n, blobB)) return true;
+  }
+  for (const n of needlesB) {
+    if (needleFuzzyInBlob(n, blobA)) return true;
+  }
+  return false;
 }
 
 export function checkTvBrandStrictGate(
@@ -211,9 +240,9 @@ export function checkTvResolutionGate(
 }
 
 /**
- * Same lineup: exact normalized full SKU when both present; if SKUs differ, pass when either
- * side's core model id (e.g. M70HB from UN65M70HB…) is contained in the peer's model blob.
- * Otherwise exact model family key, then token pairs, with the same containment fallback.
+ * Same lineup: exact normalized full SKU when both present; if SKUs differ, pass when a model id
+ * from either listing (e.g. M70HB) matches via substring or fuzzy search in the peer's title or
+ * model fields. Otherwise exact model family key, then token pairs, with the same fuzzy fallback.
  */
 export function checkTvStructuredModelGate(
   source: NormalizedProduct,
@@ -229,14 +258,7 @@ export function checkTvStructuredModelGate(
   const cFull = normSku(c.fullModel);
   if (sFull && cFull) {
     if (sFull === cFull) return { ok: true };
-    const coreS = tvCoreModelId(s);
-    const coreC = tvCoreModelId(c);
-    if (
-      tvCoreContainedInPeerModelBlob(coreS, candidate) ||
-      tvCoreContainedInPeerModelBlob(coreC, source)
-    ) {
-      return { ok: true };
-    }
+    if (tvModelIdsMatchFuzzy(source, candidate)) return { ok: true };
     return hardGateFail(
       `tv_full_model_mismatch(source=${s.fullModel},candidate=${c.fullModel})`
     );
@@ -246,42 +268,21 @@ export function checkTvStructuredModelGate(
   const cFam = normFam(c.modelFamily);
   if (sFam && cFam) {
     if (sFam === cFam) return { ok: true };
-    const coreS = tvCoreModelId(s);
-    const coreC = tvCoreModelId(c);
-    if (
-      tvCoreContainedInPeerModelBlob(coreS, candidate) ||
-      tvCoreContainedInPeerModelBlob(coreC, source)
-    ) {
-      return { ok: true };
-    }
+    if (tvModelIdsMatchFuzzy(source, candidate)) return { ok: true };
     return hardGateFail(
       `tv_model_family_mismatch(source=${s.modelFamily},candidate=${c.modelFamily})`
     );
   }
 
   if (sFull || cFull) {
-    const coreS = tvCoreModelId(s);
-    const coreC = tvCoreModelId(c);
-    if (
-      tvCoreContainedInPeerModelBlob(coreS, candidate) ||
-      tvCoreContainedInPeerModelBlob(coreC, source)
-    ) {
-      return { ok: true };
-    }
+    if (tvModelIdsMatchFuzzy(source, candidate)) return { ok: true };
     return hardGateFail("tv_model_identifier_asymmetric");
   }
 
   const sa = source.tv?.modelFamilyTokens ?? [];
   const ca = candidate.tv?.modelFamilyTokens ?? [];
   if (sa.length === 0 || ca.length === 0) {
-    const coreS = tvCoreModelId(s);
-    const coreC = tvCoreModelId(c);
-    if (
-      tvCoreContainedInPeerModelBlob(coreS, candidate) ||
-      tvCoreContainedInPeerModelBlob(coreC, source)
-    ) {
-      return { ok: true };
-    }
+    if (tvModelIdsMatchFuzzy(source, candidate)) return { ok: true };
     return hardGateFail("tv_model_family_unknown");
   }
   for (const x of sa) {
@@ -291,14 +292,7 @@ export function checkTvStructuredModelGate(
       if (nx === normFam(y)) return { ok: true };
     }
   }
-  const coreS = tvCoreModelId(s);
-  const coreC = tvCoreModelId(c);
-  if (
-    tvCoreContainedInPeerModelBlob(coreS, candidate) ||
-    tvCoreContainedInPeerModelBlob(coreC, source)
-  ) {
-    return { ok: true };
-  }
+  if (tvModelIdsMatchFuzzy(source, candidate)) return { ok: true };
   return hardGateFail(
     `tv_model_family_token_mismatch(source=${sa.join(",")},candidate=${ca.join(",")})`
   );
