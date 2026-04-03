@@ -57,6 +57,7 @@ function rankRowsByQueryRelevance<
   return scored.map((s) => s.row);
 }
 
+/** SERP titles are normalized for matching; TVs get strict `normalized.tv` signals from `buildNormalizedProduct`. */
 function rowToCandidate(
   row: { title: string; price: number | null; currency: string; productUrl: string },
   searchQuery: string

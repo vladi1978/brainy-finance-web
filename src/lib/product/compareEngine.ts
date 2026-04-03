@@ -216,6 +216,7 @@ export async function compareProduct(
   }
 
   const referenceNormalized = buildNormalizedProduct(parsed.productQuery);
+  const isTvReference = referenceNormalized.category === "tv";
   const normalizedQuery = buildNormalizedSearchQuery(
     referenceNormalized,
     parsed.productQuery
@@ -351,6 +352,7 @@ export async function compareProduct(
       ev.rejectionDetail == null &&
       isPrimaryComparableTier(ev.matchConfidence);
     const alternativeComparable =
+      !isTvReference &&
       !ev.rejected &&
       ev.rejectionDetail == null &&
       isAlternativeTier(ev.matchConfidence);
@@ -419,7 +421,7 @@ export async function compareProduct(
     pickKind = "alternative";
   }
 
-  if (chosenPool.length === 0) {
+  if (chosenPool.length === 0 && !isTvReference) {
     const rescuePool = scored.filter(
       (s) => !s.rejected && s.score >= FALLBACK_MIN_SCORE
     );
@@ -482,7 +484,9 @@ export async function compareProduct(
       const eligibleTier =
         s.primaryComparable ||
         s.alternativeComparable ||
-        (!s.rejected && s.score >= FALLBACK_MIN_SCORE);
+        (!isTvReference &&
+          !s.rejected &&
+          s.score >= FALLBACK_MIN_SCORE);
       const k = scoredKey(s);
       return {
         store: s.candidate.store,
@@ -556,7 +560,7 @@ export async function compareProduct(
       candidates: apiCandidates,
       bestDeal: null,
       confidence: null,
-      message: "No comparable match found across stores for this query.",
+      message: "No comparable match found yet",
       sourceProduct,
       alternatives: [],
       savings: null,

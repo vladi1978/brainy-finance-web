@@ -1,4 +1,12 @@
-import type { NormalizedProduct, ProductCategory, StoreId } from "./types";
+import type {
+  NormalizedProduct,
+  ProductCategory,
+  StoreId,
+  TvConditionKind,
+  TvDisplayTechBucket,
+  TvNormalizedAttributes,
+  TvResolutionBucket,
+} from "./types";
 
 const STOPWORDS = new Set([
   "the",
@@ -83,7 +91,84 @@ export function extractSizeInches(title: string): number | null {
     if (n >= 20 && n <= 120) return n;
   }
 
+  /** "85 Class" / "85-Inch Class" (common retailer phrasing) */
+  const m3 = norm.match(/\b(\d{2,3})\s*-?\s*class\b/i);
+  if (m3) {
+    const n = parseInt(m3[1]!, 10);
+    if (n >= 20 && n <= 120) return n;
+  }
+
   return null;
+}
+
+function extractTvDisplayTech(title: string): TvDisplayTechBucket {
+  const n = normalizeTitle(title);
+  if (/\bmini[\s-]*led\b/.test(n)) return "mini_led";
+  if (/\bneo[\s-]*qled\b/.test(n)) return "neo_qled";
+  if (/\bqled\b/.test(n)) return "qled";
+  if (/\boled\b/.test(n)) return "oled";
+  if (/\bcrystal[\s-]*led\b/.test(n)) return "crystal_led";
+  if (/\bcrystal\b/.test(n) && /\b(series|uhd|4k)\b/.test(n)) return "crystal_led";
+  if (/\bled\b/.test(n)) return "led";
+  return null;
+}
+
+function extractTvResolution(title: string): TvResolutionBucket {
+  const n = normalizeTitle(title);
+  if (/\b8k\b/.test(n)) return "8k";
+  if (/\b(4k|uhd|ultra\s*hd)\b/.test(n)) return "4k";
+  if (/\b(720p|1080p|full\s*hd|fhd|hd)\b/.test(n)) return "hd";
+  return null;
+}
+
+function extractTvSmart(title: string): boolean | null {
+  const n = normalizeTitle(title);
+  if (/\b(non[\s-]*smart|not[\s-]*smart)\b/.test(n)) return false;
+  if (/\b(smart\s*tv|smart\s*tizen|roku\s*tv|fire\s*tv|google\s*tv|webos)\b/.test(n))
+    return true;
+  return null;
+}
+
+function extractTvCondition(title: string): TvConditionKind {
+  const n = normalizeTitle(title);
+  if (/\b(renewed|amazon\s*renewed)\b/.test(n)) return "renewed";
+  if (/\b(refurb|refurbished|factory\s*recertified)\b/.test(n)) return "refurbished";
+  if (/\b(pre[\s-]*owned|used\b)\b/.test(n)) return "used";
+  if (/\bopen[\s-]*box\b/.test(n)) return "open_box";
+  return "new";
+}
+
+/**
+ * Samsung/LG-style model and series tokens for strict TV family matching.
+ */
+export function extractTvModelFamilyTokens(title: string): string[] {
+  const raw = title.replace(/\u2033/g, '"');
+  const n = normalizeTitle(raw);
+  const out = new Set<string>();
+
+  const pushNorm = (frag: string) => {
+    const t = frag.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (t.length >= 4) out.add(t);
+  };
+
+  for (const m of n.matchAll(/\b([a-z]\d{2}[a-z]{2,8})\b/g)) pushNorm(m[1]!);
+  for (const m of n.matchAll(/\b([a-z]{2}\d{4}[a-z0-9]*)\b/g)) pushNorm(m[1]!);
+  for (const m of n.matchAll(/\b(un|qn|xr)(\d{2,3})([a-z0-9]{6,})\b/g)) {
+    pushNorm(m[3]!.replace(/(20\d{2})$/i, ""));
+  }
+  for (const m of raw.matchAll(/\b([A-Z]\d{2}[A-Z]{2,8})\b/g)) pushNorm(m[1]!);
+
+  return [...out].slice(0, 16);
+}
+
+function buildTvAttributes(title: string): TvNormalizedAttributes {
+  return {
+    displayTech: extractTvDisplayTech(title),
+    resolution: extractTvResolution(title),
+    smartTv: extractTvSmart(title),
+    condition: extractTvCondition(title),
+    modelFamilyTokens: extractTvModelFamilyTokens(title),
+  };
 }
 
 const HOUSEHOLD_RE =
@@ -153,15 +238,20 @@ export function extractPackCount(title: string): number | null {
 
 export function buildNormalizedProduct(title: string): NormalizedProduct {
   const titleNorm = normalizeTitle(title);
-  return {
+  const category = extractCategory(title);
+  const base: NormalizedProduct = {
     titleNorm,
     brand: extractBrand(title),
     modelTokens: extractModelTokens(title),
     sizeInches: extractSizeInches(title),
-    category: extractCategory(title),
+    category,
     packCount: extractPackCount(title),
     gender: extractGender(title),
   };
+  if (category === "tv") {
+    return { ...base, tv: buildTvAttributes(title) };
+  }
+  return base;
 }
 
 const CATEGORY_SEARCH_KEYWORD: Record<ProductCategory, string | null> = {

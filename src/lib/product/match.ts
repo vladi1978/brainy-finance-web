@@ -3,6 +3,7 @@ import type {
   MatchConfidenceLabel,
   NormalizedProduct,
   ProductCategory,
+  TvDisplayTechBucket,
 } from "./types";
 
 /** Minimum score for each MVP match level (0–100 scale). */
@@ -13,8 +14,8 @@ export const SCORE_ALTERNATIVE_MIN = 34;
 /** Legacy name — alternative floor for “some match”. */
 export const WEAK_MATCH_MIN_SCORE = SCORE_ALTERNATIVE_MIN;
 
-const TV_SIZE_HARD_REJECT_DIFF = 8;
-const TV_SIZE_SOFT_MAX_DIFF = 3;
+/** TVs: title-level size hints must match exactly (no cross-size “deals”). */
+const TV_SIZE_SOFT_MAX_DIFF = 0;
 
 const SOFT_BRAND_CATEGORIES = new Set<ProductCategory>([
   "socks",
@@ -192,22 +193,228 @@ export function checkPackHardGate(
   return { ok: true };
 }
 
-export function checkTvSizeGate(
+function displayTechsComparable(
+  a: TvDisplayTechBucket,
+  b: TvDisplayTechBucket
+): boolean {
+  if (a == null || b == null) return true;
+  if (a === b) return true;
+  if (
+    (a === "neo_qled" && b === "qled") ||
+    (a === "qled" && b === "neo_qled")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function tvModelFamiliesComparable(a: string[], b: string[]): boolean {
+  const na = a
+    .map((t) => t.toLowerCase().replace(/[^a-z0-9]/g, ""))
+    .filter((t) => t.length >= 4);
+  const nb = b
+    .map((t) => t.toLowerCase().replace(/[^a-z0-9]/g, ""))
+    .filter((t) => t.length >= 4);
+  if (na.length === 0 || nb.length === 0) return false;
+  for (const x of na) {
+    for (const y of nb) {
+      if (x === y) return true;
+      const minLen = Math.min(x.length, y.length);
+      if (minLen >= 5 && (x.startsWith(y.slice(0, 5)) || y.startsWith(x.slice(0, 5)))) {
+        return true;
+      }
+      if (x.length >= 6 && y.length >= 6 && (x.includes(y) || y.includes(x))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+export function checkTvBrandStrictGate(
   source: NormalizedProduct,
   candidate: NormalizedProduct
 ): HardGateResult {
   if (source.category !== "tv" || candidate.category !== "tv") {
     return { ok: true };
   }
-  if (source.sizeInches == null || candidate.sizeInches == null) {
+  if (!source.brand || !candidate.brand) {
+    return {
+      ok: false,
+      reason: `tv_brand_incomplete(source=${source.brand},candidate=${candidate.brand})`,
+    };
+  }
+  if (source.brand !== candidate.brand) {
+    return {
+      ok: false,
+      reason: `tv_brand_mismatch(source=${source.brand},candidate=${candidate.brand})`,
+    };
+  }
+  return { ok: true };
+}
+
+export function checkTvSizeStrictGate(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): HardGateResult {
+  if (source.category !== "tv" || candidate.category !== "tv") {
     return { ok: true };
   }
-  const diff = Math.abs(source.sizeInches - candidate.sizeInches);
-  if (diff <= TV_SIZE_HARD_REJECT_DIFF) return { ok: true };
+  const a = source.sizeInches;
+  const b = candidate.sizeInches;
+  if (a == null && b == null) return { ok: true };
+  if (a == null || b == null) {
+    return {
+      ok: false,
+      reason: `tv_size_incomplete(source=${a},candidate=${b})`,
+    };
+  }
+  if (a !== b) {
+    return {
+      ok: false,
+      reason: `tv_size_mismatch(source=${a},candidate=${b})`,
+    };
+  }
+  return { ok: true };
+}
+
+export function checkTvDisplayTechGate(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): HardGateResult {
+  if (source.category !== "tv" || candidate.category !== "tv") {
+    return { ok: true };
+  }
+  const a = source.tv?.displayTech ?? null;
+  const b = candidate.tv?.displayTech ?? null;
+  if (displayTechsComparable(a, b)) return { ok: true };
   return {
     ok: false,
-    reason: `tv_size_far_mismatch(source=${source.sizeInches},candidate=${candidate.sizeInches})`,
+    reason: `tv_display_tech_mismatch(source=${a},candidate=${b})`,
   };
+}
+
+export function checkTvResolutionGate(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): HardGateResult {
+  if (source.category !== "tv" || candidate.category !== "tv") {
+    return { ok: true };
+  }
+  const a = source.tv?.resolution ?? null;
+  const b = candidate.tv?.resolution ?? null;
+  if (a == null || b == null) return { ok: true };
+  if (a === b) return { ok: true };
+  return {
+    ok: false,
+    reason: `tv_resolution_mismatch(source=${a},candidate=${b})`,
+  };
+}
+
+export function checkTvModelFamilyGate(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): HardGateResult {
+  if (source.category !== "tv" || candidate.category !== "tv") {
+    return { ok: true };
+  }
+  const sa = source.tv?.modelFamilyTokens ?? [];
+  const ca = candidate.tv?.modelFamilyTokens ?? [];
+  if (sa.length === 0 && ca.length === 0) {
+    return {
+      ok: false,
+      reason: "tv_model_family_unknown",
+    };
+  }
+  if (sa.length === 0 || ca.length === 0) {
+    return {
+      ok: false,
+      reason: `tv_model_family_incomplete(source_tokens=${sa.length},candidate_tokens=${ca.length})`,
+    };
+  }
+  if (!tvModelFamiliesComparable(sa, ca)) {
+    return {
+      ok: false,
+      reason: `tv_model_family_mismatch(source=${sa.join(",")},candidate=${ca.join(",")})`,
+    };
+  }
+  return { ok: true };
+}
+
+export function checkTvConditionGate(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): HardGateResult {
+  if (source.category !== "tv" || candidate.category !== "tv") {
+    return { ok: true };
+  }
+  const sc = source.tv?.condition ?? "unknown";
+  const cc = candidate.tv?.condition ?? "unknown";
+  const sourceSecondhand =
+    sc === "renewed" ||
+    sc === "refurbished" ||
+    sc === "used" ||
+    sc === "open_box";
+  const candSecondhand =
+    cc === "renewed" ||
+    cc === "refurbished" ||
+    cc === "used" ||
+    cc === "open_box";
+  const sourceExpectsNew = !sourceSecondhand;
+  if (sourceExpectsNew && candSecondhand) {
+    return {
+      ok: false,
+      reason: `tv_condition_mismatch(source=${sc},candidate=${cc})`,
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Strict TV-only gates — both listings must be classified as televisions.
+ */
+export function runTvHardGates(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): HardGateResult {
+  const gates: Array<() => HardGateResult> = [
+    () => checkTvBrandStrictGate(source, candidate),
+    () => checkTvSizeStrictGate(source, candidate),
+    () => checkTvDisplayTechGate(source, candidate),
+    () => checkTvResolutionGate(source, candidate),
+    () => checkTvModelFamilyGate(source, candidate),
+    () => checkTvConditionGate(source, candidate),
+  ];
+  for (const g of gates) {
+    const r = g();
+    if (!r.ok) return r;
+  }
+  return { ok: true };
+}
+
+export function logTvCandidateDebug(
+  source: NormalizedProduct,
+  candidateNorm: NormalizedProduct,
+  ctx: {
+    store: string;
+    rejected: boolean;
+    rejectionReason: string | null;
+  }
+): void {
+  if (source.category !== "tv") return;
+  console.log("[tv-match]", {
+    store: ctx.store,
+    sourceSize: source.sizeInches,
+    candidateSize: candidateNorm.sizeInches,
+    sourceModelTokens: source.tv?.modelFamilyTokens ?? [],
+    candidateModelTokens: candidateNorm.tv?.modelFamilyTokens ?? [],
+    sourceDisplayType: source.tv?.displayTech ?? null,
+    candidateDisplayType: candidateNorm.tv?.displayTech ?? null,
+    sourceCondition: source.tv?.condition ?? "unknown",
+    candidateCondition: candidateNorm.tv?.condition ?? "unknown",
+    rejectionReason:
+      ctx.rejectionReason ?? (ctx.rejected ? "unknown" : "accepted"),
+  });
 }
 
 export function runHardGates(
@@ -220,7 +427,10 @@ export function runHardGates(
   if (!e.ok) return e;
   const p = checkPackHardGate(source, candidate);
   if (!p.ok) return p;
-  return checkTvSizeGate(source, candidate);
+  if (source.category === "tv" && candidate.category === "tv") {
+    return runTvHardGates(source, candidate);
+  }
+  return { ok: true };
 }
 
 function genderScore(source: NormalizedProduct, candidate: NormalizedProduct): number {
@@ -245,7 +455,6 @@ function tvSizeScore(source: NormalizedProduct, candidate: NormalizedProduct): n
   const diff = Math.abs(source.sizeInches - candidate.sizeInches);
   if (diff === 0) return 12;
   if (diff <= TV_SIZE_SOFT_MAX_DIFF) return 8;
-  if (diff <= 5) return 4;
   return 0;
 }
 
@@ -271,6 +480,24 @@ function productTypeKeywordScore(source: NormalizedProduct, candidate: Normalize
   if (o >= 2) return 10;
   if (o === 1) return 6;
   return 2;
+}
+
+function modelTokensForScore(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): { src: string[]; cand: string[] } {
+  if (source.category === "tv" && source.tv?.modelFamilyTokens?.length) {
+    return {
+      src: [...new Set([...source.modelTokens, ...source.tv.modelFamilyTokens])],
+      cand: [
+        ...new Set([
+          ...candidate.modelTokens,
+          ...(candidate.tv?.modelFamilyTokens ?? []),
+        ]),
+      ],
+    };
+  }
+  return { src: source.modelTokens, cand: candidate.modelTokens };
 }
 
 export function scoreMatch(
@@ -310,7 +537,8 @@ export function scoreMatch(
     reasons.push(`brand=${b}`);
   }
 
-  const mo = modelOverlap(source.modelTokens, candidate.modelTokens);
+  const mt = modelTokensForScore(source, candidate);
+  const mo = modelOverlap(mt.src, mt.cand);
   const modelScore = mo * 16;
   reasons.push(`model_overlap=${mo.toFixed(2)}(×16=${modelScore.toFixed(1)})`);
 
@@ -371,6 +599,11 @@ export function evaluateCandidate(
 ): EvaluateResult {
   const gate = runHardGates(source, candidate.normalized);
   if (!gate.ok) {
+    logTvCandidateDebug(source, candidate.normalized, {
+      store: candidate.store,
+      rejected: true,
+      rejectionReason: gate.reason,
+    });
     return {
       score: 0,
       matchConfidence: "none",
@@ -382,18 +615,42 @@ export function evaluateCandidate(
   }
 
   const { score, reasons } = scoreMatch(source, candidate.normalized);
-  const matchConfidence = classifyMatchConfidence(score);
+  let matchConfidence = classifyMatchConfidence(score);
+
+  if (source.category === "tv") {
+    if (matchConfidence === "alternative") {
+      matchConfidence = "none";
+    }
+    if (matchConfidence !== "none" && score < SCORE_EQUIVALENT_MIN) {
+      matchConfidence = "none";
+    }
+  }
 
   if (matchConfidence === "none") {
+    const detail =
+      source.category === "tv"
+        ? `tv_strict_score(score=${score},need>=${SCORE_EQUIVALENT_MIN})`
+        : `below_minimum_score(score=${score},need>=${SCORE_ALTERNATIVE_MIN})`;
+    logTvCandidateDebug(source, candidate.normalized, {
+      store: candidate.store,
+      rejected: false,
+      rejectionReason: detail,
+    });
     return {
       score,
       matchConfidence,
       reasons,
       rejected: false,
-      rejectionDetail: `below_minimum_score(score=${score},need>=${SCORE_ALTERNATIVE_MIN})`,
+      rejectionDetail: detail,
       comparisonReason: comparisonReasonFor("none", score),
     };
   }
+
+  logTvCandidateDebug(source, candidate.normalized, {
+    store: candidate.store,
+    rejected: false,
+    rejectionReason: null,
+  });
 
   return {
     score,

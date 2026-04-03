@@ -18,6 +18,37 @@ export type ProductCategory =
 /** User-facing match level for MVP comparisons. */
 export type MatchConfidenceLabel = "exact" | "equivalent" | "alternative";
 
+/** Buckets for display-type strict matching (TVs). */
+export type TvDisplayTechBucket =
+  | "mini_led"
+  | "crystal_led"
+  | "oled"
+  | "qled"
+  | "neo_qled"
+  | "led"
+  | null;
+
+export type TvResolutionBucket = "4k" | "8k" | "hd" | null;
+
+export type TvConditionKind =
+  | "new"
+  | "renewed"
+  | "refurbished"
+  | "used"
+  | "open_box"
+  | "unknown";
+
+/** Parsed TV-only fields — set when `category === "tv"`. */
+export type TvNormalizedAttributes = {
+  displayTech: TvDisplayTechBucket;
+  resolution: TvResolutionBucket;
+  /** null when not stated */
+  smartTv: boolean | null;
+  condition: TvConditionKind;
+  /** Distinctive model / family strings (series + SKU fragments) for strict gates */
+  modelFamilyTokens: string[];
+};
+
 export type NormalizedProduct = {
   /** Lowercased, punctuation-stripped title for display/debug */
   titleNorm: string;
@@ -30,6 +61,8 @@ export type NormalizedProduct = {
   packCount: number | null;
   /** men | women | kids | unisex when detectable */
   gender: string | null;
+  /** Strict TV matching signals — only when classified as a television */
+  tv?: TvNormalizedAttributes;
 };
 
 export type SourceProduct = {
