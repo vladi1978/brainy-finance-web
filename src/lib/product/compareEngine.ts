@@ -3,7 +3,13 @@ import {
   isAlternativeTier,
   isPrimaryComparableTier,
 } from "./match";
-import { buildNormalizedProduct, extractSearchQuery } from "./normalize";
+import {
+  areSameRetailerListings,
+  buildNormalizedProduct,
+  detectStoreFromProductUrl,
+  extractSearchQuery,
+  retailerListingIdentityKey,
+} from "./normalize";
 import { productProviderRegistry } from "./registry";
 import type {
   CandidateProduct,
@@ -64,7 +70,11 @@ function normalizeUrlKey(url: string): string {
 
 function sourceSummaryForApi(
   source: SourceProduct | null,
-  fallbackTitle: string
+  fallbackTitle: string,
+  meta: {
+    effectiveStore: StoreId | "unknown";
+    effectiveSourceUrl?: string;
+  }
 ): CompareProductResponse["sourceProduct"] {
   if (source) {
     return {
@@ -78,7 +88,8 @@ function sourceSummaryForApi(
   }
   const n = buildNormalizedProduct(fallbackTitle);
   return {
-    store: "unknown",
+    ...(meta.effectiveSourceUrl ? { sourceUrl: meta.effectiveSourceUrl } : {}),
+    store: meta.effectiveStore,
     title: fallbackTitle,
     originalPrice: null,
     currency: "USD",
@@ -281,12 +292,26 @@ export async function compareProduct(
     byStore: candidatesPerProvider,
   });
 
-  const sourceUrlKey = sourceProduct?.sourceUrl
-    ? normalizeUrlKey(sourceProduct.sourceUrl)
+  const urlDetectedStore = detectStoreFromProductUrl(input);
+  const effectiveSourceStore: StoreId | "unknown" =
+    sourceProduct && sourceProduct.store !== "unknown"
+      ? sourceProduct.store
+      : (providerForUrl?.id ?? urlDetectedStore ?? "unknown");
+  const effectiveSourceUrl =
+    sourceProduct?.sourceUrl ??
+    (/^https?:\/\//i.test(input.trim()) ? input.trim() : undefined);
+
+  const sourceListingKey = effectiveSourceUrl
+    ? retailerListingIdentityKey(effectiveSourceUrl)
     : null;
-  const sourceStore = sourceProduct?.store;
-  const excludeSourceStore =
-    Boolean(sourceStore && sourceStore !== "unknown");
+
+  traceLog("source_identity", {
+    sourceStore: effectiveSourceStore,
+    sourceUrl: effectiveSourceUrl ?? null,
+    sourceNormalizedId: sourceListingKey,
+    urlDetectedStore,
+    providerDetectedStore: providerForUrl?.id ?? null,
+  });
 
   const priced = allCandidates.filter((c) => isValidComparablePrice(c.price));
   for (const c of allCandidates) {
@@ -321,8 +346,12 @@ export async function compareProduct(
   const scored: Scored[] = [];
 
   for (const c of deduped) {
+    const candidateListingKey = retailerListingIdentityKey(c.productUrl);
+
     traceLog("normalized_candidate", {
       store: c.store,
+      candidateUrl: c.productUrl,
+      candidateNormalizedId: candidateListingKey,
       titlePreview: c.title.slice(0, 120),
       normalized: {
         titleNorm: c.normalized.titleNorm,
@@ -335,38 +364,27 @@ export async function compareProduct(
       },
     });
 
-    if (sourceUrlKey && normalizeUrlKey(c.productUrl) === sourceUrlKey) {
+    if (
+      effectiveSourceUrl &&
+      areSameRetailerListings(effectiveSourceUrl, c.productUrl)
+    ) {
       candidateSteps.push({
         key: candidateKey(c, candidateSteps.length),
         store: c.store,
         title: c.title,
         price: c.price,
         productUrl: c.productUrl,
-        outcome: "skipped_duplicate_source_url",
-        detail: "same_canonical_url_as_source",
+        outcome: "skipped_same_source_item",
+        detail: `same_listing_as_source(sourceId=${sourceListingKey},candidateId=${candidateListingKey})`,
       });
-      traceLog("candidate_rejected", {
-        store: c.store,
-        title: c.title.slice(0, 80),
-        reason: "duplicate_source_listing",
-      });
-      continue;
-    }
-
-    if (excludeSourceStore && c.store === sourceStore) {
-      candidateSteps.push({
-        key: candidateKey(c, candidateSteps.length),
-        store: c.store,
-        title: c.title,
-        price: c.price,
-        productUrl: c.productUrl,
-        outcome: "evaluated",
-        detail: `skipped_cross_store_rules(same_as_source=${sourceStore})`,
-      });
-      traceLog("candidate_rejected", {
-        store: c.store,
-        title: c.title.slice(0, 80),
-        reason: `cross_store_compare_excludes_source_store(${sourceStore})`,
+      traceLog("candidate_rejected_same_as_source", {
+        sourceStore: effectiveSourceStore,
+        sourceUrl: effectiveSourceUrl,
+        sourceNormalizedId: sourceListingKey,
+        candidateStore: c.store,
+        candidateUrl: c.productUrl,
+        candidateNormalizedId: candidateListingKey,
+        reason: "same_listing_identity_as_source",
       });
       continue;
     }
@@ -383,6 +401,8 @@ export async function compareProduct(
 
     traceLog("candidate_match_score", {
       store: c.store,
+      candidateUrl: c.productUrl,
+      candidateNormalizedId: candidateListingKey,
       title: c.title.slice(0, 100),
       price: c.price,
       matchConfidence: ev.matchConfidence,
@@ -441,19 +461,27 @@ export async function compareProduct(
   const primaryPool = scored.filter((s) => s.primaryComparable);
   const alternativePool = scored.filter((s) => s.alternativeComparable);
 
+  /** Prefer another retailer; if none qualify, allow same-store listings that are not the source item. */
   const pickCrossStorePool = (pool: Scored[]): Scored[] => {
     if (pool.length === 0) return [];
-    if (!excludeSourceStore) return pool;
-    const other = pool.filter((s) => s.candidate.store !== sourceStore);
-    return other.length > 0 ? other : [];
+    if (!effectiveSourceStore || effectiveSourceStore === "unknown") return pool;
+    const other = pool.filter((s) => s.candidate.store !== effectiveSourceStore);
+    return other.length > 0 ? other : pool;
   };
 
-  let chosenPool = pickCrossStorePool(primaryPool);
+  const stripSelfListings = (pool: Scored[]): Scored[] => {
+    if (!effectiveSourceUrl) return pool;
+    return pool.filter(
+      (s) => !areSameRetailerListings(effectiveSourceUrl, s.candidate.productUrl)
+    );
+  };
+
+  let chosenPool = stripSelfListings(pickCrossStorePool(primaryPool));
   let pickedAsClosestSimilar = false;
   let pickKind: "primary" | "alternative" | "rescue" = "primary";
 
   if (chosenPool.length === 0) {
-    chosenPool = pickCrossStorePool(alternativePool);
+    chosenPool = stripSelfListings(pickCrossStorePool(alternativePool));
     pickedAsClosestSimilar = chosenPool.length > 0;
     pickKind = "alternative";
   }
@@ -462,7 +490,7 @@ export async function compareProduct(
     const rescuePool = scored.filter(
       (s) => !s.rejected && s.score >= FALLBACK_MIN_SCORE
     );
-    chosenPool = pickCrossStorePool(rescuePool);
+    chosenPool = stripSelfListings(pickCrossStorePool(rescuePool));
     pickedAsClosestSimilar = chosenPool.length > 0;
     pickKind = "rescue";
     traceLog("rescue_pool_applied", {
@@ -532,7 +560,10 @@ export async function compareProduct(
       : undefined;
 
     return {
-      sourceProduct: sourceSummaryForApi(sourceProduct, searchBase),
+      sourceProduct: sourceSummaryForApi(sourceProduct, searchBase, {
+        effectiveStore: effectiveSourceStore,
+        effectiveSourceUrl,
+      }),
       bestDeal: null,
       alternatives: [],
       savings: null,
@@ -555,9 +586,16 @@ export async function compareProduct(
     bestDeal: {
       store: winner.candidate.store,
       price: winner.candidate.price,
+      productUrl: winner.candidate.productUrl,
+      candidateNormalizedId: retailerListingIdentityKey(winner.candidate.productUrl),
       matchConfidence: winner.matchConfidence,
       score: winner.score,
       pickKind,
+    },
+    sourceReference: {
+      sourceStore: effectiveSourceStore,
+      sourceUrl: effectiveSourceUrl ?? null,
+      sourceNormalizedId: sourceListingKey,
     },
     alternativeCount: rest.length,
     closestSimilarOnly: pickedAsClosestSimilar,
@@ -618,7 +656,10 @@ export async function compareProduct(
     : undefined;
 
   return {
-    sourceProduct: sourceSummaryForApi(sourceProduct, searchBase),
+    sourceProduct: sourceSummaryForApi(sourceProduct, searchBase, {
+      effectiveStore: effectiveSourceStore,
+      effectiveSourceUrl,
+    }),
     bestDeal,
     alternatives,
     savings: computeSavings(

@@ -90,7 +90,7 @@ export const amazonProvider: ProductProvider = {
   id: STORE,
 
   canHandleProductUrl(url: string): boolean {
-    return /amazon\.com|a\.co/i.test(url);
+    return /\bamazon\.[a-z.]{2,}\b|\/\/a\.co\/|\/\/amzn\.to\//i.test(url);
   },
 
   async extractSourceProduct(url: string): Promise<SourceProduct | null> {

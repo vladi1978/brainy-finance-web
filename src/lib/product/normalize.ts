@@ -1,4 +1,4 @@
-import type { NormalizedProduct, ProductCategory } from "./types";
+import type { NormalizedProduct, ProductCategory, StoreId } from "./types";
 
 const STOPWORDS = new Set([
   "the",
@@ -191,4 +191,119 @@ export function extractSearchQuery(input: string): string {
   }
 
   return cleaned;
+}
+
+/**
+ * Detect retailer from a product URL (used when scrape/extract did not set `SourceProduct`).
+ */
+export function detectStoreFromProductUrl(raw: string): StoreId | null {
+  const t = raw.trim();
+  if (!/^https?:\/\//i.test(t)) return null;
+  if (/\bamazon\.[a-z.]{2,}\b|\/\/a\.co\/|\/\/amzn\.to\//i.test(t)) return "amazon";
+  if (/walmart\.com/i.test(t)) return "walmart";
+  if (/target\.com/i.test(t)) return "target";
+  if (/temu\.com/i.test(t)) return "temu";
+  return null;
+}
+
+/** Amazon ASIN — matches `/dp/`, `/gp/product/`, and slug-style `/dp/` paths. */
+export function extractAmazonAsinFromUrl(url: string): string | null {
+  const m = url.match(
+    /\/(?:dp|gp\/product|gp\/aw\/d|exec\/obidos\/asin|o\/ASIN|d)\/([A-Z0-9]{10})\b/i
+  );
+  return m ? m[1]!.toUpperCase() : null;
+}
+
+/** Walmart numeric item id (last path segment under `/ip/` when it is 6+ digits). */
+export function extractWalmartItemIdFromUrl(url: string): string | null {
+  try {
+    const u = new URL(url);
+    if (!/walmart\.com$/i.test(u.hostname.replace(/^www\./, ""))) return null;
+    const parts = u.pathname.split("/").filter(Boolean);
+    const ip = parts.indexOf("ip");
+    if (ip === -1) return null;
+    const after = parts.slice(ip + 1);
+    for (let i = after.length - 1; i >= 0; i--) {
+      const seg = after[i]!;
+      if (/^\d{6,}$/.test(seg)) return seg;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+/** Target TCIN from `/A-12345678` style paths. */
+export function extractTargetTcinFromUrl(url: string): string | null {
+  const m = url.match(/\/A-(\d{6,12})\b/i);
+  return m ? m[1]! : null;
+}
+
+/** Temu: best-effort product key from `-g-<id>` or last `.html` slug segment. */
+export function extractTemuListingKeyFromUrl(url: string): string | null {
+  try {
+    const u = new URL(url);
+    if (!/temu\.com$/i.test(u.hostname.replace(/^www\./, ""))) return null;
+    const g = url.match(/-g-(\d{4,20})\b/i);
+    if (g?.[1]) return `g-${g[1]}`;
+    const parts = u.pathname.split("/").filter(Boolean);
+    const last = parts[parts.length - 1];
+    if (last && /\.html$/i.test(last)) {
+      return last.replace(/\.html$/i, "").toLowerCase().slice(0, 120);
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function fallbackUrlIdentityKey(url: string): string {
+  try {
+    const u = new URL(url.trim());
+    const host = u.hostname.replace(/^www\./i, "").toLowerCase();
+    const path = u.pathname.replace(/\/+$/, "").toLowerCase() || "/";
+    return `${host}${path}`;
+  } catch {
+    return url.split("?")[0].split("#")[0].toLowerCase().trim();
+  }
+}
+
+/**
+ * Stable identity for “same listing” checks across canonical vs pretty URLs
+ * (e.g. Amazon `/title/dp/ASIN` vs `/dp/ASIN`).
+ */
+export function retailerListingIdentityKey(url: string): string {
+  const trimmed = url.trim();
+  if (!trimmed) return "";
+
+  const noFrag = trimmed.split("#")[0] ?? trimmed;
+  const noQuery = noFrag.split("?")[0] ?? noFrag;
+
+  if (/\bamazon\.[a-z.]{2,}\b|a\.co|amzn\.to/i.test(trimmed)) {
+    const asin = extractAmazonAsinFromUrl(noQuery);
+    if (asin) return `amazon:asin:${asin}`;
+  }
+
+  if (/walmart\.com/i.test(noQuery)) {
+    const wid = extractWalmartItemIdFromUrl(trimmed);
+    if (wid) return `walmart:id:${wid}`;
+  }
+
+  if (/target\.com/i.test(noQuery)) {
+    const tc = extractTargetTcinFromUrl(noQuery);
+    if (tc) return `target:tcin:${tc}`;
+  }
+
+  if (/temu\.com/i.test(noQuery)) {
+    const tk = extractTemuListingKeyFromUrl(trimmed);
+    if (tk) return `temu:${tk}`;
+  }
+
+  return `url:${fallbackUrlIdentityKey(trimmed)}`;
+}
+
+export function areSameRetailerListings(urlA: string, urlB: string): boolean {
+  const a = retailerListingIdentityKey(urlA);
+  const b = retailerListingIdentityKey(urlB);
+  return a.length > 0 && a === b;
 }

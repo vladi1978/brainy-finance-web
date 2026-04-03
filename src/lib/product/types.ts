@@ -114,7 +114,8 @@ export type CandidateStepTrace = {
   outcome:
     | "evaluated"
     | "rejected_hard_gate"
-    | "skipped_duplicate_source_url";
+    | "skipped_duplicate_source_url"
+    | "skipped_same_source_item";
   matchConfidence?: MatchConfidenceLabel | "none";
   matchScore?: number;
   matchReasons?: string[];
