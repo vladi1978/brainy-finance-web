@@ -1,9 +1,11 @@
 import {
   ProductProvider,
   ProviderSearchInput,
+  ExtractedSourceProduct,
 } from "./base";
 import { ProductSearchResult } from "./search-result";
 import { scrapeProduct } from "../scrapeProduct";
+import { fetchParsedAmazonSearch } from "../searchParse";
 
 function normalizeText(value: string): string {
   return value
@@ -22,19 +24,46 @@ function titleFromAmazonUrl(input: string): string {
       return m[1].replace(/-/g, " ").trim();
     }
   }
-  return "Amazon product";
+  return "";
 }
 
-function inferAmazonPrice(query: string): number {
-  const lower = query.toLowerCase();
+function candidateToSearchResult(
+  c: {
+    title: string;
+    price: number | null;
+    currency: string;
+    productUrl: string;
+  },
+  normalizedQuery: string
+): ProductSearchResult {
+  const normalizedTitle = normalizeText(c.title);
+  const qWords = normalizedQuery.split(/\s+/).filter((w) => w.length >= 3);
+  let matchWords = 0;
+  for (const w of qWords) {
+    if (normalizedTitle.includes(w)) matchWords += 1;
+  }
+  const matchConfidence =
+    qWords.length > 0
+      ? Math.min(0.98, 0.45 + (matchWords / qWords.length) * 0.5)
+      : 0.65;
 
-  if (lower.includes("socks")) return 14;
-  if (lower.includes("nike") && lower.includes("air")) return 55;
-  if (lower.includes("samsung") && lower.includes("qn90")) return 849;
-  if (lower.includes("tv")) return 499;
-  if (lower.includes("shoes")) return 69;
-
-  return 79;
+  return {
+    store: "amazon",
+    title: c.title,
+    normalizedTitle,
+    price: c.price,
+    currency: c.currency,
+    productUrl: c.productUrl,
+    affiliateUrl: c.productUrl,
+    image: null,
+    inStock: c.price != null,
+    sku: null,
+    brand: null,
+    model: null,
+    upc: null,
+    sourceConfidence: c.price != null ? 0.9 : 0.5,
+    matchConfidence,
+  };
 }
 
 export const amazonProvider: ProductProvider = {
@@ -44,12 +73,14 @@ export const amazonProvider: ProductProvider = {
     return /amazon\.com|a\.co/i.test(url);
   },
 
-  async extractFromUrl(url: string) {
+  async extractFromUrl(url: string): Promise<ExtractedSourceProduct | null> {
     const scraped = await scrapeProduct(url);
-    const title =
-      scraped?.productName?.trim() || titleFromAmazonUrl(url);
-    const originalPrice =
-      scraped?.price ?? inferAmazonPrice(title);
+    const urlTitle = titleFromAmazonUrl(url);
+    const title = scraped?.productName?.trim() || urlTitle;
+    if (!title) {
+      return null;
+    }
+    const originalPrice = scraped?.price ?? null;
     const currency = scraped?.currency ?? "USD";
 
     return {
@@ -67,34 +98,24 @@ export const amazonProvider: ProductProvider = {
     };
   },
 
-  async searchByQuery(input: ProviderSearchInput): Promise<ProductSearchResult[]> {
+  async searchByQuery(
+    input: ProviderSearchInput
+  ): Promise<ProductSearchResult[]> {
     const query =
       input.sourceProduct?.title ||
       input.normalizedQuery ||
       input.raw;
 
-    const normalizedTitle = normalizeText(query);
-    const price = inferAmazonPrice(query);
+    const normalizedQuery = normalizeText(query);
+    const candidates = await fetchParsedAmazonSearch(query, 12);
 
-    return [
-      {
-        store: "amazon",
-        title: query,
-        normalizedTitle,
-        price,
-        currency: "USD",
-        productUrl: `https://www.amazon.com/s?k=${encodeURIComponent(query)}`,
-        affiliateUrl: `https://www.amazon.com/s?k=${encodeURIComponent(query)}`,
-        image: null,
-        inStock: true,
-        sku: null,
-        brand: null,
-        model: null,
-        upc: null,
-        sourceConfidence: 0.9,
-        matchConfidence: 0.88,
-      },
-    ];
+    if (candidates.length === 0) {
+      return [];
+    }
+
+    return candidates.map((c) =>
+      candidateToSearchResult(c, input.normalizedQuery || normalizedQuery)
+    );
   },
 
   buildAffiliateUrl(productUrl: string): string {

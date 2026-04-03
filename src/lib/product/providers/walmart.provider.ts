@@ -1,102 +1,122 @@
 import {
-    ProductProvider,
-    ProviderSearchInput,
-    ExtractedSourceProduct,
-  } from "./base";
-  import { ProductSearchResult } from "./search-result";
-  import { scrapeProduct } from "../scrapeProduct";
-  
-  function normalizeText(value: string): string {
-    return value
-      .toLowerCase()
-      .replace(/[^\w\s]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
+  ProductProvider,
+  ProviderSearchInput,
+  ExtractedSourceProduct,
+} from "./base";
+import { ProductSearchResult } from "./search-result";
+import { scrapeProduct } from "../scrapeProduct";
+import { fetchParsedWalmartSearch } from "../searchParse";
+
+function normalizeText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function cleanWalmartTitleFromUrl(input: string): string {
+  return input
+    .replace(/^https?:\/\/(www\.)?walmart\.com\/ip\//i, "")
+    .replace(/\?.*$/, "")
+    .replace(/-/g, " ")
+    .replace(/\bip\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function candidateToSearchResult(
+  c: {
+    title: string;
+    price: number | null;
+    currency: string;
+    productUrl: string;
+  },
+  normalizedQuery: string
+): ProductSearchResult {
+  const normalizedTitle = normalizeText(c.title);
+  const qWords = normalizedQuery.split(/\s+/).filter((w) => w.length >= 3);
+  let matchWords = 0;
+  for (const w of qWords) {
+    if (normalizedTitle.includes(w)) matchWords += 1;
   }
-  
-  function cleanWalmartTitle(input: string): string {
-    return input
-      .replace(/^https?:\/\/(www\.)?walmart\.com\/ip\//i, "")
-      .replace(/\?.*$/, "")
-      .replace(/-/g, " ")
-      .replace(/\bip\b/gi, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-  
-  function inferWalmartPrice(query: string): number {
-    const lower = query.toLowerCase();
-  
-    if (lower.includes("socks")) return 17;
-    if (lower.includes("nike") && lower.includes("air")) return 60;
-    if (lower.includes("samsung") && lower.includes("qn90")) return 899;
-    if (lower.includes("tv")) return 529;
-    if (lower.includes("shoes")) return 74;
-  
-    return 89;
-  }
-  
-  export const walmartProvider: ProductProvider = {
+  const matchConfidence =
+    qWords.length > 0
+      ? Math.min(0.98, 0.45 + (matchWords / qWords.length) * 0.5)
+      : 0.65;
+
+  return {
     store: "walmart",
-  
-    canHandleUrl(url: string): boolean {
-      return /walmart\.com/i.test(url);
-    },
-  
-    async extractFromUrl(url: string): Promise<ExtractedSourceProduct | null> {
-      const scraped = await scrapeProduct(url);
-      const title =
-        scraped?.productName?.trim() || cleanWalmartTitle(url);
-      const originalPrice =
-        scraped?.price ?? inferWalmartPrice(title);
-      const currency = scraped?.currency ?? "USD";
-  
-      return {
-        sourceUrl: url,
-        store: "walmart",
-        title,
-        normalizedTitle: normalizeText(title),
-        originalPrice,
-        currency,
-        image: null,
-        sku: null,
-        brand: null,
-        model: null,
-        upc: null,
-      };
-    },
-  
-    async searchByQuery(input: ProviderSearchInput): Promise<ProductSearchResult[]> {
-      const query =
-        input.sourceProduct?.title ||
-        input.normalizedQuery ||
-        input.raw;
-  
-      const normalizedTitle = normalizeText(query);
-      const price = inferWalmartPrice(query);
-  
-      return [
-        {
-          store: "walmart",
-          title: query,
-          normalizedTitle,
-          price,
-          currency: "USD",
-          productUrl: `https://www.walmart.com/search?q=${encodeURIComponent(query)}`,
-          affiliateUrl: `https://www.walmart.com/search?q=${encodeURIComponent(query)}`,
-          image: null,
-          inStock: true,
-          sku: null,
-          brand: null,
-          model: null,
-          upc: null,
-          sourceConfidence: 0.92,
-          matchConfidence: 0.9,
-        },
-      ];
-    },
-  
-    buildAffiliateUrl(productUrl: string): string {
-      return productUrl;
-    },
+    title: c.title,
+    normalizedTitle,
+    price: c.price,
+    currency: c.currency,
+    productUrl: c.productUrl,
+    affiliateUrl: c.productUrl,
+    image: null,
+    inStock: c.price != null,
+    sku: null,
+    brand: null,
+    model: null,
+    upc: null,
+    sourceConfidence: c.price != null ? 0.88 : 0.45,
+    matchConfidence,
   };
+}
+
+export const walmartProvider: ProductProvider = {
+  store: "walmart",
+
+  canHandleUrl(url: string): boolean {
+    return /walmart\.com/i.test(url);
+  },
+
+  async extractFromUrl(url: string): Promise<ExtractedSourceProduct | null> {
+    const scraped = await scrapeProduct(url);
+    const title =
+      scraped?.productName?.trim() || cleanWalmartTitleFromUrl(url);
+    if (!title) {
+      return null;
+    }
+    const originalPrice = scraped?.price ?? null;
+    const currency = scraped?.currency ?? "USD";
+
+    return {
+      sourceUrl: url,
+      store: "walmart",
+      title,
+      normalizedTitle: normalizeText(title),
+      originalPrice,
+      currency,
+      image: null,
+      sku: null,
+      brand: null,
+      model: null,
+      upc: null,
+    };
+  },
+
+  async searchByQuery(
+    input: ProviderSearchInput
+  ): Promise<ProductSearchResult[]> {
+    const query =
+      input.sourceProduct?.title ||
+      input.normalizedQuery ||
+      input.raw;
+
+    const normalizedQuery = normalizeText(query);
+    const candidates = await fetchParsedWalmartSearch(query, 12);
+
+    if (candidates.length === 0) {
+      return [];
+    }
+
+    return candidates.map((c) =>
+      candidateToSearchResult(c, input.normalizedQuery || normalizedQuery)
+    );
+  },
+
+  buildAffiliateUrl(productUrl: string): string {
+    return productUrl;
+  },
+};

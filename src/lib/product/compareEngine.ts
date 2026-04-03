@@ -2,8 +2,6 @@ import { providerRegistry } from "./registry";
 import type { ExtractedSourceProduct } from "./providers/base";
 import type { ProductSearchResult } from "./providers/search-result";
 
-const DEMO_MODE = true;
-
 type CompareProductResponse = {
   sourceProduct: ExtractedSourceProduct | null;
   bestDeal: ProductSearchResult | null;
@@ -46,15 +44,6 @@ function extractImportantQuery(input: string): string {
   return cleaned;
 }
 
-function isSamsung55TvDemo(input: string): boolean {
-  const normalized = normalizeText(input);
-  return (
-    normalized.includes("samsung") &&
-    normalized.includes("55") &&
-    normalized.includes("tv")
-  );
-}
-
 function scoreResult(query: string, result: ProductSearchResult): number {
   const q = normalizeText(query);
   const r = normalizeText(result.title);
@@ -70,6 +59,54 @@ function scoreResult(query: string, result: ProductSearchResult): number {
   return score;
 }
 
+function isValidComparablePrice(price: number | null | undefined): boolean {
+  return price != null && Number.isFinite(price) && price > 0;
+}
+
+function sourceProductToSearchResult(
+  sp: ExtractedSourceProduct
+): ProductSearchResult | null {
+  if (!isValidComparablePrice(sp.originalPrice)) return null;
+  if (sp.store !== "amazon" && sp.store !== "walmart") return null;
+
+  return {
+    store: sp.store,
+    title: sp.title,
+    normalizedTitle: sp.normalizedTitle,
+    price: sp.originalPrice,
+    currency: sp.currency,
+    productUrl: sp.sourceUrl,
+    affiliateUrl: sp.sourceUrl,
+    sourceUrl: sp.sourceUrl,
+    image: sp.image ?? null,
+    inStock: true,
+    sku: sp.sku ?? null,
+    brand: sp.brand ?? null,
+    model: sp.model ?? null,
+    upc: sp.upc ?? null,
+    sourceConfidence: 0.95,
+    matchConfidence: 1,
+  };
+}
+
+function dedupeByStoreAndUrl(
+  items: ProductSearchResult[]
+): ProductSearchResult[] {
+  const map = new Map<string, ProductSearchResult>();
+  for (const item of items) {
+    const key = `${item.store}|${item.productUrl.split("?")[0].toLowerCase()}`;
+    const prev = map.get(key);
+    if (
+      !prev ||
+      (item.price ?? Number.POSITIVE_INFINITY) <
+        (prev.price ?? Number.POSITIVE_INFINITY)
+    ) {
+      map.set(key, item);
+    }
+  }
+  return [...map.values()];
+}
+
 export async function compareProduct(
   rawInput: string
 ): Promise<CompareProductResponse> {
@@ -77,43 +114,6 @@ export async function compareProduct(
 
   if (!input) {
     throw new Error("Missing product input");
-  }
-
-  if (DEMO_MODE && isSamsung55TvDemo(input)) {
-    const demoNormalizedTitle = "samsung 55 inch tv";
-    const demoAmazonUrl = "demo://amazon-samsung-tv";
-
-    const demoSourceProduct: ExtractedSourceProduct = {
-      sourceUrl: "demo://walmart-samsung-tv",
-      store: "walmart",
-      title: "Samsung 55-inch TV",
-      normalizedTitle: demoNormalizedTitle,
-      originalPrice: 599,
-      currency: "USD",
-      image: null,
-    };
-
-    const demoBestDeal: ProductSearchResult = {
-      store: "amazon",
-      title: "Samsung 55-inch TV",
-      normalizedTitle: demoNormalizedTitle,
-      price: 549,
-      currency: "USD",
-      productUrl: demoAmazonUrl,
-      sourceUrl: demoAmazonUrl,
-      affiliateUrl:
-        "https://brainyfinance.app/deal?query=Samsung%2055-inch%20TV&ref=demo",
-      image: null,
-      inStock: true,
-      sourceConfidence: 0.99,
-      matchConfidence: 0.99,
-    };
-
-    return {
-      sourceProduct: demoSourceProduct,
-      bestDeal: demoBestDeal,
-      alternatives: [demoBestDeal],
-    };
   }
 
   const sourceProvider =
@@ -156,17 +156,36 @@ export async function compareProduct(
     }))
     .filter(
       (item) =>
-        item.score >= 2 ||
-        item.result.store === detectedStore
+        item.score >= 1 ||
+        item.result.store === detectedStore ||
+        isValidComparablePrice(item.result.price)
     )
     .sort((a, b) => {
-      const aPrice = a.result.price ?? Number.MAX_SAFE_INTEGER;
-      const bPrice = b.result.price ?? Number.MAX_SAFE_INTEGER;
-      return aPrice - bPrice;
+      const ap = a.result.price ?? Number.MAX_SAFE_INTEGER;
+      const bp = b.result.price ?? Number.MAX_SAFE_INTEGER;
+      if (ap !== bp) return ap - bp;
+      return b.score - a.score;
     })
     .map((item) => item.result);
 
-  const bestDeal = ranked.length > 0 ? ranked[0] : null;
+  const sourceAsResult = sourceProduct
+    ? sourceProductToSearchResult(sourceProduct)
+    : null;
+
+  const searchPriced = ranked.filter((r) => isValidComparablePrice(r.price));
+
+  const comparisonPool = dedupeByStoreAndUrl([
+    ...(sourceAsResult ? [sourceAsResult] : []),
+    ...searchPriced,
+  ]);
+
+  let bestDeal: ProductSearchResult | null = null;
+  if (comparisonPool.length >= 2) {
+    const sorted = [...comparisonPool].sort(
+      (a, b) => (a.price ?? Infinity) - (b.price ?? Infinity)
+    );
+    bestDeal = sorted[0] ?? null;
+  }
 
   return {
     sourceProduct,
