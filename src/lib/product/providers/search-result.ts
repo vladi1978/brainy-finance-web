@@ -19,4 +19,6 @@ export type ProductSearchResult = {
   upc?: string | null;
   sourceConfidence: number;
   matchConfidence: number;
+  /** Set by compare engine; not shown in dashboard UI */
+  matchType?: "exact" | "strong" | "weak" | "none";
 };
