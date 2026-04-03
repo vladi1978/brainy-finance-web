@@ -1,5 +1,5 @@
 import { scrapeProduct } from "../scrapeProduct";
-import { fetchWalmartSerpWithDiagnostics } from "../searchParse";
+import { fetchTargetSerpWithDiagnostics } from "../searchParse";
 import { buildNormalizedProduct, normalizeTitle } from "../normalize";
 import type {
   CandidateProduct,
@@ -11,7 +11,7 @@ import type {
   StoreId,
 } from "../types";
 
-const STORE: StoreId = "walmart";
+const STORE: StoreId = "target";
 
 function toDiagnostics(
   query: string,
@@ -28,14 +28,16 @@ function toDiagnostics(
   };
 }
 
-function cleanWalmartTitleFromUrl(input: string): string {
-  return input
-    .replace(/^https?:\/\/(www\.)?walmart\.com\/ip\//i, "")
-    .replace(/\?.*$/, "")
-    .replace(/-/g, " ")
-    .replace(/\bip\b/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+function titleFromTargetUrl(input: string): string {
+  const m = input.match(/target\.com\/p\/[^/]+\/-\/A-(\d+)/i);
+  if (m?.[0]) {
+    return input
+      .replace(/^https?:\/\/[^/]+\/p\//i, "")
+      .replace(/\/-\/A-\d+.*$/i, "")
+      .replace(/-/g, " ")
+      .trim();
+  }
+  return "";
 }
 
 function rowToCandidate(
@@ -65,17 +67,17 @@ function rowToCandidate(
   };
 }
 
-export const walmartProvider: ProductProvider = {
+export const targetProvider: ProductProvider = {
   id: STORE,
 
   canHandleProductUrl(url: string): boolean {
-    return /walmart\.com/i.test(url);
+    return /target\.com/i.test(url);
   },
 
   async extractSourceProduct(url: string): Promise<SourceProduct | null> {
     const scraped = await scrapeProduct(url);
-    const title =
-      scraped?.productName?.trim() || cleanWalmartTitleFromUrl(url);
+    const urlTitle = titleFromTargetUrl(url);
+    const title = scraped?.productName?.trim() || urlTitle;
     if (!title) return null;
 
     return {
@@ -93,7 +95,7 @@ export const walmartProvider: ProductProvider = {
       ctx.sourceProduct?.title || ctx.searchQuery || ctx.rawInput;
     const normalizedQuery = normalizeTitle(query);
     const effectiveQuery = ctx.searchQuery || normalizedQuery;
-    const { candidates, diagnostics } = await fetchWalmartSerpWithDiagnostics(
+    const { candidates, diagnostics } = await fetchTargetSerpWithDiagnostics(
       query,
       12
     );

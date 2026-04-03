@@ -1,9 +1,32 @@
 import { scrapeProduct } from "../scrapeProduct";
 import { fetchAmazonSerpWithDiagnostics } from "../searchParse";
 import { buildNormalizedProduct, normalizeTitle } from "../normalize";
-import type { CandidateProduct, ProviderSearchContext, SourceProduct, StoreId } from "../types";
+import type {
+  CandidateProduct,
+  ProductProvider,
+  ProviderResult,
+  ProviderSearchContext,
+  ProviderSearchDiagnostics,
+  SourceProduct,
+  StoreId,
+} from "../types";
 
 const STORE: StoreId = "amazon";
+
+function toDiagnostics(
+  query: string,
+  d: import("../searchParse").StoreSerpDiagnostics
+): ProviderSearchDiagnostics {
+  return {
+    store: d.store,
+    query,
+    fetchOk: d.fetchOk,
+    httpStatus: d.httpStatus,
+    byteLength: d.byteLength,
+    candidateCount: d.candidateCount,
+    hints: d.hints,
+  };
+}
 
 function titleFromAmazonUrl(input: string): string {
   const m = input.match(/amazon\.[^/]+\/([^/]+)\/dp\/[A-Z0-9]{9,14}/i);
@@ -44,7 +67,7 @@ function rowToCandidate(
   };
 }
 
-export const amazonProvider = {
+export const amazonProvider: ProductProvider = {
   id: STORE,
 
   canHandleProductUrl(url: string): boolean {
@@ -67,13 +90,20 @@ export const amazonProvider = {
     };
   },
 
-  async searchCandidates(ctx: ProviderSearchContext): Promise<CandidateProduct[]> {
+  async searchCandidates(ctx: ProviderSearchContext): Promise<ProviderResult> {
     const query =
       ctx.sourceProduct?.title || ctx.searchQuery || ctx.rawInput;
     const normalizedQuery = normalizeTitle(query);
-    const { candidates } = await fetchAmazonSerpWithDiagnostics(query, 12);
+    const effectiveQuery = ctx.searchQuery || normalizedQuery;
+    const { candidates, diagnostics } = await fetchAmazonSerpWithDiagnostics(
+      query,
+      12
+    );
 
-    return candidates.map((c) => rowToCandidate(c, ctx.searchQuery || normalizedQuery));
+    return {
+      candidates: candidates.map((c) => rowToCandidate(c, effectiveQuery)),
+      diagnostics: toDiagnostics(effectiveQuery, diagnostics),
+    };
   },
 
   toAffiliateUrl(productUrl: string): string {

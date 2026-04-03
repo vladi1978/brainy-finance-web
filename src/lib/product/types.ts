@@ -1,9 +1,10 @@
 /**
  * Shared types for the product comparison pipeline:
- * source → normalized source → provider candidates → scored matches → API result.
+ * source → normalized source → provider search → candidate normalization → match scoring → API result.
  */
 
-export type StoreId = "amazon" | "walmart";
+/** Registered retailers — extend as you add provider modules. */
+export type StoreId = "amazon" | "walmart" | "target" | "temu";
 
 export type ProductCategory =
   | "tv"
@@ -66,6 +67,30 @@ export type ProviderSearchContext = {
   sourceProduct: SourceProduct | null;
 };
 
+/** One provider’s search outcome — candidates plus fetch/parse diagnostics. */
+export type ProviderSearchDiagnostics = {
+  store: StoreId;
+  query: string;
+  fetchOk: boolean;
+  httpStatus: number | null;
+  byteLength: number;
+  candidateCount: number;
+  hints: string[];
+};
+
+export type ProviderResult = {
+  candidates: CandidateProduct[];
+  diagnostics: ProviderSearchDiagnostics;
+};
+
+export type ProductProvider = {
+  id: StoreId;
+  canHandleProductUrl(url: string): boolean;
+  extractSourceProduct(url: string): Promise<SourceProduct | null>;
+  searchCandidates(ctx: ProviderSearchContext): Promise<ProviderResult>;
+  toAffiliateUrl(productUrl: string): string;
+};
+
 export type CompareProductOptions = {
   /** When true, attaches `comparisonTrace` and enables verbose console logs */
   debug?: boolean;
@@ -77,7 +102,10 @@ export type CandidateStepTrace = {
   title: string;
   price: number | null;
   productUrl: string;
-  outcome: "evaluated" | "rejected_hard_gate" | "skipped_duplicate_source_url";
+  outcome:
+    | "evaluated"
+    | "rejected_hard_gate"
+    | "skipped_duplicate_source_url";
   matchTier?: MatchTier;
   matchScore?: number;
   matchReasons?: string[];
@@ -104,6 +132,7 @@ export type ComparisonTrace = {
   };
   providerQueries: { store: string; query: string }[];
   candidatesPerProvider: { store: string; count: number }[];
+  providerDiagnostics: ProviderSearchDiagnostics[];
   candidateSteps: CandidateStepTrace[];
   selection: SelectionTrace;
 };

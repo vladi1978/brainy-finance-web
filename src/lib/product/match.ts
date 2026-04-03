@@ -77,7 +77,7 @@ export function checkTvSizeGate(
   if (diff <= TV_SIZE_TOLERANCE_INCH) return { ok: true };
   return {
     ok: false,
-    reason: `tv_size_mismatch(source=${source.sizeInches}",candidate=${candidate.sizeInches}")`,
+    reason: `tv_size_mismatch(source=${source.sizeInches},candidate=${candidate.sizeInches})`,
   };
 }
 

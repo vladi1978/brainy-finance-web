@@ -1,8 +1,8 @@
 /**
- * Back-compat re-exports — new implementation lives in `./engine`.
+ * Back-compat re-exports — implementation lives in `./engine`.
  */
 
-export { compareProduct, isCompareDemoMode } from "./engine";
+export { compareProduct, DEMO_MODE, isCompareDemoMode } from "./engine";
 export type { CompareProductOptions } from "./types";
 export type {
   CompareProductResponse,

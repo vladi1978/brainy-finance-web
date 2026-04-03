@@ -229,7 +229,7 @@ export async function fetchParsedWalmartSearch(
 
 /** Structured SERP fetch outcome for logs and scaling. */
 export type StoreSerpDiagnostics = {
-  store: "amazon" | "walmart";
+  store: "amazon" | "walmart" | "target" | "temu";
   url: string;
   fetchOk: boolean;
   httpStatus: number | null;
@@ -358,6 +358,123 @@ export async function fetchWalmartSerpWithDiagnostics(
     byteLength,
     candidateCount: candidates.length,
     hints: walmartSerpHints(html, candidates.length),
+  };
+  return { candidates, diagnostics };
+}
+
+function targetSerpHints(
+  html: string | null,
+  candidateCount: number
+): string[] {
+  const hints: string[] = ["serp_parser_not_implemented"];
+  if (html == null) {
+    hints.push("fetch_returned_no_html");
+    return hints;
+  }
+  if (candidateCount === 0 && html.length > 4000) {
+    hints.push("zero_candidates_despite_large_html");
+  }
+  return hints;
+}
+
+function temuSerpHints(
+  html: string | null,
+  candidateCount: number
+): string[] {
+  const hints: string[] = ["serp_parser_not_implemented"];
+  if (html == null) {
+    hints.push("fetch_returned_no_html");
+    return hints;
+  }
+  if (candidateCount === 0 && html.length > 4000) {
+    hints.push("zero_candidates_despite_large_html");
+  }
+  return hints;
+}
+
+/**
+ * Target SERP — placeholder until HTML parsing is production-ready.
+ * Fetches search HTML for diagnostics; returns no candidates yet.
+ */
+export async function fetchTargetSerpWithDiagnostics(
+  query: string,
+  limit = 12
+): Promise<{
+  candidates: ParsedSearchCandidate[];
+  diagnostics: StoreSerpDiagnostics;
+}> {
+  const q = query.trim();
+  const url = `https://www.target.com/s?searchTerm=${encodeURIComponent(q)}`;
+  if (!q) {
+    return {
+      candidates: [],
+      diagnostics: {
+        store: "target",
+        url,
+        fetchOk: false,
+        httpStatus: null,
+        byteLength: 0,
+        candidateCount: 0,
+        hints: ["empty_query"],
+      },
+    };
+  }
+
+  const { html, httpStatus, byteLength } =
+    await fetchSearchPageHtmlDetailed(url);
+  const candidates: ParsedSearchCandidate[] = [];
+  void limit;
+  const diagnostics: StoreSerpDiagnostics = {
+    store: "target",
+    url,
+    fetchOk: html != null && html.length > 0,
+    httpStatus,
+    byteLength,
+    candidateCount: candidates.length,
+    hints: targetSerpHints(html, candidates.length),
+  };
+  return { candidates, diagnostics };
+}
+
+/**
+ * Temu SERP — placeholder until HTML parsing is production-ready.
+ */
+export async function fetchTemuSerpWithDiagnostics(
+  query: string,
+  limit = 12
+): Promise<{
+  candidates: ParsedSearchCandidate[];
+  diagnostics: StoreSerpDiagnostics;
+}> {
+  const q = query.trim();
+  const url = `https://www.temu.com/search_result.html?search_key=${encodeURIComponent(q)}`;
+  if (!q) {
+    return {
+      candidates: [],
+      diagnostics: {
+        store: "temu",
+        url,
+        fetchOk: false,
+        httpStatus: null,
+        byteLength: 0,
+        candidateCount: 0,
+        hints: ["empty_query"],
+      },
+    };
+  }
+
+  const { html, httpStatus, byteLength } =
+    await fetchSearchPageHtmlDetailed(url);
+  const candidates: ParsedSearchCandidate[] = [];
+  void limit;
+  const diagnostics: StoreSerpDiagnostics = {
+    store: "temu",
+    url,
+    fetchOk: html != null && html.length > 0,
+    httpStatus,
+    byteLength,
+    candidateCount: candidates.length,
+    hints: temuSerpHints(html, candidates.length),
   };
   return { candidates, diagnostics };
 }

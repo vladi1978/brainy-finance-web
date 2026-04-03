@@ -2,22 +2,30 @@ import { evaluateCandidate, isTrustworthyTier } from "./match";
 import { buildNormalizedProduct, extractSearchQuery } from "./normalize";
 import { productProviderRegistry } from "./registry";
 import type {
+  CandidateProduct,
   CandidateStepTrace,
   CompareProductOptions,
   CompareProductResponse,
   ComparisonTrace,
-  CandidateProduct,
   NormalizedProduct,
+  ProviderSearchDiagnostics,
   SelectionTrace,
   SourceProduct,
+  StoreId,
 } from "./types";
 
-/** Server-only: set `PRODUCT_COMPARE_DEMO_MODE=true` to run deterministic pipeline without SERP. */
+/**
+ * Engine-only demo flag: deterministic multi-store pipeline without live SERP.
+ * Set `PRODUCT_COMPARE_DEMO_MODE=true` in the server environment.
+ */
+export const DEMO_MODE = process.env.PRODUCT_COMPARE_DEMO_MODE === "true";
+
 export function isCompareDemoMode(): boolean {
-  return process.env.PRODUCT_COMPARE_DEMO_MODE === "true";
+  return DEMO_MODE;
 }
 
-const MIN_TRUSTWORTHY_COMPARABLES = 2;
+/** Need at least one trustworthy comparable (cross-store rules still apply). */
+const MIN_TRUSTWORTHY_COMPARABLES = 1;
 
 function isValidComparablePrice(price: number | null | undefined): boolean {
   return price != null && Number.isFinite(price) && price > 0;
@@ -55,13 +63,21 @@ function sourceSummaryForApi(
   };
 }
 
+const DEMO_PRICE_BY_STORE: Record<StoreId, number> = {
+  amazon: 129.99,
+  walmart: 119.0,
+  target: 124.49,
+  temu: 109.0,
+};
+
 /**
- * Deterministic demo data — only used when `PRODUCT_COMPARE_DEMO_MODE` is true.
- * Keeps listings obviously synthetic (no fake “real” URLs).
+ * Deterministic demo listings — only when `DEMO_MODE` is true.
+ * URLs are clearly synthetic (no fake “real” PDPs).
  */
 function buildDemoCandidates(
   normalizedSource: NormalizedProduct,
-  searchQuery: string
+  searchQuery: string,
+  stores: readonly StoreId[]
 ): CandidateProduct[] {
   const base =
     normalizedSource.titleNorm.slice(0, 80) ||
@@ -70,28 +86,16 @@ function buildDemoCandidates(
   const slug = base.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
   const sharedNorm: NormalizedProduct = { ...normalizedSource };
 
-  return [
-    {
-      store: "amazon",
-      title: `${base} (Amazon demo)`,
-      price: 129.99,
-      currency: "USD",
-      productUrl: `https://amazon.com/dp/DEMO${slug.slice(0, 6)}`,
-      affiliateUrl: `https://amazon.com/dp/DEMO${slug.slice(0, 6)}`,
-      normalized: { ...sharedNorm },
-      sourceConfidence: 0.95,
-    },
-    {
-      store: "walmart",
-      title: `${base} (Walmart demo)`,
-      price: 119.0,
-      currency: "USD",
-      productUrl: `https://walmart.com/ip/demo-${slug.slice(0, 8)}`,
-      affiliateUrl: `https://walmart.com/ip/demo-${slug.slice(0, 8)}`,
-      normalized: { ...sharedNorm },
-      sourceConfidence: 0.93,
-    },
-  ];
+  return stores.map((store) => ({
+    store,
+    title: `${base} (${store} demo)`,
+    price: DEMO_PRICE_BY_STORE[store],
+    currency: "USD",
+    productUrl: `https://${store}.example.com/p/DEMO-${slug.slice(0, 8)}`,
+    affiliateUrl: `https://${store}.example.com/p/DEMO-${slug.slice(0, 8)}`,
+    normalized: { ...sharedNorm },
+    sourceConfidence: 0.94,
+  }));
 }
 
 function dedupeByStoreAndUrl(items: CandidateProduct[]): CandidateProduct[] {
@@ -114,6 +118,21 @@ function candidateKey(c: CandidateProduct, index: number): string {
   return `${c.store}:${index}:${c.productUrl.slice(-14)}`;
 }
 
+function emptyDiagnostics(
+  store: StoreId,
+  query: string
+): ProviderSearchDiagnostics {
+  return {
+    store,
+    query,
+    fetchOk: false,
+    httpStatus: null,
+    byteLength: 0,
+    candidateCount: 0,
+    hints: ["skipped_during_demo_mode"],
+  };
+}
+
 export async function compareProduct(
   rawInput: string,
   options: CompareProductOptions = {}
@@ -124,7 +143,7 @@ export async function compareProduct(
   }
 
   const debug = Boolean(options.debug);
-  const demoMode = isCompareDemoMode();
+  const demoMode = DEMO_MODE;
 
   const traceLog = (...args: unknown[]) => {
     if (debug) console.log("[compare-product]", ...args);
@@ -145,14 +164,16 @@ export async function compareProduct(
   if (providerForUrl) {
     detectedStore = providerForUrl.id;
     sourceProduct = await providerForUrl.extractSourceProduct(input);
-    traceLog("source_extracted", {
+    traceLog("source_product_extracted", {
       ok: Boolean(sourceProduct),
       store: detectedStore,
       title: sourceProduct?.title ?? null,
       originalPrice: sourceProduct?.originalPrice ?? null,
+      currency: sourceProduct?.currency ?? null,
+      sourceUrl: sourceProduct?.sourceUrl ?? null,
     });
   } else {
-    traceLog("source_extracted", {
+    traceLog("source_product_extracted", {
       ok: false,
       note: "plain_text_or_unsupported_url",
     });
@@ -179,12 +200,22 @@ export async function compareProduct(
 
   let allCandidates: CandidateProduct[] = [];
   const candidatesPerProvider: { store: string; count: number }[] = [];
+  let providerDiagnostics: ProviderSearchDiagnostics[] = [];
+
+  const registeredStores = productProviderRegistry.map((p) => p.id);
 
   if (demoMode) {
     traceLog("demo_mode_active", {
-      note: "skipping_live_serp_fetch",
+      note: "skipping_live_serp_fetch_using_synthetic_listings",
     });
-    allCandidates = buildDemoCandidates(normalizedSource, searchQuery);
+    allCandidates = buildDemoCandidates(
+      normalizedSource,
+      searchQuery,
+      registeredStores
+    );
+    providerDiagnostics = registeredStores.map((store) =>
+      emptyDiagnostics(store, searchQuery)
+    );
     for (const p of productProviderRegistry) {
       const n = allCandidates.filter((c) => c.store === p.id).length;
       candidatesPerProvider.push({ store: p.id, count: n });
@@ -193,24 +224,42 @@ export async function compareProduct(
   } else {
     const outcomes = await Promise.all(
       productProviderRegistry.map(async (p) => {
-        const list = await p.searchCandidates({
+        const result = await p.searchCandidates({
           rawInput: input,
           searchQuery,
           sourceProduct,
         });
-        return { store: p.id, list };
+        return { store: p.id, result };
       })
     );
 
     for (const o of outcomes) {
-      candidatesPerProvider.push({ store: o.store, count: o.list.length });
+      providerDiagnostics.push(o.result.diagnostics);
+      candidatesPerProvider.push({
+        store: o.store,
+        count: o.result.candidates.length,
+      });
+      traceLog("provider_search_diagnostics", {
+        store: o.store,
+        query: o.result.diagnostics.query,
+        fetchOk: o.result.diagnostics.fetchOk,
+        httpStatus: o.result.diagnostics.httpStatus,
+        byteLength: o.result.diagnostics.byteLength,
+        candidateCount: o.result.diagnostics.candidateCount,
+        hints: o.result.diagnostics.hints,
+      });
       traceLog("candidates_returned_per_provider", {
         store: o.store,
-        count: o.list.length,
+        count: o.result.candidates.length,
       });
-      allCandidates = allCandidates.concat(o.list);
+      allCandidates = allCandidates.concat(o.result.candidates);
     }
   }
+
+  traceLog("candidates_found_total", {
+    total: allCandidates.length,
+    byStore: candidatesPerProvider,
+  });
 
   const sourceUrlKey = sourceProduct?.sourceUrl
     ? normalizeUrlKey(sourceProduct.sourceUrl)
@@ -292,7 +341,7 @@ export async function compareProduct(
       ev.rejectionDetail == null &&
       isTrustworthyTier(ev.tier, ev.score);
 
-    traceLog("candidate_score", {
+    traceLog("candidate_match_score", {
       store: c.store,
       title: c.title.slice(0, 100),
       price: c.price,
@@ -301,16 +350,17 @@ export async function compareProduct(
       trustworthy,
       hardRejected: ev.rejected,
       rejectionDetail: ev.rejectionDetail,
+      reasons: ev.reasons,
     });
 
     if (ev.rejected) {
-      traceLog("candidate_rejected_reason", {
+      traceLog("candidate_rejection_reason", {
         store: c.store,
         title: c.title.slice(0, 80),
         reason: ev.rejectionDetail ?? "hard_gate",
       });
     } else if (ev.rejectionDetail) {
-      traceLog("candidate_rejected_reason", {
+      traceLog("candidate_rejection_reason", {
         store: c.store,
         title: c.title.slice(0, 80),
         reason: ev.rejectionDetail,
@@ -370,6 +420,7 @@ export async function compareProduct(
       bestDeal: null,
       reason: reasonNoDeal,
       trustworthyCount: trustworthyPool.length,
+      minRequired: MIN_TRUSTWORTHY_COMPARABLES,
     });
 
     const trace: ComparisonTrace | undefined = debug
@@ -388,6 +439,7 @@ export async function compareProduct(
             : null,
           providerQueries,
           candidatesPerProvider,
+          providerDiagnostics,
           candidateSteps,
           selection,
         }
@@ -418,7 +470,7 @@ export async function compareProduct(
       tier: winner.tier,
       score: winner.score,
     },
-    alternatives: rest.length,
+    alternativeCount: rest.length,
     note: "lowest_price_among_trustworthy_pool",
   });
 
@@ -466,6 +518,7 @@ export async function compareProduct(
           : null,
         providerQueries,
         candidatesPerProvider,
+        providerDiagnostics,
         candidateSteps,
         selection,
       }
