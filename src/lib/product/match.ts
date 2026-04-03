@@ -7,7 +7,7 @@ import type {
   StructuredProduct,
   TvDisplayTechBucket,
 } from "./types";
-import { toComparisonCategory } from "./normalize";
+import { inferTvFamilyFromFullModel, toComparisonCategory } from "./normalize";
 
 /** After hard gates, TV comparables must reach this attribute score. */
 export const MIN_COMPARABLE_SCORE_TV = 85;
@@ -61,13 +61,12 @@ export function checkGenericModelIdentityGate(
   const b = candidate.modelTokens;
   if (a.length === 0 && b.length === 0) return { ok: true };
   if (a.length === 0 || b.length === 0) {
-    return { ok: false, reason: "model_identity_asymmetric" };
+    return hardGateFail("model_identity_asymmetric");
   }
   if (normalizedModelKey(a) !== normalizedModelKey(b)) {
-    return {
-      ok: false,
-      reason: `model_identity_mismatch(source=${normalizedModelKey(a)},candidate=${normalizedModelKey(b)})`,
-    };
+    return hardGateFail(
+      `model_identity_mismatch(source=${normalizedModelKey(a)},candidate=${normalizedModelKey(b)})`
+    );
   }
   return { ok: true };
 }
@@ -108,13 +107,43 @@ export function checkComparisonCategoryGate(
   const a: ComparisonCategory = toComparisonCategory(source.category);
   const b: ComparisonCategory = toComparisonCategory(candidate.category);
   if (a === b) return { ok: true };
-  return {
-    ok: false,
-    reason: `comparison_category_mismatch(${a} vs ${b})`,
-  };
+  return hardGateFail(`comparison_category_mismatch(${a} vs ${b})`);
 }
 
 export type HardGateResult = { ok: true } | { ok: false; reason: string };
+
+function hardGateFail(reason: string): HardGateResult {
+  console.log(reason);
+  return { ok: false, reason };
+}
+
+/** Normalized blob of candidate TV model-related fields for substring containment checks. */
+function tvModelBlobNorm(p: NormalizedProduct): string {
+  const st = p.structured;
+  const parts = [
+    st.fullModel,
+    st.modelFamily,
+    ...(p.tv?.modelFamilyTokens ?? []),
+  ];
+  return normSku(parts.filter(Boolean).join(" "));
+}
+
+/** Core lineup id (e.g. M70HB) from structured TV fields. */
+function tvCoreModelId(st: StructuredProduct): string {
+  const fromFull = inferTvFamilyFromFullModel(st.fullModel);
+  if (fromFull) return normSku(fromFull);
+  if (st.modelFamily) return normFam(st.modelFamily);
+  return "";
+}
+
+function tvCoreContainedInPeerModelBlob(
+  coreNorm: string,
+  peer: NormalizedProduct
+): boolean {
+  if (coreNorm.length < 4) return false;
+  const blob = tvModelBlobNorm(peer);
+  return blob.includes(coreNorm);
+}
 
 export function checkTvBrandStrictGate(
   source: NormalizedProduct,
@@ -124,16 +153,14 @@ export function checkTvBrandStrictGate(
     return { ok: true };
   }
   if (!source.brand || !candidate.brand) {
-    return {
-      ok: false,
-      reason: `tv_brand_incomplete(source=${source.brand},candidate=${candidate.brand})`,
-    };
+    return hardGateFail(
+      `tv_brand_incomplete(source=${source.brand},candidate=${candidate.brand})`
+    );
   }
   if (source.brand !== candidate.brand) {
-    return {
-      ok: false,
-      reason: `tv_brand_mismatch(source=${source.brand},candidate=${candidate.brand})`,
-    };
+    return hardGateFail(
+      `tv_brand_mismatch(source=${source.brand},candidate=${candidate.brand})`
+    );
   }
   return { ok: true };
 }
@@ -148,16 +175,10 @@ export function checkTvSizeStrictGate(
   const a = source.structured.sizeInches;
   const b = candidate.structured.sizeInches;
   if (a == null || b == null) {
-    return {
-      ok: false,
-      reason: `tv_size_incomplete(source=${a},candidate=${b})`,
-    };
+    return hardGateFail(`tv_size_incomplete(source=${a},candidate=${b})`);
   }
   if (a !== b) {
-    return {
-      ok: false,
-      reason: `tv_size_mismatch(source=${a},candidate=${b})`,
-    };
+    return hardGateFail(`tv_size_mismatch(source=${a},candidate=${b})`);
   }
   return { ok: true };
 }
@@ -172,10 +193,7 @@ export function checkTvDisplayTechGate(
   const a = source.structured.displayType;
   const b = candidate.structured.displayType;
   if (displayTechsComparable(a, b)) return { ok: true };
-  return {
-    ok: false,
-    reason: `tv_display_tech_mismatch(source=${a},candidate=${b})`,
-  };
+  return hardGateFail(`tv_display_tech_mismatch(source=${a},candidate=${b})`);
 }
 
 export function checkTvResolutionGate(
@@ -189,15 +207,13 @@ export function checkTvResolutionGate(
   const b = candidate.structured.resolution;
   if (a == null || b == null) return { ok: true };
   if (a === b) return { ok: true };
-  return {
-    ok: false,
-    reason: `tv_resolution_mismatch(source=${a},candidate=${b})`,
-  };
+  return hardGateFail(`tv_resolution_mismatch(source=${a},candidate=${b})`);
 }
 
 /**
- * Same lineup: exact normalized full SKU when both present, else exact model family key, else an
- * exact normalized token pair from TV family extraction (no substring / fuzzy family match).
+ * Same lineup: exact normalized full SKU when both present; if SKUs differ, pass when either
+ * side's core model id (e.g. M70HB from UN65M70HB…) is contained in the peer's model blob.
+ * Otherwise exact model family key, then token pairs, with the same containment fallback.
  */
 export function checkTvStructuredModelGate(
   source: NormalizedProduct,
@@ -213,30 +229,60 @@ export function checkTvStructuredModelGate(
   const cFull = normSku(c.fullModel);
   if (sFull && cFull) {
     if (sFull === cFull) return { ok: true };
-    return {
-      ok: false,
-      reason: `tv_full_model_mismatch(source=${s.fullModel},candidate=${c.fullModel})`,
-    };
+    const coreS = tvCoreModelId(s);
+    const coreC = tvCoreModelId(c);
+    if (
+      tvCoreContainedInPeerModelBlob(coreS, candidate) ||
+      tvCoreContainedInPeerModelBlob(coreC, source)
+    ) {
+      return { ok: true };
+    }
+    return hardGateFail(
+      `tv_full_model_mismatch(source=${s.fullModel},candidate=${c.fullModel})`
+    );
   }
 
   const sFam = normFam(s.modelFamily);
   const cFam = normFam(c.modelFamily);
   if (sFam && cFam) {
     if (sFam === cFam) return { ok: true };
-    return {
-      ok: false,
-      reason: `tv_model_family_mismatch(source=${s.modelFamily},candidate=${c.modelFamily})`,
-    };
+    const coreS = tvCoreModelId(s);
+    const coreC = tvCoreModelId(c);
+    if (
+      tvCoreContainedInPeerModelBlob(coreS, candidate) ||
+      tvCoreContainedInPeerModelBlob(coreC, source)
+    ) {
+      return { ok: true };
+    }
+    return hardGateFail(
+      `tv_model_family_mismatch(source=${s.modelFamily},candidate=${c.modelFamily})`
+    );
   }
 
   if (sFull || cFull) {
-    return { ok: false, reason: "tv_model_identifier_asymmetric" };
+    const coreS = tvCoreModelId(s);
+    const coreC = tvCoreModelId(c);
+    if (
+      tvCoreContainedInPeerModelBlob(coreS, candidate) ||
+      tvCoreContainedInPeerModelBlob(coreC, source)
+    ) {
+      return { ok: true };
+    }
+    return hardGateFail("tv_model_identifier_asymmetric");
   }
 
   const sa = source.tv?.modelFamilyTokens ?? [];
   const ca = candidate.tv?.modelFamilyTokens ?? [];
   if (sa.length === 0 || ca.length === 0) {
-    return { ok: false, reason: "tv_model_family_unknown" };
+    const coreS = tvCoreModelId(s);
+    const coreC = tvCoreModelId(c);
+    if (
+      tvCoreContainedInPeerModelBlob(coreS, candidate) ||
+      tvCoreContainedInPeerModelBlob(coreC, source)
+    ) {
+      return { ok: true };
+    }
+    return hardGateFail("tv_model_family_unknown");
   }
   for (const x of sa) {
     const nx = normFam(x);
@@ -245,10 +291,17 @@ export function checkTvStructuredModelGate(
       if (nx === normFam(y)) return { ok: true };
     }
   }
-  return {
-    ok: false,
-    reason: `tv_model_family_token_mismatch(source=${sa.join(",")},candidate=${ca.join(",")})`,
-  };
+  const coreS = tvCoreModelId(s);
+  const coreC = tvCoreModelId(c);
+  if (
+    tvCoreContainedInPeerModelBlob(coreS, candidate) ||
+    tvCoreContainedInPeerModelBlob(coreC, source)
+  ) {
+    return { ok: true };
+  }
+  return hardGateFail(
+    `tv_model_family_token_mismatch(source=${sa.join(",")},candidate=${ca.join(",")})`
+  );
 }
 
 export function checkTvConditionGate(
@@ -272,10 +325,7 @@ export function checkTvConditionGate(
     cc === "open_box";
   const sourceExpectsNew = !sourceSecondhand;
   if (sourceExpectsNew && candSecondhand) {
-    return {
-      ok: false,
-      reason: `tv_condition_mismatch(source=${sc},candidate=${cc})`,
-    };
+    return hardGateFail(`tv_condition_mismatch(source=${sc},candidate=${cc})`);
   }
   return { ok: true };
 }
@@ -291,10 +341,7 @@ export function checkApparelGenderGate(
   if (!sg || !cg) return { ok: true };
   if (sg === cg) return { ok: true };
   if (sg === "unisex" || cg === "unisex") return { ok: true };
-  return {
-    ok: false,
-    reason: `apparel_gender_mismatch(source=${sg},candidate=${cg})`,
-  };
+  return hardGateFail(`apparel_gender_mismatch(source=${sg},candidate=${cg})`);
 }
 
 export function checkPackHardGate(
@@ -312,10 +359,9 @@ export function checkPackHardGate(
     return { ok: true };
   }
   if (ratio > 3 && Math.min(a, b) >= 2) {
-    return {
-      ok: false,
-      reason: `pack_count_far_mismatch(source=${source.packCount},candidate=${candidate.packCount})`,
-    };
+    return hardGateFail(
+      `pack_count_far_mismatch(source=${source.packCount},candidate=${candidate.packCount})`
+    );
   }
   return { ok: true };
 }
