@@ -57,7 +57,12 @@ export default function DashboardPage() {
           link: data.bestDeal.affiliateUrl || data.bestDeal.productUrl,
         });
       } else {
-        setErrorMessage("No comparison result found.");
+        setErrorMessage(
+          typeof data.comparisonMessage === "string" &&
+            data.comparisonMessage.trim()
+            ? data.comparisonMessage
+            : "No comparable match found yet"
+        );
       }
     } catch (error) {
       console.error("Compare error:", error);
