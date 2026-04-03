@@ -62,7 +62,11 @@ function rowToCandidate(
   row: { title: string; price: number | null; currency: string; productUrl: string },
   searchQuery: string
 ): CandidateProduct {
-  const normalized = buildNormalizedProduct(row.title);
+  const normalized = buildNormalizedProduct(row.title, {
+    price: row.price,
+    currency: row.currency,
+    productUrl: row.productUrl,
+  });
   const qWords = normalizeTitle(searchQuery).split(/\s+/).filter((w) => w.length >= 3);
   let matchWords = 0;
   for (const w of qWords) {

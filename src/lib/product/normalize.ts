@@ -1,8 +1,10 @@
 import type {
+  ComparisonCategory,
   NormalizedProduct,
   ProductCategory,
+  ProductCondition,
   StoreId,
-  TvConditionKind,
+  StructuredProduct,
   TvDisplayTechBucket,
   TvNormalizedAttributes,
   TvResolutionBucket,
@@ -129,7 +131,8 @@ function extractTvSmart(title: string): boolean | null {
   return null;
 }
 
-function extractTvCondition(title: string): TvConditionKind {
+/** Title-derived condition for any category. */
+export function extractProductCondition(title: string): ProductCondition {
   const n = normalizeTitle(title);
   if (/\b(renewed|amazon\s*renewed)\b/.test(n)) return "renewed";
   if (/\b(refurb|refurbished|factory\s*recertified)\b/.test(n)) return "refurbished";
@@ -161,14 +164,157 @@ export function extractTvModelFamilyTokens(title: string): string[] {
   return [...out].slice(0, 16);
 }
 
-function buildTvAttributes(title: string): TvNormalizedAttributes {
-  return {
-    displayTech: extractTvDisplayTech(title),
-    resolution: extractTvResolution(title),
-    smartTv: extractTvSmart(title),
-    condition: extractTvCondition(title),
-    modelFamilyTokens: extractTvModelFamilyTokens(title),
+/**
+ * Retail SKU token when present (Samsung UN… / QN… style).
+ */
+export function extractTvFullModel(title: string): string | null {
+  const upper = title.toUpperCase().replace(/\u2033/g, '"');
+  const found: string[] = [];
+  for (const m of upper.matchAll(/\b(UN|QN|QR)(\d{2,3})([A-Z0-9]{4,})\b/g)) {
+    found.push(`${m[1]}${m[2]}${m[3]}`);
+  }
+  for (const m of upper.matchAll(/\b(UN\d{2}[A-Z0-9]{6,18})\b/g)) {
+    found.push(m[1]!);
+  }
+  if (found.length === 0) return null;
+  return [...new Set(found)].sort((a, b) => b.length - a.length)[0]!;
+}
+
+function seriesTailFromFullModelSku(tail: string): string | null {
+  const t = tail.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+  if (!t.length) return null;
+  const du = t.match(/^(DU\d{4})/);
+  if (du) return du[1]!;
+  const m = t.match(/^([A-Z]\d{2}[A-Z]{2,})/);
+  if (m) {
+    let s = m[1]!;
+    s = s.replace(/(FXZA|XZA|XZ)$/i, "");
+    return s.length >= 4 ? s : null;
+  }
+  const m2 = t.match(/^([A-Z]{2,3}\d{3,5})/);
+  return m2 && m2[1]!.length >= 5 ? m2[1]! : null;
+}
+
+/** Derive series key (e.g. M70HB, DU7200) from a parsed full SKU. */
+export function inferTvFamilyFromFullModel(fullModel: string | null): string | null {
+  if (!fullModel) return null;
+  const u = fullModel.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const um = u.match(/^(?:UN|QN|QR)(\d{2,3})([A-Z0-9]+)$/);
+  if (!um) return null;
+  return seriesTailFromFullModelSku(um[2]!);
+}
+
+/**
+ * Marketing or SKU-derived family token for TV lineup matching.
+ */
+export function extractTvModelFamilyKey(title: string, fullModel: string | null): string | null {
+  const n = normalizeTitle(title);
+  const ser = n.match(/\b([a-z]\d{2}[a-z]{2,})\s+series\b/);
+  if (ser) return ser[1]!.toUpperCase();
+  const du = n.match(/\b(du\d{4})\b/);
+  if (du) return du[1]!.toUpperCase();
+  const inferred = inferTvFamilyFromFullModel(fullModel);
+  if (inferred) return inferred;
+  return null;
+}
+
+export function extractColor(title: string): string | null {
+  const n = normalizeTitle(title);
+  const m = n.match(
+    /\b(black|white|navy|red|blue|green|grey|gray|beige|pink|purple|brown|charcoal|multicolor|multi[\s-]?color)\b/
+  );
+  return m ? m[1]!.toLowerCase() : null;
+}
+
+export function extractSizeLabel(title: string): string | null {
+  const n = normalizeTitle(title);
+  const m = n.match(/\b(xs|s|m|l|xl|xxl|xxxl|\d+xl)\b/);
+  return m ? m[1]!.toUpperCase() : null;
+}
+
+export type StructuredListingContext = {
+  price?: number | null;
+  currency?: string | null;
+  productUrl?: string | null;
+};
+
+export function buildStructuredProduct(
+  title: string,
+  ctx?: StructuredListingContext
+): StructuredProduct {
+  const trimmed = title.trim();
+  const category = extractCategory(trimmed);
+  const brand = extractBrand(trimmed);
+  const condition = extractProductCondition(trimmed);
+  const base: StructuredProduct = {
+    title: trimmed,
+    brand,
+    category,
+    price: ctx?.price ?? null,
+    currency: ctx?.currency ?? null,
+    productUrl: ctx?.productUrl ?? null,
+    condition,
+    sizeInches: extractSizeInches(trimmed),
+    modelFamily: null,
+    fullModel: null,
+    displayType: null,
+    resolution: null,
+    smartTv: null,
+    gender: extractGender(trimmed),
+    packCount: extractPackCount(trimmed),
+    sizeLabel: extractSizeLabel(trimmed),
+    color: extractColor(trimmed),
   };
+
+  if (category === "tv") {
+    const fullModel = extractTvFullModel(trimmed);
+    const modelFamily =
+      extractTvModelFamilyKey(trimmed, fullModel) ??
+      inferTvFamilyFromFullModel(fullModel);
+    return {
+      ...base,
+      fullModel,
+      modelFamily,
+      displayType: extractTvDisplayTech(trimmed),
+      resolution: extractTvResolution(trimmed),
+      smartTv: extractTvSmart(trimmed),
+      sizeInches: extractSizeInches(trimmed),
+    };
+  }
+
+  return base;
+}
+
+function buildTvAttributesFromStructured(
+  title: string,
+  structured: StructuredProduct
+): TvNormalizedAttributes {
+  const tokenSet = new Set<string>();
+  for (const t of extractTvModelFamilyTokens(title)) tokenSet.add(t);
+  if (structured.modelFamily) {
+    tokenSet.add(structured.modelFamily.toLowerCase().replace(/[^a-z0-9]/g, ""));
+  }
+  if (structured.fullModel) {
+    const tail = inferTvFamilyFromFullModel(structured.fullModel);
+    if (tail) tokenSet.add(tail.toLowerCase().replace(/[^a-z0-9]/g, ""));
+  }
+  const modelFamilyTokens = [...tokenSet].filter((t) => t.length >= 4).slice(0, 16);
+
+  return {
+    displayTech: structured.displayType,
+    resolution: structured.resolution,
+    smartTv: structured.smartTv,
+    condition: structured.condition,
+    modelFamilyTokens:
+      modelFamilyTokens.length > 0 ? modelFamilyTokens : extractTvModelFamilyTokens(title),
+  };
+}
+
+/** Maps ProductCategory into comparison buckets (tv / apparel / generic). */
+export function toComparisonCategory(category: ProductCategory): ComparisonCategory {
+  if (category === "tv") return "tv";
+  if (category === "socks" || category === "apparel") return "apparel";
+  return "generic";
 }
 
 const HOUSEHOLD_RE =
@@ -192,6 +338,7 @@ export function extractCategory(title: string): ProductCategory {
   const n = normalizeTitle(title);
   if (
     /\b(smart tv|oled|qled|4k tv|8k tv|uhd tv|television)\b/.test(n) ||
+    (/\b(mini[\s-]*led|neo[\s-]*qled)\b/.test(n) && extractSizeInches(title) != null) ||
     (/\btv\b/.test(n) && extractSizeInches(title) != null) ||
     (/\bneo qled\b/.test(n) && /\b\d{2,3}\b/.test(n))
   ) {
@@ -236,20 +383,28 @@ export function extractPackCount(title: string): number | null {
   return null;
 }
 
-export function buildNormalizedProduct(title: string): NormalizedProduct {
-  const titleNorm = normalizeTitle(title);
-  const category = extractCategory(title);
+export function buildNormalizedProduct(
+  title: string,
+  ctx?: StructuredListingContext
+): NormalizedProduct {
+  const structured = buildStructuredProduct(title, ctx);
+  const titleNorm = normalizeTitle(structured.title);
+  const category = structured.category;
   const base: NormalizedProduct = {
+    structured,
     titleNorm,
-    brand: extractBrand(title),
+    brand: structured.brand,
     modelTokens: extractModelTokens(title),
-    sizeInches: extractSizeInches(title),
+    sizeInches: structured.sizeInches,
     category,
-    packCount: extractPackCount(title),
-    gender: extractGender(title),
+    packCount: structured.packCount,
+    gender: structured.gender,
   };
   if (category === "tv") {
-    return { ...base, tv: buildTvAttributes(title) };
+    return {
+      ...base,
+      tv: buildTvAttributesFromStructured(title, structured),
+    };
   }
   return base;
 }

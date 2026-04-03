@@ -15,6 +15,44 @@ export type ProductCategory =
   | "household"
   | "general";
 
+/** High-level bucket for comparison rules (tv vs apparel vs everything else). */
+export type ComparisonCategory = "tv" | "apparel" | "generic";
+
+/** Unified condition across categories (title-derived). */
+export type ProductCondition =
+  | "new"
+  | "renewed"
+  | "refurbished"
+  | "used"
+  | "open_box"
+  | "unknown";
+
+/**
+ * Structured attributes extracted from titles (and listing fields when present).
+ * Used for hard gates and attribute scoring — not fuzzy title matching alone.
+ */
+export type StructuredProduct = {
+  title: string;
+  brand: string | null;
+  category: ProductCategory;
+  price: number | null;
+  currency: string | null;
+  productUrl: string | null;
+  condition: ProductCondition;
+  sizeInches: number | null;
+  /** Core series / line (e.g. M70HB, DU7200) */
+  modelFamily: string | null;
+  /** Retail SKU when parseable (e.g. UN85M70HBFXZA) */
+  fullModel: string | null;
+  displayType: TvDisplayTechBucket;
+  resolution: TvResolutionBucket;
+  smartTv: boolean | null;
+  gender: string | null;
+  packCount: number | null;
+  sizeLabel: string | null;
+  color: string | null;
+};
+
 /** User-facing match level for MVP comparisons. */
 export type MatchConfidenceLabel = "exact" | "equivalent" | "alternative";
 
@@ -30,13 +68,8 @@ export type TvDisplayTechBucket =
 
 export type TvResolutionBucket = "4k" | "8k" | "hd" | null;
 
-export type TvConditionKind =
-  | "new"
-  | "renewed"
-  | "refurbished"
-  | "used"
-  | "open_box"
-  | "unknown";
+/** @deprecated use ProductCondition */
+export type TvConditionKind = ProductCondition;
 
 /** Parsed TV-only fields — set when `category === "tv"`. */
 export type TvNormalizedAttributes = {
@@ -50,6 +83,8 @@ export type TvNormalizedAttributes = {
 };
 
 export type NormalizedProduct = {
+  /** Canonical structured snapshot (gates + scoring use this). */
+  structured: StructuredProduct;
   /** Lowercased, punctuation-stripped title for display/debug */
   titleNorm: string;
   brand: string | null;

@@ -1,9 +1,5 @@
 import { parseProductInput } from "./inputParse";
-import {
-  evaluateCandidate,
-  isAlternativeTier,
-  isPrimaryComparableTier,
-} from "./match";
+import { evaluateCandidate, isPrimaryComparableTier } from "./match";
 import {
   areSameRetailerListings,
   buildNormalizedProduct,
@@ -38,7 +34,6 @@ export function isCompareDemoMode(): boolean {
 }
 
 const MIN_TRUSTWORTHY_COMPARABLES = 1;
-const FALLBACK_MIN_SCORE = 22;
 
 function isValidComparablePrice(price: number | null | undefined): boolean {
   return price != null && Number.isFinite(price) && price > 0;
@@ -162,13 +157,12 @@ type Scored = {
 };
 
 function resolveConfidence(args: {
-  pickKind: "primary" | "alternative" | "rescue";
+  pickKind: "primary" | "alternative";
   winnerLabel: MatchConfidenceLabel | "none";
   ambiguousPrice: boolean;
   chosenCount: number;
 }): CompareConfidence {
   if (args.ambiguousPrice && args.chosenCount >= 2) return "low";
-  if (args.pickKind === "rescue") return "medium";
   if (args.winnerLabel === "exact" || args.winnerLabel === "equivalent") {
     return "high";
   }
@@ -216,7 +210,6 @@ export async function compareProduct(
   }
 
   const referenceNormalized = buildNormalizedProduct(parsed.productQuery);
-  const isTvReference = referenceNormalized.category === "tv";
   const normalizedQuery = buildNormalizedSearchQuery(
     referenceNormalized,
     parsed.productQuery
@@ -228,7 +221,12 @@ export async function compareProduct(
     urlStore: parsed.urlStore,
   });
 
+  pipelineLog("source_structured", {
+    structured: referenceNormalized.structured,
+  });
+
   traceLog("normalized_reference_profile", {
+    structured: referenceNormalized.structured,
     titleNorm: referenceNormalized.titleNorm,
     brand: referenceNormalized.brand,
     modelTokens: referenceNormalized.modelTokens,
@@ -324,7 +322,13 @@ export async function compareProduct(
     traceLog("normalized_candidate", {
       store: c.store,
       titlePreview: c.title.slice(0, 120),
+      structured: c.normalized.structured,
       normalized: c.normalized,
+    });
+
+    pipelineLog("candidate_structured", {
+      store: c.store,
+      structured: c.normalized.structured,
     });
 
     if (inputUrl && areSameRetailerListings(inputUrl, c.productUrl)) {
@@ -351,17 +355,24 @@ export async function compareProduct(
       !ev.rejected &&
       ev.rejectionDetail == null &&
       isPrimaryComparableTier(ev.matchConfidence);
-    const alternativeComparable =
-      !isTvReference &&
-      !ev.rejected &&
-      ev.rejectionDetail == null &&
-      isAlternativeTier(ev.matchConfidence);
+    const alternativeComparable = false;
 
     traceLog("candidate_match_score", {
       store: c.store,
       matchConfidence: ev.matchConfidence,
       score: ev.score,
       rejected: ev.rejected,
+      rejectionDetail: ev.rejectionDetail,
+    });
+
+    pipelineLog("candidate_eval_result", {
+      store: c.store,
+      score: ev.score,
+      rejected: ev.rejected,
+      rejectionReason: ev.rejected
+        ? ev.rejectionDetail
+        : (ev.rejectionDetail ?? "accepted_comparable"),
+      matchConfidence: ev.matchConfidence,
     });
 
     if (ev.rejected) {
@@ -413,25 +424,12 @@ export async function compareProduct(
 
   let chosenPool = [...primaryPool];
   let pickedAsClosestSimilar = false;
-  let pickKind: "primary" | "alternative" | "rescue" = "primary";
+  let pickKind: "primary" | "alternative" = "primary";
 
   if (chosenPool.length === 0) {
     chosenPool = [...alternativePool];
     pickedAsClosestSimilar = chosenPool.length > 0;
     pickKind = "alternative";
-  }
-
-  if (chosenPool.length === 0 && !isTvReference) {
-    const rescuePool = scored.filter(
-      (s) => !s.rejected && s.score >= FALLBACK_MIN_SCORE
-    );
-    chosenPool = rescuePool;
-    pickedAsClosestSimilar = chosenPool.length > 0;
-    pickKind = "rescue";
-    traceLog("rescue_pool_applied", {
-      rescueCandidates: rescuePool.length,
-      minScore: FALLBACK_MIN_SCORE,
-    });
   }
 
   chosenPool.sort(
@@ -441,7 +439,7 @@ export async function compareProduct(
   );
 
   const buildRejectionReasons = (): string[] => {
-    const summary = `selection: primary=${primaryPool.length} alternative=${alternativePool.length} rescue_min=${FALLBACK_MIN_SCORE} chosen=${chosenPool.length}`;
+    const summary = `selection: primary=${primaryPool.length} alternative=${alternativePool.length} chosen=${chosenPool.length}`;
     const detail = scored
       .filter((s) => !s.primaryComparable && !s.alternativeComparable)
       .sort((a, b) => b.score - a.score)
@@ -455,11 +453,6 @@ export async function compareProduct(
   };
 
   const toDeal = (s: Scored): CompareProductDeal => {
-    const rescuePick = pickKind === "rescue";
-    const label: MatchConfidenceLabel =
-      rescuePick && s.matchConfidence === "none"
-        ? "alternative"
-        : (s.matchConfidence as MatchConfidenceLabel);
     return {
       store: s.candidate.store,
       title: s.candidate.title,
@@ -469,10 +462,8 @@ export async function compareProduct(
       affiliateUrl: affiliateFor(s.candidate),
       imageUrl: s.candidate.imageUrl,
       matchScore: s.score,
-      matchConfidence: label,
-      comparisonReason: rescuePick
-        ? "Closest comparable listing using relaxed scoring (retailer titles often diverge)."
-        : s.comparisonReason,
+      matchConfidence: s.matchConfidence as MatchConfidenceLabel,
+      comparisonReason: s.comparisonReason,
     };
   };
 
@@ -481,12 +472,7 @@ export async function compareProduct(
 
   const buildApiCandidatesList = (chosenKeys: Set<string>): CompareApiCandidate[] => {
     return scored.map((s) => {
-      const eligibleTier =
-        s.primaryComparable ||
-        s.alternativeComparable ||
-        (!isTvReference &&
-          !s.rejected &&
-          s.score >= FALLBACK_MIN_SCORE);
+      const eligibleTier = s.primaryComparable || s.alternativeComparable;
       const k = scoredKey(s);
       return {
         store: s.candidate.store,
