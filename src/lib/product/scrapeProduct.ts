@@ -4,22 +4,27 @@ export type ScrapedProduct = {
   currency: string;
 };
 
-const BROWSER_HEADERS: HeadersInit = {
+/** Chrome-on-macOS fingerprint: matches real navigation from a desktop browser. */
+const STEALTH_HEADERS: HeadersInit = {
   "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   Accept:
-    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+  "Accept-Encoding": "gzip, deflate, br",
   "Accept-Language": "en-US,en;q=0.9",
   "Cache-Control": "max-age=0",
+  DNT: "1",
   "Sec-Ch-Ua":
     '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
   "Sec-Ch-Ua-Mobile": "?0",
-  "Sec-Ch-Ua-Platform": '"Windows"',
+  "Sec-Ch-Ua-Platform": '"macOS"',
+  "Sec-Ch-Ua-Platform-Version": '"15.2.0"',
   "Sec-Fetch-Dest": "document",
   "Sec-Fetch-Mode": "navigate",
   "Sec-Fetch-Site": "none",
   "Sec-Fetch-User": "?1",
   "Upgrade-Insecure-Requests": "1",
+  Priority: "u=0, i",
 };
 
 function decodeHtmlEntities(value: string): string {
@@ -88,6 +93,32 @@ function visitJsonLdNode(
     for (const off of list) {
       if (!off || typeof off !== "object") continue;
       const offer = off as Record<string, unknown>;
+      const offerTypes = Array.isArray(offer["@type"])
+        ? offer["@type"]
+        : offer["@type"] != null
+          ? [offer["@type"]]
+          : [];
+
+      if (offerTypes.some((t) => t === "AggregateOffer")) {
+        const aggPrice =
+          offer.lowPrice ?? offer.highPrice ?? offer.price ?? null;
+        if (out.price == null && aggPrice != null) {
+          const n =
+            typeof aggPrice === "number"
+              ? aggPrice
+              : parseFloat(String(aggPrice).replace(/[^0-9.]/g, ""));
+          if (Number.isFinite(n)) out.price = n;
+        }
+        if (
+          !out.currency &&
+          typeof offer.priceCurrency === "string" &&
+          offer.priceCurrency
+        ) {
+          out.currency = offer.priceCurrency;
+        }
+        continue;
+      }
+
       if (out.price == null && offer.price != null) {
         const p = offer.price;
         const n =
@@ -104,6 +135,17 @@ function visitJsonLdNode(
         out.currency = offer.priceCurrency;
       }
     }
+  }
+
+  if (
+    types.some((x) => x === "Product" || x === "IndividualProduct") &&
+    out.price == null &&
+    o.price != null
+  ) {
+    const p = o.price;
+    const n =
+      typeof p === "number" ? p : parseFloat(String(p).replace(/[^0-9.]/g, ""));
+    if (Number.isFinite(n)) out.price = n;
   }
 
   if (Array.isArray(o["@graph"])) {
@@ -200,36 +242,34 @@ function pickPrice(
   html: string,
   jsonLd: ReturnType<typeof extractFromJsonLd>
 ): { price: number | null; currency: string } {
-  let price = jsonLd.price ?? null;
-  let currency = jsonLd.currency ?? "USD";
+  let price: number | null = tryDirectPrice(html);
 
   if (price == null) {
-    const d = tryDirectPrice(html);
-    if (d != null) price = d;
+    price = jsonLd.price ?? null;
   }
 
   if (price == null) {
-    const ogAmount = getMetaProperty(html, "og:price:amount");
-    price = parsePriceFromString(ogAmount);
+    price = parsePriceFromString(getMetaProperty(html, "og:price:amount"));
   }
 
-  const ogCur =
+  let currency =
     getMetaProperty(html, "og:price:currency") ||
-    getMetaProperty(html, "product:price:currency");
-  if (ogCur) currency = ogCur;
+    getMetaProperty(html, "product:price:currency") ||
+    jsonLd.currency ||
+    "USD";
 
   return { price, currency };
 }
 
 /**
- * Fetches a product page with browser-like headers and extracts name/price
- * via structured data & DOM-like patterns, falling back to og:title / og:price:amount.
+ * Fetches a product page with stealth (Chrome/macOS) headers and extracts name/price
+ * via DOM/meta patterns first, then JSON-LD in application/ld+json, then og:price.
  */
 export async function scrapeProduct(url: string): Promise<ScrapedProduct | null> {
   let html: string;
   try {
     const res = await fetch(url, {
-      headers: BROWSER_HEADERS,
+      headers: STEALTH_HEADERS,
       cache: "no-store",
       redirect: "follow",
     });
