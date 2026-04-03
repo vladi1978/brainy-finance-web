@@ -80,7 +80,7 @@ export type ProductData = {
     return `https://brainyfinance.app/deal?query=${encoded}&ref=brainyfinance`;
   }
   
-  /** @deprecated Use `compareProduct` from `@/lib/product/compareEngine` — no stub data. */
+  /** @deprecated Use `compareProduct` from `@/lib/product/engine` — no stub data. */
   export async function comparePrices() {
     throw new Error(
       "comparePrices is not implemented; use compareProduct from @/lib/product/compareEngine"

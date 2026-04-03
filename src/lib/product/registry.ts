@@ -1,15 +1,9 @@
-import { ProductProvider } from "./providers/base";
 import { amazonProvider } from "./providers/amazon.provider";
 import { walmartProvider } from "./providers/walmart.provider";
 
 /**
- * All stores participating in cross-store comparison.
- * To add a retailer:
- * 1. Add the store id to `StoreName` in `providers/search-result.ts` if new.
- * 2. Implement `ProductProvider` (URL detection, optional PDP extract, `searchByQuery`).
- * 3. Append the provider here — `compareProduct` will query every entry in parallel.
+ * Central registry — add a provider module here to include it in compare runs.
  */
-export const providerRegistry: ProductProvider[] = [
-  amazonProvider,
-  walmartProvider,
-];
+export const productProviderRegistry = [amazonProvider, walmartProvider] as const;
+
+export type RegisteredProductProvider = (typeof productProviderRegistry)[number];

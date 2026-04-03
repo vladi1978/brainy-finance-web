@@ -1,19 +1,9 @@
-import {
-  ProductProvider,
-  ProviderSearchInput,
-  ExtractedSourceProduct,
-} from "./base";
-import { ProductSearchResult } from "./search-result";
 import { scrapeProduct } from "../scrapeProduct";
 import { fetchWalmartSerpWithDiagnostics } from "../searchParse";
+import { buildNormalizedProduct, normalizeTitle } from "../normalize";
+import type { CandidateProduct, ProviderSearchContext, SourceProduct, StoreId } from "../types";
 
-function normalizeText(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^\w\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
+const STORE: StoreId = "walmart";
 
 function cleanWalmartTitleFromUrl(input: string): string {
   return input
@@ -25,97 +15,66 @@ function cleanWalmartTitleFromUrl(input: string): string {
     .trim();
 }
 
-function candidateToSearchResult(
-  c: {
-    title: string;
-    price: number | null;
-    currency: string;
-    productUrl: string;
-  },
-  normalizedQuery: string
-): ProductSearchResult {
-  const normalizedTitle = normalizeText(c.title);
-  const qWords = normalizedQuery.split(/\s+/).filter((w) => w.length >= 3);
+function rowToCandidate(
+  row: { title: string; price: number | null; currency: string; productUrl: string },
+  searchQuery: string
+): CandidateProduct {
+  const normalized = buildNormalizedProduct(row.title);
+  const qWords = normalizeTitle(searchQuery).split(/\s+/).filter((w) => w.length >= 3);
   let matchWords = 0;
   for (const w of qWords) {
-    if (normalizedTitle.includes(w)) matchWords += 1;
+    if (normalized.titleNorm.includes(w)) matchWords += 1;
   }
-  const matchConfidence =
+  const sourceConfidence =
     qWords.length > 0
       ? Math.min(0.98, 0.45 + (matchWords / qWords.length) * 0.5)
       : 0.65;
 
   return {
-    store: "walmart",
-    title: c.title,
-    normalizedTitle,
-    price: c.price,
-    currency: c.currency,
-    productUrl: c.productUrl,
-    affiliateUrl: c.productUrl,
-    image: null,
-    inStock: c.price != null,
-    sku: null,
-    brand: null,
-    model: null,
-    upc: null,
-    sourceConfidence: c.price != null ? 0.88 : 0.45,
-    matchConfidence,
+    store: STORE,
+    title: row.title,
+    price: row.price,
+    currency: row.currency,
+    productUrl: row.productUrl,
+    affiliateUrl: row.productUrl,
+    normalized,
+    sourceConfidence,
   };
 }
 
-export const walmartProvider: ProductProvider = {
-  store: "walmart",
+export const walmartProvider = {
+  id: STORE,
 
-  canHandleUrl(url: string): boolean {
+  canHandleProductUrl(url: string): boolean {
     return /walmart\.com/i.test(url);
   },
 
-  async extractFromUrl(url: string): Promise<ExtractedSourceProduct | null> {
+  async extractSourceProduct(url: string): Promise<SourceProduct | null> {
     const scraped = await scrapeProduct(url);
     const title =
       scraped?.productName?.trim() || cleanWalmartTitleFromUrl(url);
-    if (!title) {
-      return null;
-    }
-    const originalPrice = scraped?.price ?? null;
-    const currency = scraped?.currency ?? "USD";
+    if (!title) return null;
 
     return {
       sourceUrl: url,
-      store: "walmart",
+      store: STORE,
       title,
-      normalizedTitle: normalizeText(title),
-      originalPrice,
-      currency,
-      image: null,
-      sku: null,
-      brand: null,
-      model: null,
-      upc: null,
+      originalPrice: scraped?.price ?? null,
+      currency: scraped?.currency ?? "USD",
+      normalized: buildNormalizedProduct(title),
     };
   },
 
-  async searchByQuery(input: ProviderSearchInput) {
+  async searchCandidates(ctx: ProviderSearchContext): Promise<CandidateProduct[]> {
     const query =
-      input.sourceProduct?.title ||
-      input.normalizedQuery ||
-      input.raw;
+      ctx.sourceProduct?.title || ctx.searchQuery || ctx.rawInput;
+    const normalizedQuery = normalizeTitle(query);
+    const { candidates } = await fetchWalmartSerpWithDiagnostics(query, 12);
 
-    const normalizedQuery = normalizeText(query);
-    const { candidates, diagnostics } = await fetchWalmartSerpWithDiagnostics(
-      query,
-      12
-    );
-
-    const results: ProductSearchResult[] = candidates.map((c) =>
-      candidateToSearchResult(c, input.normalizedQuery || normalizedQuery)
-    );
-
-    return { results, serp: diagnostics };
+    return candidates.map((c) => rowToCandidate(c, ctx.searchQuery || normalizedQuery));
   },
 
-  buildAffiliateUrl(productUrl: string): string {
+  toAffiliateUrl(productUrl: string): string {
     return productUrl;
   },
 };
