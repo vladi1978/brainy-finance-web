@@ -51,6 +51,8 @@ export type CandidateProduct = {
   currency: string;
   productUrl: string;
   affiliateUrl: string;
+  /** Product image when the SERP parser exposes one */
+  imageUrl: string | null;
   normalized: NormalizedProduct;
   sourceConfidence: number;
 };
@@ -71,9 +73,10 @@ export type ScoredCandidate = {
 
 export type ProviderSearchContext = {
   rawInput: string;
-  /** Short query derived from normalized source */
+  /** Compact query sent to retailer search */
   searchQuery: string;
-  sourceProduct: SourceProduct | null;
+  /** Full product description (query-derived, not a scraped PDP) */
+  productQuery: string;
 };
 
 /** One provider’s search outcome — candidates plus fetch/parse diagnostics. */
@@ -156,6 +159,7 @@ export type CompareProductDeal = {
   currency: string;
   productUrl: string;
   affiliateUrl: string;
+  imageUrl: string | null;
   /** 0–100 overall match score */
   matchScore: number;
   /** exact | equivalent | alternative */
@@ -164,8 +168,37 @@ export type CompareProductDeal = {
   comparisonReason: string;
 };
 
+/** Search-first API candidate (shared shape across stores). */
+export type CompareApiCandidate = {
+  store: string;
+  title: string;
+  price: number | null;
+  currency: string;
+  productUrl: string;
+  affiliateUrl: string;
+  imageUrl: string | null;
+  normalized: NormalizedProduct;
+  matchScore: number;
+  matchConfidence: MatchConfidenceLabel | "none";
+  includedInBestDealConsideration: boolean;
+  rejectReason: string | null;
+};
+
+export type CompareConfidence = "high" | "medium" | "low";
+
 /** API payload — dashboard reads `bestDeal`, `sourceProduct`, `comparisonMessage`. */
 export type CompareProductResponse = {
+  /** Original product query (text or URL-derived) */
+  query: string;
+  /** Normalized multi-field search string sent to stores */
+  normalizedQuery: string;
+  /** All candidates considered (with scores / reject reasons) */
+  candidates: CompareApiCandidate[];
+  bestDeal: CompareProductDeal | null;
+  /** Overall certainty of a single best pick */
+  confidence: CompareConfidence | null;
+  /** User-facing summary when ambiguous or empty */
+  message: string | null;
   sourceProduct: {
     sourceUrl?: string;
     store: string;
@@ -174,9 +207,8 @@ export type CompareProductResponse = {
     currency: string;
     normalizedTitle: string;
   } | null;
-  bestDeal: CompareProductDeal | null;
   alternatives: CompareProductDeal[];
-  /** `max(0, source originalPrice − best deal price)` when both are valid; otherwise null */
+  /** Benchmark vs best among comparables when no PDP price exists */
   savings: number | null;
   comparisonMessage?: string | null;
   /** When true, UI may label the result as “Closest Similar Deal” */

@@ -81,6 +81,7 @@ function rowToCandidate(
     currency: row.currency,
     productUrl: row.productUrl,
     affiliateUrl: row.productUrl,
+    imageUrl: null,
     normalized,
     sourceConfidence,
   };
@@ -112,7 +113,7 @@ export const amazonProvider: ProductProvider = {
   async searchCandidates(ctx: ProviderSearchContext): Promise<ProviderResult> {
     const effectiveQuery =
       ctx.searchQuery?.trim() ||
-      normalizeTitle(ctx.sourceProduct?.title || "") ||
+      normalizeTitle(ctx.productQuery || "") ||
       ctx.rawInput;
     const { candidates, diagnostics } = await fetchAmazonSerpWithDiagnostics(
       effectiveQuery,

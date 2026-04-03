@@ -79,6 +79,7 @@ function rowToCandidate(
     currency: row.currency,
     productUrl: row.productUrl,
     affiliateUrl: row.productUrl,
+    imageUrl: null,
     normalized,
     sourceConfidence,
   };
@@ -111,7 +112,7 @@ export const walmartProvider: ProductProvider = {
     /** Prefer compact normalized query so SERP matches real product type, not URL slug noise. */
     const effectiveQuery =
       ctx.searchQuery?.trim() ||
-      normalizeTitle(ctx.sourceProduct?.title || "") ||
+      normalizeTitle(ctx.productQuery || "") ||
       ctx.rawInput;
     const { candidates, diagnostics } = await fetchWalmartSerpWithDiagnostics(
       effectiveQuery,

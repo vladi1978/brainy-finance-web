@@ -164,6 +164,51 @@ export function buildNormalizedProduct(title: string): NormalizedProduct {
   };
 }
 
+const CATEGORY_SEARCH_KEYWORD: Record<ProductCategory, string | null> = {
+  tv: "tv",
+  footwear: "shoes",
+  audio: "headphones",
+  socks: "socks",
+  apparel: "shirt",
+  household: "household",
+  general: null,
+};
+
+/**
+ * Build a compact search string from normalized fields (brand, model, size, category, keywords).
+ */
+export function buildNormalizedSearchQuery(
+  norm: NormalizedProduct,
+  fallbackRaw: string
+): string {
+  const parts: string[] = [];
+  if (norm.brand) parts.push(norm.brand);
+  for (const t of norm.modelTokens.slice(0, 6)) {
+    if (t.length >= 3 && !parts.includes(t)) parts.push(t);
+  }
+  if (norm.sizeInches != null) {
+    parts.push(String(norm.sizeInches));
+  }
+  if (norm.packCount != null && norm.packCount > 1) {
+    parts.push(`${norm.packCount} pack`);
+  }
+  const catKw = CATEGORY_SEARCH_KEYWORD[norm.category];
+  if (catKw) parts.push(catKw);
+
+  const significant = tokenizeSignificant(fallbackRaw).slice(0, 8);
+  for (const w of significant) {
+    if (parts.length >= 12) break;
+    if (!parts.some((p) => p.includes(w) || w.includes(p))) parts.push(w);
+  }
+
+  const joined = [...new Set(parts.map((p) => p.trim()).filter(Boolean))].join(" ").trim();
+  if (joined.length >= 6) {
+    return joined.replace(/\s+/g, " ");
+  }
+
+  return extractSearchQuery(fallbackRaw);
+}
+
 /**
  * Compact, high-signal query for retailer search.
  */
