@@ -8,6 +8,7 @@ export type StoreId = "amazon" | "walmart" | "target" | "temu";
 
 export type ProductCategory =
   | "tv"
+  | "monitor"
   | "footwear"
   | "audio"
   | "socks"
@@ -15,8 +16,8 @@ export type ProductCategory =
   | "household"
   | "general";
 
-/** High-level bucket for comparison rules (tv vs apparel vs everything else). */
-export type ComparisonCategory = "tv" | "apparel" | "generic";
+/** High-level bucket for comparison rules (tv vs monitor vs apparel vs everything else). */
+export type ComparisonCategory = "tv" | "monitor" | "apparel" | "generic";
 
 /** Unified condition across categories (title-derived). */
 export type ProductCondition =
@@ -194,6 +195,8 @@ export type CandidateStepTrace = {
   matchScore?: number;
   matchReasons?: string[];
   eligibleForComparable?: boolean;
+  /** Present when outcome is rejected_hard_gate or filtered by minimum relevance */
+  rejectionReason?: string | null;
   detail: string;
 };
 
@@ -231,12 +234,13 @@ export type CompareProductDeal = {
   productUrl: string;
   affiliateUrl: string;
   imageUrl: string | null;
-  /** 0–1 relevance to the search query */
+  /** 0–1 combined attribute + query relevance */
   confidence: number;
   matchType: SearchMatchType;
-  /** 0–100 display score */
+  /** 0–100 attribute-heavy match score */
   relevanceScore: number;
   relevanceReason: string;
+  score?: number;
 };
 
 /** Search-first API candidate (shared shape across stores). */
@@ -249,11 +253,14 @@ export type CompareApiCandidate = {
   affiliateUrl: string;
   imageUrl: string | null;
   normalized: NormalizedProduct;
-  /** 0–1 relevance to the search query */
+  /** 0–1 combined attribute + query relevance */
   confidence: number;
   matchType: SearchMatchType;
+  /** 0–100 attribute-heavy match score */
   relevanceScore: number;
   relevanceReason: string;
+  /** Optional duplicate of relevanceScore for API clarity (attribute match strength) */
+  score?: number;
 };
 
 export type CompareConfidence = "high" | "medium" | "low";

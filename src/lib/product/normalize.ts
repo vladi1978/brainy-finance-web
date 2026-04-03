@@ -310,9 +310,10 @@ function buildTvAttributesFromStructured(
   };
 }
 
-/** Maps ProductCategory into comparison buckets (tv / apparel / generic). */
+/** Maps ProductCategory into comparison buckets (tv / monitor / apparel / generic). */
 export function toComparisonCategory(category: ProductCategory): ComparisonCategory {
   if (category === "tv") return "tv";
+  if (category === "monitor") return "monitor";
   if (category === "socks" || category === "apparel") return "apparel";
   return "generic";
 }
@@ -334,13 +335,41 @@ export function extractGender(title: string): string | null {
   return null;
 }
 
+/**
+ * True when the title describes a fixed-pixel screen (TV or monitor class) we can size-match.
+ */
+export function isLikelyScreenProductTitle(title: string): boolean {
+  const n = normalizeTitle(title);
+  if (extractSizeInches(title) == null) return false;
+  if (/\b(monitor|television|smart tv|\btv\b|display screen|computer screen)\b/.test(n))
+    return true;
+  if (/\b(uhd|4k|8k|qled|oled|neo[\s-]*qled|mini[\s-]*led|hdr|curved|gaming)\b/.test(n))
+    return true;
+  if (/\b(class|diagonal)\b/.test(n) && /\b(led|lcd|qled|oled)\b/.test(n)) return true;
+  return false;
+}
+
 export function extractCategory(title: string): ProductCategory {
   const n = normalizeTitle(title);
+  const inches = extractSizeInches(title);
+
+  /** Computer / gaming monitors — before TV so "32 inch monitor" is not classified as TV */
+  if (/\bmonitor\b/.test(n)) {
+    return "monitor";
+  }
+
   if (
-    /\b(smart tv|oled|qled|4k tv|8k tv|uhd tv|television)\b/.test(n) ||
-    (/\b(mini[\s-]*led|neo[\s-]*qled)\b/.test(n) && extractSizeInches(title) != null) ||
-    (/\btv\b/.test(n) && extractSizeInches(title) != null) ||
-    (/\bneo qled\b/.test(n) && /\b\d{2,3}\b/.test(n))
+    /\b(smart tv|oled tv|qled tv|4k tv|8k tv|uhd tv|television)\b/.test(n) ||
+    (/\b(mini[\s-]*led|neo[\s-]*qled)\b/.test(n) && inches != null) ||
+    (/\btv\b/.test(n) && inches != null) ||
+    (/\bneo qled\b/.test(n) && /\b\d{2,3}\b/.test(n)) ||
+    /** Large-panel TVs often omit the word "TV" but include panel + smart/UHD cues */
+    (inches != null &&
+      inches >= 32 &&
+      !/\bmonitor\b/.test(n) &&
+      /\b(smart|uhd|ultra hd|4k|8k|qled|oled|neo[\s-]*qled|hdr|tizen|roku|fire tv|google tv|webos)\b/.test(
+        n
+      ))
   ) {
     return "tv";
   }
@@ -409,8 +438,29 @@ export function buildNormalizedProduct(
   return base;
 }
 
+/** High-level attributes parsed from a title (brand, category, size, model codes). */
+export type ParsedProductAttributes = {
+  brand: string | null;
+  category: ProductCategory;
+  sizeInches: number | null;
+  modelTokens: string[];
+  fullModel: string | null;
+};
+
+export function parseProductAttributesFromTitle(title: string): ParsedProductAttributes {
+  const n = buildNormalizedProduct(title);
+  return {
+    brand: n.brand,
+    category: n.category,
+    sizeInches: n.sizeInches,
+    modelTokens: n.modelTokens,
+    fullModel: n.structured.fullModel,
+  };
+}
+
 const CATEGORY_SEARCH_KEYWORD: Record<ProductCategory, string | null> = {
   tv: "tv",
+  monitor: "monitor",
   footwear: "shoes",
   audio: "headphones",
   socks: "socks",

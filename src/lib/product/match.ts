@@ -7,7 +7,11 @@ import type {
   StructuredProduct,
   TvDisplayTechBucket,
 } from "./types";
-import { inferTvFamilyFromFullModel, toComparisonCategory } from "./normalize";
+import {
+  inferTvFamilyFromFullModel,
+  isLikelyScreenProductTitle,
+  toComparisonCategory,
+} from "./normalize";
 
 /** After hard gates, TV comparables must reach this attribute score. */
 export const MIN_COMPARABLE_SCORE_TV = 85;
@@ -50,12 +54,42 @@ function normalizedModelKey(tokens: string[]): string {
  * When either side has extractable model/SKU fragments in the title, both must list the same
  * normalized identity (MVP — no fuzzy family or partial overlap).
  */
+function checkFootwearModelIdentityGate(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): HardGateResult {
+  if (source.brand && candidate.brand && source.brand !== candidate.brand) {
+    return hardGateFail(
+      `footwear_brand_mismatch(source=${source.brand},candidate=${candidate.brand})`
+    );
+  }
+  const a = source.modelTokens;
+  const b = candidate.modelTokens;
+  if (a.length === 0 && b.length === 0) return { ok: true };
+  if (a.length === 0 || b.length === 0) return { ok: true };
+  const setA = new Set(a.map((t) => normSku(t)).filter((t) => t.length >= 4));
+  const setB = new Set(b.map((t) => normSku(t)).filter((t) => t.length >= 4));
+  if (setA.size === 0 || setB.size === 0) return { ok: true };
+  for (const x of setA) {
+    if (setB.has(x)) return { ok: true };
+  }
+  return hardGateFail(
+    `footwear_model_no_overlap(source=${normalizedModelKey(a)},candidate=${normalizedModelKey(b)})`
+  );
+}
+
 export function checkGenericModelIdentityGate(
   source: NormalizedProduct,
   candidate: NormalizedProduct
 ): HardGateResult {
   if (source.category === "tv" && candidate.category === "tv") {
     return { ok: true };
+  }
+  if (source.category === "monitor" && candidate.category === "monitor") {
+    return { ok: true };
+  }
+  if (source.category === "footwear" && candidate.category === "footwear") {
+    return checkFootwearModelIdentityGate(source, candidate);
   }
   const a = source.modelTokens;
   const b = candidate.modelTokens;
@@ -113,7 +147,6 @@ export function checkComparisonCategoryGate(
 export type HardGateResult = { ok: true } | { ok: false; reason: string };
 
 function hardGateFail(reason: string): HardGateResult {
-  console.log("Failing Gate:", reason);
   return { ok: false, reason };
 }
 
@@ -172,6 +205,115 @@ function tvModelIdsMatchFuzzy(a: NormalizedProduct, b: NormalizedProduct): boole
     if (needleFuzzyInBlob(n, blobA)) return true;
   }
   return false;
+}
+
+/**
+ * When both listings are uncategorized "general" but look like fixed screens with different
+ * diagonals, reject (e.g. 65" panel vs 32" panel that both matched "Samsung" in search).
+ */
+export function checkBothGeneralDisplaySizeStrictGate(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): HardGateResult {
+  if (source.category !== "general" || candidate.category !== "general") {
+    return { ok: true };
+  }
+  const sa = source.sizeInches ?? source.structured.sizeInches;
+  const sb = candidate.sizeInches ?? candidate.structured.sizeInches;
+  if (sa == null || sb == null || sa === sb) return { ok: true };
+  const t1 = source.structured.title;
+  const t2 = candidate.structured.title;
+  if (!isLikelyScreenProductTitle(t1) || !isLikelyScreenProductTitle(t2)) {
+    return { ok: true };
+  }
+  return hardGateFail(`general_screen_size_mismatch(source=${sa},candidate=${sb})`);
+}
+
+export function checkMonitorBrandStrictGate(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): HardGateResult {
+  if (source.category !== "monitor" || candidate.category !== "monitor") {
+    return { ok: true };
+  }
+  if (!source.brand || !candidate.brand) {
+    return hardGateFail(
+      `monitor_brand_incomplete(source=${source.brand},candidate=${candidate.brand})`
+    );
+  }
+  if (source.brand !== candidate.brand) {
+    return hardGateFail(
+      `monitor_brand_mismatch(source=${source.brand},candidate=${candidate.brand})`
+    );
+  }
+  return { ok: true };
+}
+
+export function checkMonitorSizeStrictGate(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): HardGateResult {
+  if (source.category !== "monitor" || candidate.category !== "monitor") {
+    return { ok: true };
+  }
+  const a = source.structured.sizeInches;
+  const b = candidate.structured.sizeInches;
+  if (a == null || b == null) {
+    return hardGateFail(`monitor_size_incomplete(source=${a},candidate=${b})`);
+  }
+  if (a !== b) {
+    return hardGateFail(`monitor_size_mismatch(source=${a},candidate=${b})`);
+  }
+  return { ok: true };
+}
+
+/**
+ * When both sides include model-style codes, require overlap or cross-title substring match.
+ */
+export function checkMonitorModelGate(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): HardGateResult {
+  if (source.category !== "monitor" || candidate.category !== "monitor") {
+    return { ok: true };
+  }
+  const sa = source.modelTokens
+    .map((t) => normSku(t))
+    .filter((t) => t.length >= 4);
+  const ca = candidate.modelTokens
+    .map((t) => normSku(t))
+    .filter((t) => t.length >= 4);
+  if (sa.length === 0 || ca.length === 0) return { ok: true };
+  const setB = new Set(ca);
+  for (const x of sa) {
+    if (setB.has(x)) return { ok: true };
+  }
+  const blobB = normSku(candidate.titleNorm);
+  const blobA = normSku(source.titleNorm);
+  for (const x of sa) {
+    if (blobB.includes(x)) return { ok: true };
+  }
+  for (const x of ca) {
+    if (blobA.includes(x)) return { ok: true };
+  }
+  return hardGateFail(
+    `monitor_model_mismatch(source_tokens=${sa.join(",")},candidate_tokens=${ca.join(",")})`
+  );
+}
+
+export function runMonitorHardGates(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): HardGateResult {
+  const gates: Array<() => HardGateResult> = [
+    () => checkMonitorBrandStrictGate(source, candidate),
+    () => checkMonitorModelGate(source, candidate),
+  ];
+  for (const g of gates) {
+    const r = g();
+    if (!r.ok) return r;
+  }
+  return { ok: true };
 }
 
 export function checkTvBrandStrictGate(
@@ -435,6 +577,52 @@ export function scoreTvStructured(
   return { score, reasons };
 }
 
+function scoreMonitorStructured(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): { score: number; reasons: string[] } {
+  const reasons: string[] = [];
+  let score = 0;
+  if (source.brand && candidate.brand && source.brand === candidate.brand) {
+    score += 35;
+    reasons.push("brand_match=35");
+  } else if (!source.brand || !candidate.brand) {
+    score += 12;
+    reasons.push("brand_partial=12");
+  } else {
+    reasons.push("brand_mismatch=0");
+  }
+  const sa = source.structured.sizeInches;
+  const sb = candidate.structured.sizeInches;
+  if (sa != null && sb != null && sa === sb) {
+    score += 35;
+    reasons.push("diagonal_match=35");
+  } else {
+    reasons.push("diagonal_unknown_or_mismatch=0");
+  }
+  const setA = new Set(source.modelTokens.map((t) => normSku(t)).filter((t) => t.length >= 3));
+  let overlap = 0;
+  for (const t of candidate.modelTokens) {
+    const k = normSku(t);
+    if (k.length >= 3 && setA.has(k)) overlap++;
+  }
+  if (overlap > 0) {
+    score += 30;
+    reasons.push(`model_token_overlap=${overlap}(+30)`);
+  } else {
+    const ctr = tokenContainmentRatio(
+      source.titleNorm.split(/\s+/).filter((w) => w.length >= 3),
+      candidate.titleNorm.split(/\s+/).filter((w) => w.length >= 3)
+    );
+    const add = Math.round(ctr * 25);
+    score += add;
+    reasons.push(`title_containment_monitor=${ctr.toFixed(2)}(+${add})`);
+  }
+  const total = Math.min(100, score);
+  reasons.push(`monitor_attr_total=${total}`);
+  return { score: total, reasons };
+}
+
 function scoreApparelStructured(
   source: NormalizedProduct,
   candidate: NormalizedProduct
@@ -530,6 +718,26 @@ function scoreGenericStructured(
   return { score, reasons };
 }
 
+/**
+ * Structured attribute score (0–100) after hard gates succeed — drives API match tiers.
+ */
+export function attributeScoreForPair(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): { score: number; reasons: string[] } {
+  const isTv = source.category === "tv" && candidate.category === "tv";
+  const isMonitor =
+    source.category === "monitor" && candidate.category === "monitor";
+  const isApparel =
+    toComparisonCategory(source.category) === "apparel" &&
+    toComparisonCategory(candidate.category) === "apparel";
+
+  if (isTv) return scoreTvStructured(source, candidate);
+  if (isMonitor) return scoreMonitorStructured(source, candidate);
+  if (isApparel) return scoreApparelStructured(source, candidate);
+  return scoreGenericStructured(source, candidate);
+}
+
 export function runHardGates(
   source: NormalizedProduct,
   candidate: NormalizedProduct
@@ -537,9 +745,17 @@ export function runHardGates(
   const bucket = checkComparisonCategoryGate(source, candidate);
   if (!bucket.ok) return bucket;
 
+  const generalScreen = checkBothGeneralDisplaySizeStrictGate(source, candidate);
+  if (!generalScreen.ok) return generalScreen;
+
   if (source.category === "tv" && candidate.category === "tv") {
     const tvSize = checkTvSizeStrictGate(source, candidate);
     if (!tvSize.ok) return tvSize;
+  }
+
+  if (source.category === "monitor" && candidate.category === "monitor") {
+    const monSize = checkMonitorSizeStrictGate(source, candidate);
+    if (!monSize.ok) return monSize;
   }
 
   const apparelGender = checkApparelGenderGate(source, candidate);
@@ -553,6 +769,9 @@ export function runHardGates(
 
   if (source.category === "tv" && candidate.category === "tv") {
     return runTvHardGates(source, candidate);
+  }
+  if (source.category === "monitor" && candidate.category === "monitor") {
+    return runMonitorHardGates(source, candidate);
   }
   return { ok: true };
 }

@@ -1,3 +1,7 @@
+import {
+  scoreAttributeMatch,
+  type AttributeMatchResult,
+} from "./attributeMatch";
 import { parseProductInput } from "./inputParse";
 import {
   areSameRetailerListings,
@@ -5,7 +9,7 @@ import {
   buildNormalizedSearchQuery,
 } from "./normalize";
 import { productProviderRegistry } from "./registry";
-import { rankMatchTypes, scoreQueryRelevance } from "./searchRelevance";
+import { rankMatchTypes } from "./searchRelevance";
 import type {
   CandidateProduct,
   CandidateStepTrace,
@@ -129,13 +133,19 @@ function emptyDiagnostics(
   };
 }
 
-function relevanceReasonLine(rel: ReturnType<typeof scoreQueryRelevance>): string {
-  return `Search match: ${rel.matchType} (${Math.round(rel.confidence * 100)}% relevance)`;
+function relevanceReasonLine(rel: AttributeMatchResult): string {
+  const label =
+    rel.matchType === "high"
+      ? "Strong attribute match"
+      : rel.matchType === "medium"
+        ? "Moderate attribute match"
+        : "Related listing";
+  return `${label}: ${rel.matchType} (${Math.round(rel.confidence * 100)}% confidence, score ${rel.relevanceScore})`;
 }
 
 function toCompareApiCandidate(
   c: CandidateProduct,
-  rel: ReturnType<typeof scoreQueryRelevance>,
+  rel: AttributeMatchResult,
   affiliateUrl: string
 ): CompareApiCandidate {
   return {
@@ -150,13 +160,14 @@ function toCompareApiCandidate(
     confidence: rel.confidence,
     matchType: rel.matchType,
     relevanceScore: rel.relevanceScore,
+    score: rel.relevanceScore,
     relevanceReason: relevanceReasonLine(rel),
   };
 }
 
 function toDeal(
   row: CompareApiCandidate,
-  rel: ReturnType<typeof scoreQueryRelevance>
+  rel: AttributeMatchResult
 ): CompareProductDeal {
   return {
     store: row.store,
@@ -169,6 +180,7 @@ function toDeal(
     confidence: rel.confidence,
     matchType: rel.matchType,
     relevanceScore: rel.relevanceScore,
+    score: rel.relevanceScore,
     relevanceReason: relevanceReasonLine(rel),
   };
 }
@@ -356,7 +368,7 @@ export async function compareProduct(
 
   type Row = {
     api: CompareApiCandidate;
-    rel: ReturnType<typeof scoreQueryRelevance>;
+    rel: AttributeMatchResult;
   };
 
   const rows: Row[] = [];
@@ -387,7 +399,38 @@ export async function compareProduct(
       continue;
     }
 
-    const rel = scoreQueryRelevance(queryForMatch, c.title);
+    const rel = scoreAttributeMatch(
+      referenceNormalized,
+      c.normalized,
+      queryForMatch,
+      c.title
+    );
+
+    if (rel.rejected) {
+      candidateSteps.push({
+        key: candidateKey(c, candidateSteps.length),
+        store: c.store,
+        title: c.title,
+        price: c.price,
+        productUrl: c.productUrl,
+        outcome: "rejected_hard_gate",
+        rejectionReason: rel.rejectionReason,
+        matchScore: rel.relevanceScore,
+        matchReasons: rel.reasons,
+        detail: rel.rejectionReason ?? "hard_gate_or_min_relevance",
+      });
+      pipelineLog("candidate_rejected", {
+        store: c.store,
+        title: c.title.slice(0, 80),
+        reason: rel.rejectionReason ?? "attribute_gate",
+      });
+      traceLog("candidate_attribute_rejected", {
+        store: c.store,
+        rejectionReason: rel.rejectionReason,
+      });
+      continue;
+    }
+
     const api = toCompareApiCandidate(c, rel, affiliateFor(c));
     rows.push({ api, rel });
 
@@ -402,13 +445,14 @@ export async function compareProduct(
       matchScore: rel.relevanceScore,
       matchReasons: rel.reasons,
       eligibleForComparable: rel.matchType === "high",
-      detail: `search_relevance:${rel.matchType}`,
+      detail: `attribute_match:${rel.matchType}`,
     });
 
-    traceLog("candidate_search_relevance", {
+    traceLog("candidate_attribute_match", {
       store: c.store,
       matchType: rel.matchType,
       confidence: rel.confidence,
+      score: rel.relevanceScore,
     });
   }
 
@@ -447,7 +491,11 @@ export async function compareProduct(
       : undefined;
 
   if (flatSorted.length === 0) {
-    pipelineLog("selection_final", { bestDeal: null, reason: "no_priced_candidates" });
+    const allFilteredByAttributes = deduped.length > 0 && rows.length === 0;
+    pipelineLog("selection_final", {
+      bestDeal: null,
+      reason: allFilteredByAttributes ? "all_candidates_failed_attribute_gates" : "no_priced_candidates",
+    });
     return {
       query: parsed.productQuery,
       normalizedQuery,
@@ -456,11 +504,15 @@ export async function compareProduct(
       bestDeal: null,
       showBestDeal: false,
       confidence: null,
-      message: "No search results with prices yet. Try a different product name.",
+      message: allFilteredByAttributes
+        ? "No listings matched closely enough after attribute checks. Try adding brand, size, or model number."
+        : "No search results with prices yet. Try a different product name.",
       sourceProduct,
       alternatives: [],
       savings: null,
-      comparisonMessage: "No priced listings found for that search.",
+      comparisonMessage: allFilteredByAttributes
+        ? "No close matches passed filters."
+        : "No priced listings found for that search.",
       ...(tracePayload() ? { comparisonTrace: tracePayload()! } : {}),
     };
   }
