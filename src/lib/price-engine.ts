@@ -42,7 +42,7 @@ export type ProductData = {
   
     let productName = "Unknown Product";
     let source = "Brainy Search";
-    let price = 60;
+    const price = 60;
   
     if (inputType === "url") {
       productName = "Product from URL";
@@ -80,11 +80,9 @@ export type ProductData = {
     return `https://brainyfinance.app/deal?query=${encoded}&ref=brainyfinance`;
   }
   
-  // Simula comparación de precios
-  export async function comparePrices(productName: string) {
-    return {
-      bestPrice: 55,
-      store: "Amazon",
-      savings: 5,
-    };
+  /** @deprecated Use `compareProduct` from `@/lib/product/compareEngine` — no stub data. */
+  export async function comparePrices() {
+    throw new Error(
+      "comparePrices is not implemented; use compareProduct from @/lib/product/compareEngine"
+    );
   }

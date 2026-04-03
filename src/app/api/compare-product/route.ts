@@ -5,6 +5,7 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const input = body?.input?.trim();
+    const debug = Boolean(body?.debug);
 
     if (!input) {
       return NextResponse.json(
@@ -13,7 +14,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const result = await compareProduct(input);
+    const result = await compareProduct(input, { debug });
 
     return NextResponse.json(result);
   } catch (error) {

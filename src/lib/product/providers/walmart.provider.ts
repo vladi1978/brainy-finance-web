@@ -5,7 +5,7 @@ import {
 } from "./base";
 import { ProductSearchResult } from "./search-result";
 import { scrapeProduct } from "../scrapeProduct";
-import { fetchParsedWalmartSearch } from "../searchParse";
+import { fetchWalmartSerpWithDiagnostics } from "../searchParse";
 
 function normalizeText(value: string): string {
   return value
@@ -96,24 +96,23 @@ export const walmartProvider: ProductProvider = {
     };
   },
 
-  async searchByQuery(
-    input: ProviderSearchInput
-  ): Promise<ProductSearchResult[]> {
+  async searchByQuery(input: ProviderSearchInput) {
     const query =
       input.sourceProduct?.title ||
       input.normalizedQuery ||
       input.raw;
 
     const normalizedQuery = normalizeText(query);
-    const candidates = await fetchParsedWalmartSearch(query, 12);
+    const { candidates, diagnostics } = await fetchWalmartSerpWithDiagnostics(
+      query,
+      12
+    );
 
-    if (candidates.length === 0) {
-      return [];
-    }
-
-    return candidates.map((c) =>
+    const results: ProductSearchResult[] = candidates.map((c) =>
       candidateToSearchResult(c, input.normalizedQuery || normalizedQuery)
     );
+
+    return { results, serp: diagnostics };
   },
 
   buildAffiliateUrl(productUrl: string): string {

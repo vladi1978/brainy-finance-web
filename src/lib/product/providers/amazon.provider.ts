@@ -5,7 +5,7 @@ import {
 } from "./base";
 import { ProductSearchResult } from "./search-result";
 import { scrapeProduct } from "../scrapeProduct";
-import { fetchParsedAmazonSearch } from "../searchParse";
+import { fetchAmazonSerpWithDiagnostics } from "../searchParse";
 
 function normalizeText(value: string): string {
   return value
@@ -98,24 +98,23 @@ export const amazonProvider: ProductProvider = {
     };
   },
 
-  async searchByQuery(
-    input: ProviderSearchInput
-  ): Promise<ProductSearchResult[]> {
+  async searchByQuery(input: ProviderSearchInput) {
     const query =
       input.sourceProduct?.title ||
       input.normalizedQuery ||
       input.raw;
 
     const normalizedQuery = normalizeText(query);
-    const candidates = await fetchParsedAmazonSearch(query, 12);
+    const { candidates, diagnostics } = await fetchAmazonSerpWithDiagnostics(
+      query,
+      12
+    );
 
-    if (candidates.length === 0) {
-      return [];
-    }
-
-    return candidates.map((c) =>
+    const results: ProductSearchResult[] = candidates.map((c) =>
       candidateToSearchResult(c, input.normalizedQuery || normalizedQuery)
     );
+
+    return { results, serp: diagnostics };
   },
 
   buildAffiliateUrl(productUrl: string): string {

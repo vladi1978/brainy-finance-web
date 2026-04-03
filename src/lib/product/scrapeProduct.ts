@@ -252,7 +252,7 @@ function pickPrice(
     price = parsePriceFromString(getMetaProperty(html, "og:price:amount"));
   }
 
-  let currency =
+  const currency =
     getMetaProperty(html, "og:price:currency") ||
     getMetaProperty(html, "product:price:currency") ||
     jsonLd.currency ||
@@ -308,19 +308,39 @@ export async function scrapeProduct(url: string): Promise<ScrapedProduct | null>
   };
 }
 
+export type FetchHtmlResult = {
+  html: string | null;
+  httpStatus: number | null;
+  byteLength: number;
+};
+
 /**
- * Fetches store pages (e.g. search SERP) with the same stealth fingerprint as PDP scraping.
+ * Fetches store pages (e.g. search SERP) with HTTP metadata for diagnostics.
  */
-export async function fetchSearchPageHtml(url: string): Promise<string | null> {
+export async function fetchSearchPageHtmlDetailed(
+  url: string
+): Promise<FetchHtmlResult> {
   try {
     const res = await fetch(url, {
       headers: STEALTH_HEADERS,
       cache: "no-store",
       redirect: "follow",
     });
-    if (!res.ok) return null;
-    return await res.text();
+    const httpStatus = res.status;
+    if (!res.ok) {
+      return { html: null, httpStatus, byteLength: 0 };
+    }
+    const html = await res.text();
+    return { html, httpStatus, byteLength: html.length };
   } catch {
-    return null;
+    return { html: null, httpStatus: null, byteLength: 0 };
   }
+}
+
+/**
+ * Fetches store pages (e.g. search SERP) with the same stealth fingerprint as PDP scraping.
+ */
+export async function fetchSearchPageHtml(url: string): Promise<string | null> {
+  const { html } = await fetchSearchPageHtmlDetailed(url);
+  return html;
 }

@@ -1,3 +1,4 @@
+import type { StoreSerpDiagnostics } from "../searchParse";
 import { StoreName, ProductSearchResult } from "./search-result";
 
 export type ExtractedSourceProduct = {
@@ -20,6 +21,12 @@ export type ProviderSearchInput = {
   sourceProduct?: ExtractedSourceProduct | null;
 };
 
+/** One retailer search execution: parsed rows + fetch/parse diagnostics. */
+export type ProviderSearchOutcome = {
+  results: ProductSearchResult[];
+  serp: StoreSerpDiagnostics;
+};
+
 export interface ProductProvider {
   store: StoreName;
 
@@ -27,7 +34,7 @@ export interface ProductProvider {
 
   extractFromUrl?(url: string): Promise<ExtractedSourceProduct | null>;
 
-  searchByQuery(input: ProviderSearchInput): Promise<ProductSearchResult[]>;
+  searchByQuery(input: ProviderSearchInput): Promise<ProviderSearchOutcome>;
 
   buildAffiliateUrl?(productUrl: string): string;
 }

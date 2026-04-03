@@ -1,4 +1,7 @@
-import { fetchSearchPageHtml } from "./scrapeProduct";
+import {
+  fetchSearchPageHtml,
+  fetchSearchPageHtmlDetailed,
+} from "./scrapeProduct";
 
 export type ParsedSearchCandidate = {
   title: string;
@@ -222,4 +225,139 @@ export async function fetchParsedWalmartSearch(
   const html = await fetchSearchPageHtml(url);
   if (!html) return [];
   return parseWalmartSearchHtml(html, limit);
+}
+
+/** Structured SERP fetch outcome for logs and scaling. */
+export type StoreSerpDiagnostics = {
+  store: "amazon" | "walmart";
+  url: string;
+  fetchOk: boolean;
+  httpStatus: number | null;
+  byteLength: number;
+  candidateCount: number;
+  hints: string[];
+};
+
+function amazonSerpHints(
+  html: string | null,
+  candidateCount: number
+): string[] {
+  const hints: string[] = [];
+  if (html == null) {
+    hints.push("fetch_returned_no_html");
+    return hints;
+  }
+  if (!html.includes('data-component-type="s-search-result"')) {
+    hints.push("parser_marker_missing_s_search_result");
+  }
+  if (/api-services-support|Enter the characters you see/i.test(html)) {
+    hints.push("possible_bot_or_captcha_page");
+  }
+  if (/sorry.*we couldn|try.*different.*keyword/i.test(html)) {
+    hints.push("possible_block_or_error_page");
+  }
+  if (candidateCount === 0 && html.length > 8000) {
+    hints.push("zero_candidates_despite_large_html");
+  }
+  return hints;
+}
+
+function walmartSerpHints(
+  html: string | null,
+  candidateCount: number
+): string[] {
+  const hints: string[] = [];
+  if (html == null) {
+    hints.push("fetch_returned_no_html");
+    return hints;
+  }
+  if (/Robot or human/i.test(html)) {
+    hints.push("walmart_bot_interstitial");
+  }
+  if (candidateCount === 0 && html.length > 8000) {
+    hints.push("zero_candidates_despite_large_html");
+  }
+  return hints;
+}
+
+export async function fetchAmazonSerpWithDiagnostics(
+  query: string,
+  limit = 12
+): Promise<{
+  candidates: ParsedSearchCandidate[];
+  diagnostics: StoreSerpDiagnostics;
+}> {
+  const q = query.trim();
+  const url = `https://www.amazon.com/s?k=${encodeURIComponent(q)}`;
+  if (!q) {
+    return {
+      candidates: [],
+      diagnostics: {
+        store: "amazon",
+        url,
+        fetchOk: false,
+        httpStatus: null,
+        byteLength: 0,
+        candidateCount: 0,
+        hints: ["empty_query"],
+      },
+    };
+  }
+
+  const { html, httpStatus, byteLength } =
+    await fetchSearchPageHtmlDetailed(url);
+  const candidates = html
+    ? parseAmazonSearchHtml(html, limit)
+    : [];
+  const diagnostics: StoreSerpDiagnostics = {
+    store: "amazon",
+    url,
+    fetchOk: html != null && html.length > 0,
+    httpStatus,
+    byteLength,
+    candidateCount: candidates.length,
+    hints: amazonSerpHints(html, candidates.length),
+  };
+  return { candidates, diagnostics };
+}
+
+export async function fetchWalmartSerpWithDiagnostics(
+  query: string,
+  limit = 12
+): Promise<{
+  candidates: ParsedSearchCandidate[];
+  diagnostics: StoreSerpDiagnostics;
+}> {
+  const q = query.trim();
+  const url = `https://www.walmart.com/search?q=${encodeURIComponent(q)}`;
+  if (!q) {
+    return {
+      candidates: [],
+      diagnostics: {
+        store: "walmart",
+        url,
+        fetchOk: false,
+        httpStatus: null,
+        byteLength: 0,
+        candidateCount: 0,
+        hints: ["empty_query"],
+      },
+    };
+  }
+
+  const { html, httpStatus, byteLength } =
+    await fetchSearchPageHtmlDetailed(url);
+  const candidates = html
+    ? parseWalmartSearchHtml(html, limit)
+    : [];
+  const diagnostics: StoreSerpDiagnostics = {
+    store: "walmart",
+    url,
+    fetchOk: html != null && html.length > 0,
+    httpStatus,
+    byteLength,
+    candidateCount: candidates.length,
+    hints: walmartSerpHints(html, candidates.length),
+  };
+  return { candidates, diagnostics };
 }
