@@ -59,8 +59,16 @@ function getMetaProperty(html: string, property: string): string | null {
 
 function parsePriceFromString(raw: string | null | undefined): number | null {
   if (raw == null || raw === "") return null;
-  const n = parseFloat(String(raw).replace(/[^0-9.]/g, ""));
+  const cleaned = String(raw)
+    .replace(/,/g, "")
+    .replace(/[^0-9.]/g, "");
+  const n = parseFloat(cleaned);
   return Number.isFinite(n) ? n : null;
+}
+
+/** Reasonable PDP range — excludes obvious junk / SKU fragments */
+function isPlausibleProductPrice(n: number): boolean {
+  return Number.isFinite(n) && n >= 0.01 && n < 1_000_000;
 }
 
 function visitJsonLdNode(
@@ -75,6 +83,32 @@ function visitJsonLdNode(
     : o["@type"] != null
       ? [o["@type"]]
       : [];
+
+  const isOffer = types.some(
+    (x) => x === "Offer" || x === "AggregateOffer" || x === "OfferForPurchase"
+  );
+
+  if (isOffer && out.price == null) {
+    const raw =
+      types.some((x) => x === "AggregateOffer") && (o.lowPrice ?? o.highPrice)
+        ? (o.lowPrice ?? o.highPrice)
+        : o.price;
+    if (raw != null) {
+      const p = raw;
+      const n =
+        typeof p === "number"
+          ? p
+          : parseFloat(String(p).replace(/[^0-9.]/g, ""));
+      if (Number.isFinite(n) && isPlausibleProductPrice(n)) out.price = n;
+    }
+    if (
+      !out.currency &&
+      typeof o.priceCurrency === "string" &&
+      o.priceCurrency
+    ) {
+      out.currency = o.priceCurrency;
+    }
+  }
 
   if (
     types.some((x) => x === "Product" || x === "IndividualProduct") &&
@@ -216,15 +250,221 @@ function tryWalmartDirectTitle(html: string): string | null {
   return null;
 }
 
-function tryDirectPrice(html: string): number | null {
-  const itemprop = html.match(
+/**
+ * Meta tags and itemprop (any attribute order) for common retailer PDPs.
+ */
+function tryMetaAndItempropPrice(html: string): number | null {
+  const metaPriceAmount =
+    getMetaProperty(html, "product:price:amount") ||
+    getMetaProperty(html, "og:price:amount");
+
+  let n = parsePriceFromString(metaPriceAmount);
+  if (n != null && isPlausibleProductPrice(n)) return n;
+
+  const itempropPatterns = [
+    /itemprop=["']price["'][^>]*content=["']([0-9]+(?:\.[0-9]+)?)["']/i,
+    /content=["']([0-9]+(?:\.[0-9]+)?)["'][^>]*itemprop=["']price["']/i,
+    /<meta[^>]*itemprop=["']price["'][^>]*content=["']([0-9]+(?:\.[0-9]+)?)["']/i,
+    /<meta[^>]*content=["']([0-9]+(?:\.[0-9]+)?)["'][^>]*itemprop=["']price["']/i,
+  ];
+  for (const re of itempropPatterns) {
+    const m = html.match(re);
+    n = parsePriceFromString(m?.[1]);
+    if (n != null && isPlausibleProductPrice(n)) return n;
+  }
+
+  const spanItemprop = html.match(
+    /<[^>]+itemprop=["']price["'][^>]*>([^<]{0,40})</i
+  );
+  n = parsePriceFromString(spanItemprop?.[1]);
+  if (n != null && isPlausibleProductPrice(n)) return n;
+
+  return null;
+}
+
+function sliceAmazonBuybox(html: string): string {
+  const markers = [
+    /id=["']corePrice_feature_div["']/i,
+    /id=["']corePriceDisplay_desktop_feature_div["']/i,
+    /id=["']priceblock_inside_buybox["']/i,
+    /data-feature-name=["']corePrice["']/i,
+    /class=["'][^"']*a-price[^"']*a-text-price[^"']*["']/i,
+  ];
+  for (const re of markers) {
+    const m = re.exec(html);
+    if (m?.index != null) {
+      return html.slice(m.index, m.index + 16000);
+    }
+  }
+  return html.slice(0, 120000);
+}
+
+/**
+ * Amazon PDP: buybox a-offscreen, a-price-whole + fraction, itemprop, visible $x.xx
+ */
+function extractAmazonPdpPrice(html: string): number | null {
+  const focus = sliceAmazonBuybox(html);
+
+  const offscreens = [
+    ...focus.matchAll(/class=["'][^"']*a-offscreen[^"']*["'][^>]*>\s*([^<]+)</gi),
+  ];
+  for (const m of offscreens) {
+    const n = parsePriceFromString(m[1]);
+    if (n != null && isPlausibleProductPrice(n)) return n;
+  }
+
+  const whole = focus.match(/class="[^"]*a-price-whole[^"]*"[^>]*>([0-9,]+)/i);
+  const frac = focus.match(/class="[^"]*a-price-fraction[^"]*"[^>]*>([0-9]+)/i);
+  if (whole?.[1] && frac?.[1]) {
+    const n = parseFloat(`${whole[1].replace(/,/g, "")}.${frac[1]}`);
+    if (isPlausibleProductPrice(n)) return n;
+  }
+
+  const twisterWhole = focus.match(
+    /class="[^"]*a-price[^"]*"[^>]*>[\s\S]{0,400}?class="[^"]*a-price-whole[^"]*"[^>]*>([0-9,]+)/i
+  );
+  const twisterFrac = focus.match(
+    /class="[^"]*a-price-fraction[^"]*"[^>]*>([0-9]+)/i
+  );
+  if (twisterWhole?.[1] && twisterFrac?.[1]) {
+    const n = parseFloat(
+      `${twisterWhole[1].replace(/,/g, "")}.${twisterFrac[1]}`
+    );
+    if (isPlausibleProductPrice(n)) return n;
+  }
+
+  const ip = focus.match(
     /itemprop=["']price["'][^>]*content=["']([0-9]+(?:\.[0-9]+)?)["']/i
   );
-  if (itemprop) return parsePriceFromString(itemprop[1]);
+  let n = parsePriceFromString(ip?.[1]);
+  if (n != null && isPlausibleProductPrice(n)) return n;
 
-  const productAmount = getMetaProperty(html, "product:price:amount");
-  const n = parsePriceFromString(productAmount);
-  return n;
+  const vis = focus.match(/\$\s*([0-9]{1,5}(?:\.[0-9]{2})?)/);
+  n = parsePriceFromString(vis?.[1]);
+  if (n != null && isPlausibleProductPrice(n)) return n;
+
+  return null;
+}
+
+function walkJsonForUsdPrices(
+  obj: unknown,
+  depth: number,
+  out: number[]
+): void {
+  if (depth > 18 || obj == null) return;
+  if (typeof obj === "number") return;
+  if (typeof obj !== "object") return;
+
+  if (Array.isArray(obj)) {
+    for (const x of obj) walkJsonForUsdPrices(x, depth + 1, out);
+    return;
+  }
+
+  const r = obj as Record<string, unknown>;
+  const cur = r.currency ?? r.priceCurrency;
+  const curOk =
+    cur === "USD" ||
+    cur === "usd" ||
+    cur === undefined ||
+    cur === null ||
+    cur === "";
+
+  if (curOk) {
+    if (typeof r.price === "number" && isPlausibleProductPrice(r.price)) {
+      out.push(r.price);
+    } else if (typeof r.price === "string") {
+      const pn = parsePriceFromString(r.price);
+      if (pn != null && isPlausibleProductPrice(pn)) out.push(pn);
+    }
+  }
+  if (
+    r.currentPrice &&
+    typeof r.currentPrice === "object" &&
+    !Array.isArray(r.currentPrice)
+  ) {
+    const cp = r.currentPrice as Record<string, unknown>;
+    if (
+      typeof cp.price === "number" &&
+      isPlausibleProductPrice(cp.price)
+    ) {
+      out.push(cp.price);
+    }
+  }
+  for (const v of Object.values(r)) walkJsonForUsdPrices(v, depth + 1, out);
+}
+
+function tryNextDataScriptPrice(html: string): number | null {
+  const m = html.match(
+    /<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i
+  );
+  if (!m?.[1]) return null;
+  try {
+    const data = JSON.parse(m[1]) as unknown;
+    const candidates: number[] = [];
+    walkJsonForUsdPrices(data, 0, candidates);
+    if (candidates.length === 0) return null;
+    const plausible = candidates.filter((p) => p > 0.01 && p < 100_000);
+    if (plausible.length === 0) return null;
+    return Math.min(...plausible);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Walmart PDP: meta, JSON-LD (caller), __NEXT_DATA__, aria, automation ids, visible text.
+ */
+function extractWalmartPdpPrice(html: string): number | null {
+  let n = tryMetaAndItempropPrice(html);
+  if (n != null) return n;
+
+  n = tryNextDataScriptPrice(html);
+  if (n != null) return n;
+
+  const aria = html.match(/aria-label=["'][^"']*\$\s*([0-9]+(?:\.[0-9]{2})?)/i);
+  n = parsePriceFromString(aria?.[1]);
+  if (n != null && isPlausibleProductPrice(n)) return n;
+
+  const cur = html.match(/current price\s*\$\s*([0-9]+(?:\.[0-9]{2})?)/i);
+  n = parsePriceFromString(cur?.[1]);
+  if (n != null && isPlausibleProductPrice(n)) return n;
+
+  const gpt = html.match(
+    /data-test-id=["']gpt-main-price-display["'][\s\S]{0,800}?\$\s*<\/span>\s*<span[^>]*>([0-9]+)<\/span>\s*<span[^>]*>([0-9]{2})<\/span>/i
+  );
+  if (gpt?.[1] != null && gpt?.[2] != null) {
+    n = parseFloat(`${gpt[1]}.${gpt[2]}`);
+    if (isPlausibleProductPrice(n)) return n;
+  }
+
+  const autoPrice = html.match(
+    /data-automation-id=["'](?:product-price|price)[^"']*["'][\s\S]{0,400}?\$\s*([0-9]+(?:\.[0-9]{2})?)/i
+  );
+  n = parsePriceFromString(autoPrice?.[1]);
+  if (n != null && isPlausibleProductPrice(n)) return n;
+
+  const priceClass = html.match(
+    /class=["'][^"']*(?:Price|price|prod-Price)[^"']*["'][^>]*>\s*\$\s*([0-9]+(?:\.[0-9]{2})?)/i
+  );
+  n = parsePriceFromString(priceClass?.[1]);
+  if (n != null && isPlausibleProductPrice(n)) return n;
+
+  const scan = html.slice(0, 200_000);
+  const dollars = [...scan.matchAll(/\$\s*([0-9]{1,5}\.[0-9]{2})\b/g)].map(
+    (x) => parseFloat(x[1]!)
+  );
+  const plausible = dollars.filter(
+    (p) => isPlausibleProductPrice(p) && p >= 1 && p <= 50_000
+  );
+  if (plausible.length > 0) {
+    return plausible[0]!;
+  }
+
+  return null;
+}
+
+function isAmazonHostname(host: string): boolean {
+  return /amazon\./i.test(host) || /^a\.co$/i.test(host);
 }
 
 function pickTitle(
@@ -235,7 +475,7 @@ function pickTitle(
   if (jsonLd.name && jsonLd.name.trim()) return jsonLd.name.trim();
 
   const isWalmart = /walmart\.com/i.test(host);
-  const isAmazon = /amazon\./i.test(host);
+  const isAmazon = isAmazonHostname(host);
 
   if (isAmazon) {
     const t = tryAmazonDirectTitle(html);
@@ -254,16 +494,37 @@ function pickTitle(
 
 function pickPrice(
   html: string,
-  jsonLd: ReturnType<typeof extractFromJsonLd>
+  jsonLd: ReturnType<typeof extractFromJsonLd>,
+  host: string
 ): { price: number | null; currency: string } {
-  let price: number | null = tryDirectPrice(html);
+  const isWalmart = /walmart\.com/i.test(host);
+  const isAmazon = isAmazonHostname(host);
+
+  let price: number | null = null;
+
+  if (isWalmart) {
+    price = extractWalmartPdpPrice(html);
+  } else if (isAmazon) {
+    price = extractAmazonPdpPrice(html);
+  }
 
   if (price == null) {
-    price = jsonLd.price ?? null;
+    price = tryMetaAndItempropPrice(html);
+  }
+
+  if (price == null) {
+    const jp = jsonLd.price ?? null;
+    price = jp != null && isPlausibleProductPrice(jp) ? jp : null;
   }
 
   if (price == null) {
     price = parsePriceFromString(getMetaProperty(html, "og:price:amount"));
+  }
+
+  if (price == null) {
+    const loose = html.match(/\$\s*([0-9]{1,6}(?:\.[0-9]{2})?)/);
+    const n = parsePriceFromString(loose?.[1]);
+    price = n != null && isPlausibleProductPrice(n) ? n : null;
   }
 
   const currency =
@@ -304,7 +565,7 @@ export async function scrapeProduct(url: string): Promise<ScrapedProduct | null>
 
   let productName = pickTitle(html, host, jsonLd);
 
-  const { price, currency } = pickPrice(html, jsonLd);
+  const { price, currency } = pickPrice(html, jsonLd, host);
 
   if (!productName) {
     const ogTitle = getMetaProperty(html, "og:title");

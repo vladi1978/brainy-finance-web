@@ -175,6 +175,8 @@ export type CompareProductResponse = {
   } | null;
   bestDeal: CompareProductDeal | null;
   alternatives: CompareProductDeal[];
+  /** `max(0, source originalPrice − best deal price)` when both are valid; otherwise null */
+  savings: number | null;
   comparisonMessage?: string | null;
   /** When true, UI may label the result as “Closest Similar Deal” */
   closestSimilarDealOnly?: boolean;

@@ -42,6 +42,18 @@ function isValidComparablePrice(price: number | null | undefined): boolean {
   return price != null && Number.isFinite(price) && price > 0;
 }
 
+function computeSavings(
+  sourcePrice: number | null | undefined,
+  bestPrice: number | null | undefined
+): number | null {
+  if (!isValidComparablePrice(sourcePrice) || !isValidComparablePrice(bestPrice)) {
+    return null;
+  }
+  const s = sourcePrice!;
+  const b = bestPrice!;
+  return Math.max(0, s - b);
+}
+
 function normalizeUrlKey(url: string): string {
   try {
     return url.split("?")[0].toLowerCase().trim();
@@ -523,6 +535,7 @@ export async function compareProduct(
       sourceProduct: sourceSummaryForApi(sourceProduct, searchBase),
       bestDeal: null,
       alternatives: [],
+      savings: null,
       comparisonMessage: "No comparable match found yet",
       rejectionReasons: buildRejectionReasons(),
       ...(trace ? { comparisonTrace: trace } : {}),
@@ -608,6 +621,10 @@ export async function compareProduct(
     sourceProduct: sourceSummaryForApi(sourceProduct, searchBase),
     bestDeal,
     alternatives,
+    savings: computeSavings(
+      sourceProduct?.originalPrice,
+      winner.candidate.price
+    ),
     comparisonMessage: null,
     closestSimilarDealOnly: pickedAsClosestSimilar,
     rejectionReasons: [],
