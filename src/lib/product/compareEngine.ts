@@ -8,7 +8,10 @@ import {
   buildNormalizedProduct,
   buildNormalizedSearchQuery,
 } from "./normalize";
-import { productProviderRegistry } from "./registry";
+import {
+  findProductProviderForUrl,
+  productProviderRegistry,
+} from "./registry";
 import { rankMatchTypes } from "./searchRelevance";
 import type {
   CandidateProduct,
@@ -21,6 +24,7 @@ import type {
   ComparisonTrace,
   ProviderSearchDiagnostics,
   SelectionTrace,
+  SourceProduct,
   StoreId,
 } from "./types";
 
@@ -54,15 +58,29 @@ function normalizeUrlKey(url: string): string {
 
 function queryDerivedSourceSummary(
   productQuery: string,
-  urlStore: StoreId | null,
+  detectedStore: StoreId | null,
   norm: import("./types").NormalizedProduct
 ): NonNullable<CompareProductResponse["sourceProduct"]> {
   return {
     title: productQuery,
-    store: urlStore ?? "unknown",
+    store: detectedStore ?? "unknown",
     originalPrice: null,
     currency: "USD",
     normalizedTitle: norm.titleNorm,
+  };
+}
+
+function extractedSourceSummary(
+  sp: SourceProduct,
+  fallbackUrl?: string
+): NonNullable<CompareProductResponse["sourceProduct"]> {
+  return {
+    sourceUrl: sp.sourceUrl ?? fallbackUrl,
+    store: sp.store,
+    title: sp.title,
+    originalPrice: sp.originalPrice,
+    currency: sp.currency,
+    normalizedTitle: sp.normalized.titleNorm,
   };
 }
 
@@ -246,7 +264,29 @@ export async function compareProduct(
   });
 
   const parsed = parseProductInput(input);
-  if (!parsed.productQuery.trim()) {
+
+  let scrapedSource: SourceProduct | null = null;
+  if (parsed.inputUrl && !demoMode) {
+    const urlProvider = findProductProviderForUrl(parsed.inputUrl);
+    if (urlProvider) {
+      try {
+        scrapedSource = await urlProvider.extractSourceProduct(parsed.inputUrl);
+      } catch (err) {
+        pipelineLog("extract_source_failed", {
+          inputUrl: parsed.inputUrl.slice(0, 200),
+          error: err instanceof Error ? err.message : String(err),
+        });
+        scrapedSource = null;
+      }
+    }
+  }
+
+  const scrapedOk = Boolean(scrapedSource?.title?.trim());
+  const referenceProductQuery = scrapedOk
+    ? scrapedSource!.title.trim()
+    : parsed.productQuery.trim();
+
+  if (!referenceProductQuery) {
     pipelineLog("derive_query_empty", { inputUrl: parsed.inputUrl ?? null });
     return {
       query: parsed.rawInput,
@@ -266,16 +306,20 @@ export async function compareProduct(
     };
   }
 
-  const referenceNormalized = buildNormalizedProduct(parsed.productQuery);
+  const referenceNormalized = scrapedOk
+    ? scrapedSource!.normalized
+    : buildNormalizedProduct(parsed.productQuery);
+
   const normalizedQuery = buildNormalizedSearchQuery(
     referenceNormalized,
-    parsed.productQuery
+    referenceProductQuery
   );
 
   pipelineLog("derived_search_query", {
-    productQuery: parsed.productQuery.slice(0, 200),
+    productQuery: referenceProductQuery.slice(0, 200),
     normalizedQuery,
-    urlStore: parsed.urlStore,
+    detectedStore: parsed.detectedStore,
+    sourceFromPdp: scrapedOk,
   });
 
   traceLog("normalized_reference_profile", {
@@ -298,7 +342,7 @@ export async function compareProduct(
   const searchCtx = {
     rawInput: input,
     searchQuery: normalizedQuery,
-    productQuery: parsed.productQuery,
+    productQuery: referenceProductQuery,
   };
 
   if (demoMode) {
@@ -364,7 +408,7 @@ export async function compareProduct(
     c.affiliateUrl;
 
   const candidateSteps: CandidateStepTrace[] = [];
-  const queryForMatch = `${parsed.productQuery} ${normalizedQuery}`.trim();
+  const queryForMatch = `${referenceProductQuery} ${normalizedQuery}`.trim();
 
   type Row = {
     api: CompareApiCandidate;
@@ -458,11 +502,14 @@ export async function compareProduct(
 
   const flatSorted = sortCandidatesForDisplay(rows.map((r) => r.api));
 
-  const sourceProduct = queryDerivedSourceSummary(
-    parsed.productQuery,
-    parsed.urlStore,
-    referenceNormalized
-  );
+  const sourceProduct =
+    scrapedOk && scrapedSource
+      ? extractedSourceSummary(scrapedSource, parsed.inputUrl)
+      : queryDerivedSourceSummary(
+          parsed.productQuery,
+          parsed.detectedStore,
+          referenceNormalized
+        );
 
   const selectionBase: SelectionTrace = {
     trustworthyCount: rows.filter((r) => r.rel.matchType === "high").length,
@@ -474,14 +521,23 @@ export async function compareProduct(
     debug
       ? {
           inputRaw: input,
-          detectedStore: parsed.urlStore,
+          detectedStore: scrapedOk && scrapedSource ? scrapedSource.store : parsed.detectedStore,
           searchQueryUsed: normalizedQuery,
           demoMode,
-          sourceSummary: {
-            title: parsed.productQuery,
-            store: parsed.urlStore ?? "unknown",
-            originalPrice: null,
-          },
+          sourceSummary:
+            scrapedOk && scrapedSource
+              ? {
+                  title: scrapedSource.title,
+                  store: scrapedSource.store,
+                  originalPrice: scrapedSource.originalPrice,
+                  sourceUrl:
+                    scrapedSource.sourceUrl ?? parsed.inputUrl ?? undefined,
+                }
+              : {
+                  title: parsed.productQuery,
+                  store: parsed.detectedStore ?? "unknown",
+                  originalPrice: null,
+                },
           providerQueries,
           candidatesPerProvider,
           providerDiagnostics,
@@ -497,7 +553,7 @@ export async function compareProduct(
       reason: allFilteredByAttributes ? "all_candidates_failed_attribute_gates" : "no_priced_candidates",
     });
     return {
-      query: parsed.productQuery,
+      query: referenceProductQuery,
       normalizedQuery,
       candidates: [],
       resultsByStore: [],
@@ -570,7 +626,7 @@ export async function compareProduct(
   const confidenceOut = overallConfidenceFromDeal(bestDeal);
 
   return {
-    query: parsed.productQuery,
+    query: referenceProductQuery,
     normalizedQuery,
     candidates: flatSorted,
     resultsByStore: groupByStore(flatSorted),

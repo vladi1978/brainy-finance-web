@@ -4,12 +4,15 @@ import type { StoreId } from "./types";
 export type ParsedProductInput = {
   /** Raw user input */
   rawInput: string;
-  /** Clean product description used for normalization and display */
-  productQuery: string;
-  /** Pasted product URL when applicable */
+  /** Pasted product URL when the input was an HTTP(S) link */
   inputUrl?: string;
-  /** Retailer inferred from URL path */
-  urlStore: StoreId | null;
+  /** Retailer inferred from URL host/path when recognized (slug heuristic) */
+  detectedStore: StoreId | null;
+  /**
+   * Query text derived from URL slug/path or full pasted text.
+   * Used when PDP extraction is unavailable or fails.
+   */
+  productQuery: string;
 };
 
 function isHttpUrl(s: string): boolean {
@@ -17,20 +20,20 @@ function isHttpUrl(s: string): boolean {
 }
 
 /**
- * Parse pasted text or URL into a product query string.
- * URLs never imply a scraped "source product" — only text for search.
+ * Parse pasted text or URL: exposes raw input, optional URL, detected retailer
+ * (when recognizable), and a fallback query string for search/normalization.
  */
 export function parseProductInput(raw: string): ParsedProductInput {
   const rawInput = raw.trim();
   if (!rawInput) {
-    return { rawInput, productQuery: "", urlStore: null };
+    return { rawInput, productQuery: "", detectedStore: null };
   }
 
   if (!isHttpUrl(rawInput)) {
     return {
       rawInput,
       productQuery: rawInput,
-      urlStore: null,
+      detectedStore: null,
     };
   }
 
@@ -44,8 +47,8 @@ export function parseProductInput(raw: string): ParsedProductInput {
 
   return {
     rawInput,
-    productQuery: fallback.length >= 3 ? fallback : cleaned,
     inputUrl,
-    urlStore: store,
+    detectedStore: store,
+    productQuery: fallback.length >= 3 ? fallback : cleaned,
   };
 }

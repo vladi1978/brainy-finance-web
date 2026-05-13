@@ -14,4 +14,12 @@ export const productProviderRegistry: readonly ProductProvider[] = [
   temuProvider,
 ];
 
+/** First registered provider whose `canHandleProductUrl` accepts the link. */
+export function findProductProviderForUrl(url: string): ProductProvider | null {
+  for (const p of productProviderRegistry) {
+    if (p.canHandleProductUrl(url)) return p;
+  }
+  return null;
+}
+
 export type RegisteredProductProvider = (typeof productProviderRegistry)[number];
