@@ -7,6 +7,7 @@ import {
   areSameRetailerListings,
   buildNormalizedProduct,
   buildNormalizedSearchQuery,
+  extractSearchQuery,
 } from "./normalize";
 import {
   findProductProviderForUrl,
@@ -26,10 +27,15 @@ import type {
   CompareProductOptions,
   CompareProductResponse,
   ComparisonTrace,
+  NormalizedProduct,
+  ProductCategory,
+  ProductProvider,
   ProviderSearchDiagnostics,
+  ProviderResult,
   SelectionTrace,
   SourceProduct,
   StoreId,
+  TvDisplayTechBucket,
 } from "./types";
 
 /**
@@ -40,6 +46,206 @@ export const DEMO_MODE = process.env.PRODUCT_COMPARE_DEMO_MODE === "true";
 
 export function isCompareDemoMode(): boolean {
   return DEMO_MODE;
+}
+
+/** Three short retailer-search strings: model-led → brand+size+type → size+tech+type. */
+export type RetailSearchQueryPack = {
+  primaryQuery: string;
+  simplifiedQuery: string;
+  specsQuery: string;
+};
+
+function formatBrandTitleCase(brand: string | null): string {
+  if (!brand) return "";
+  return brand
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function compactTvSkuForSearch(sku: string): string {
+  return sku
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .replace(/(FXZA|XZA|XZ)$/i, "");
+}
+
+const CATEGORY_TYPE_WORD: Record<ProductCategory, string> = {
+  tv: "TV",
+  monitor: "Monitor",
+  footwear: "Shoes",
+  audio: "Headphones",
+  socks: "Socks",
+  apparel: "Clothing",
+  household: "Household",
+  general: "Product",
+};
+
+function tvDisplayTechLabel(tech: TvDisplayTechBucket): string | null {
+  switch (tech) {
+    case "mini_led":
+      return "Mini LED";
+    case "neo_qled":
+      return "Neo QLED";
+    case "qled":
+      return "QLED";
+    case "oled":
+      return "OLED";
+    case "crystal_led":
+      return "Crystal LED";
+    case "led":
+      return "LED";
+    default:
+      return null;
+  }
+}
+
+function inferDisplayTechLabelFromText(title: string): string | null {
+  const n = title.toLowerCase();
+  if (/\bmini[\s-]*led\b/.test(n)) return "Mini LED";
+  if (/\bneo[\s-]*qled\b/.test(n)) return "Neo QLED";
+  if (/\bqled\b/.test(n)) return "QLED";
+  if (/\boled\b/.test(n)) return "OLED";
+  if (/\bcrystal[\s-]*led\b/.test(n)) return "Crystal LED";
+  if (/\bled\b/.test(n)) return "LED";
+  return null;
+}
+
+function pickShortModelForPrimary(norm: NormalizedProduct): string | null {
+  const fm = norm.structured.fullModel;
+  if (fm && fm.length >= 4) return compactTvSkuForSearch(fm);
+  for (const t of norm.modelTokens) {
+    const u = t.replace(/-/g, "");
+    if (/\d/.test(u) && u.length >= 5) return u.toUpperCase();
+  }
+  if (norm.structured.modelFamily && norm.structured.modelFamily.length >= 3) {
+    return norm.structured.modelFamily.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  }
+  return null;
+}
+
+function buildPrimaryQuery(norm: NormalizedProduct, referenceTitle: string): string {
+  const brand = formatBrandTitleCase(norm.brand);
+  const model = pickShortModelForPrimary(norm);
+  if (brand && model) return `${brand} ${model}`.replace(/\s+/g, " ").trim();
+  if (model && !brand) return model;
+  const compact = extractSearchQuery(referenceTitle).replace(/\s+/g, " ").trim();
+  if (brand && compact) return `${brand} ${compact}`.replace(/\s+/g, " ").trim();
+  return (
+    compact ||
+    referenceTitle
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 120)
+  );
+}
+
+function categoryTypeWord(cat: ProductCategory): string {
+  return CATEGORY_TYPE_WORD[cat] ?? "Product";
+}
+
+function buildSimplifiedQuery(norm: NormalizedProduct, referenceTitle: string): string {
+  const brand = formatBrandTitleCase(norm.brand);
+  const typeWord = categoryTypeWord(norm.category);
+  const size = norm.sizeInches;
+  if (brand) {
+    if (size != null) {
+      return `${brand} ${size} inch ${typeWord}`.replace(/\s+/g, " ").trim();
+    }
+    return `${brand} ${typeWord}`.replace(/\s+/g, " ").trim();
+  }
+  if (size != null) return `${size} inch ${typeWord}`.replace(/\s+/g, " ").trim();
+  return extractSearchQuery(referenceTitle).replace(/\s+/g, " ").trim();
+}
+
+function buildSpecsQuery(norm: NormalizedProduct, referenceTitle: string): string {
+  const typeWord = categoryTypeWord(norm.category);
+  const size = norm.sizeInches;
+  const tvTech =
+    norm.category === "tv" && norm.tv
+      ? tvDisplayTechLabel(norm.tv.displayTech)
+      : inferDisplayTechLabelFromText(referenceTitle);
+  const parts: string[] = [];
+  if (size != null) parts.push(`${size} inch`);
+  if (tvTech) parts.push(tvTech);
+  parts.push(typeWord);
+  const joined = parts.join(" ").replace(/\s+/g, " ").trim();
+  if (joined.length >= 4) return joined;
+  return extractSearchQuery(referenceTitle).replace(/\s+/g, " ").trim();
+}
+
+export function buildRetailSearchQueryPack(
+  norm: NormalizedProduct,
+  referenceTitle: string
+): RetailSearchQueryPack {
+  const fallback =
+    extractSearchQuery(referenceTitle).replace(/\s+/g, " ").trim() ||
+    referenceTitle.replace(/\s+/g, " ").trim().slice(0, 120);
+
+  const primary = buildPrimaryQuery(norm, referenceTitle);
+  const simplified = buildSimplifiedQuery(norm, referenceTitle);
+  const specs = buildSpecsQuery(norm, referenceTitle);
+
+  const ensure = (s: string) => {
+    const t = s.replace(/\s+/g, " ").trim();
+    return t.length >= 2 ? t : fallback;
+  };
+
+  return {
+    primaryQuery: ensure(primary),
+    simplifiedQuery: ensure(simplified),
+    specsQuery: ensure(specs),
+  };
+}
+
+async function searchCandidatesWithOrderedQueries(
+  provider: ProductProvider,
+  queries: string[],
+  baseCtx: { rawInput: string; productQuery: string }
+): Promise<ProviderResult & { queryUsed: string }> {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const q of queries) {
+    const t = q.replace(/\s+/g, " ").trim();
+    if (t.length < 2) continue;
+    if (seen.has(t)) continue;
+    seen.add(t);
+    ordered.push(t);
+  }
+
+  const fallbackQ =
+    baseCtx.productQuery.replace(/\s+/g, " ").trim().slice(0, 80) || "product";
+
+  if (ordered.length === 0) {
+    const res = await provider.searchCandidates({
+      ...baseCtx,
+      searchQuery: fallbackQ,
+    });
+    return { ...res, queryUsed: res.diagnostics.query };
+  }
+
+  let last: ProviderResult | null = null;
+  for (const q of ordered) {
+    last = await provider.searchCandidates({
+      ...baseCtx,
+      searchQuery: q,
+    });
+    if (last.candidates.length > 0) {
+      return {
+        candidates: last.candidates,
+        diagnostics: { ...last.diagnostics, query: q },
+        queryUsed: q,
+      };
+    }
+  }
+
+  const finalQ = ordered[ordered.length - 1]!;
+  return {
+    ...last!,
+    diagnostics: { ...last!.diagnostics, query: finalQ },
+    queryUsed: finalQ,
+  };
 }
 
 const MIN_HIGH_CONFIDENCE_FOR_BEST_DEAL = 2;
@@ -319,6 +525,20 @@ export async function compareProduct(
     referenceProductQuery
   );
 
+  const searchQueryPack = buildRetailSearchQueryPack(
+    referenceNormalized,
+    referenceProductQuery
+  );
+
+  console.log(
+    "[QUERY_PACK]",
+    JSON.stringify({
+      primaryQuery: searchQueryPack.primaryQuery,
+      simplifiedQuery: searchQueryPack.simplifiedQuery,
+      specsQuery: searchQueryPack.specsQuery,
+    })
+  );
+
   pipelineLog("derived_search_query", {
     productQuery: referenceProductQuery.slice(0, 200),
     normalizedQuery,
@@ -332,20 +552,23 @@ export async function compareProduct(
     category: referenceNormalized.category,
   });
 
-  const providerQueries = productProviderRegistry.map((p) => ({
+  let providerQueries = productProviderRegistry.map((p) => ({
     store: p.id,
-    query: normalizedQuery,
+    query: searchQueryPack.primaryQuery,
   }));
-  traceLog("provider_query_used", { searchQuery: normalizedQuery, providerQueries });
+  traceLog("provider_query_used", {
+    normalizedQuery,
+    searchQueryPack,
+    providerQueries,
+  });
 
   let allCandidates: CandidateProduct[] = [];
   const candidatesPerProvider: { store: string; count: number }[] = [];
   let providerDiagnostics: ProviderSearchDiagnostics[] = [];
 
   const registeredStores = productProviderRegistry.map((p) => p.id);
-  const searchCtx = {
+  const searchCtxBase = {
     rawInput: input,
-    searchQuery: normalizedQuery,
     productQuery: referenceProductQuery,
   };
 
@@ -353,25 +576,43 @@ export async function compareProduct(
     pipelineLog("demo_mode", { note: "synthetic_listings" });
     allCandidates = buildDemoCandidates(
       referenceNormalized,
-      normalizedQuery,
+      searchQueryPack.primaryQuery,
       registeredStores
     );
     providerDiagnostics = registeredStores.map((store) =>
-      emptyDiagnostics(store, normalizedQuery)
+      emptyDiagnostics(store, searchQueryPack.primaryQuery)
     );
     for (const p of productProviderRegistry) {
       const n = allCandidates.filter((c) => c.store === p.id).length;
       candidatesPerProvider.push({ store: p.id, count: n });
     }
   } else {
+    const packOrder = [
+      searchQueryPack.primaryQuery,
+      searchQueryPack.simplifiedQuery,
+      searchQueryPack.specsQuery,
+    ];
     const outcomes = await Promise.all(
       productProviderRegistry.map(async (p) => {
-        const result = await p.searchCandidates(searchCtx);
+        const result = await searchCandidatesWithOrderedQueries(
+          p,
+          packOrder,
+          searchCtxBase
+        );
         return { store: p.id, result };
       })
     );
 
+    providerQueries = outcomes.map((o) => ({
+      store: o.store,
+      query: o.result.queryUsed,
+    }));
+
     for (const o of outcomes) {
+      console.log(
+        "[QUERY_USED_BY_STORE]",
+        JSON.stringify({ store: o.store, query: o.result.queryUsed })
+      );
       providerDiagnostics.push(o.result.diagnostics);
       candidatesPerProvider.push({
         store: o.store,
@@ -387,6 +628,8 @@ export async function compareProduct(
       allCandidates = allCandidates.concat(o.result.candidates);
     }
   }
+
+  console.log("[CANDIDATES_TOTAL]", JSON.stringify({ total: allCandidates.length }));
 
   pipelineLog("candidates_total", {
     total: allCandidates.length,
