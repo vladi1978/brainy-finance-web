@@ -14,6 +14,12 @@ import type {
 
 const STORE: StoreId = "walmart";
 
+/** TEMP: set `PRODUCT_SERP_DEBUG=1` to log provider second-pass PDP filter (remove when done). */
+function providerSerpDebug(payload: Record<string, unknown>): void {
+  if (process.env.PRODUCT_SERP_DEBUG !== "1") return;
+  console.log("[product-serp-debug]", payload);
+}
+
 function toDiagnostics(
   query: string,
   d: import("../searchParse").StoreSerpDiagnostics
@@ -125,6 +131,24 @@ export const walmartProvider: ProductProvider = {
       24
     );
     const ranked = rankRowsByQueryRelevance(candidates, effectiveQuery);
+
+    const secondPassInvalid = ranked.filter(
+      (c) => !isValidProductDetailUrl("walmart", c.productUrl)
+    );
+    providerSerpDebug({
+      store: STORE,
+      phase: "provider_search_second_pdp",
+      fromParseCount: ranked.length,
+      secondPassRejectedCount: secondPassInvalid.length,
+      first3BeforeSecondPdp: ranked.slice(0, 3).map((c) => ({
+        title: c.title.slice(0, 120),
+        productUrl: c.productUrl,
+        pdpValid: isValidProductDetailUrl("walmart", c.productUrl),
+      })),
+      sampleSecondPassRejectedUrls: secondPassInvalid
+        .slice(0, 3)
+        .map((c) => c.productUrl),
+    });
 
     return {
       candidates: ranked

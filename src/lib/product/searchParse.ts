@@ -4,6 +4,18 @@ import {
 } from "./scrapeProduct";
 import { isValidProductDetailUrl } from "./productDetailUrl";
 
+/** TEMP: set `PRODUCT_SERP_DEBUG=1` to log SERP fetch/parse diagnostics (remove when done). */
+function productSerpDebug(payload: Record<string, unknown>): void {
+  if (process.env.PRODUCT_SERP_DEBUG !== "1") return;
+  console.log("[product-serp-debug]", payload);
+}
+
+function htmlHeadSnippet(html: string | null, maxChars = 800): string {
+  if (html == null) return "";
+  const oneLine = html.replace(/\s+/g, " ").trim();
+  return oneLine.length <= maxChars ? oneLine : `${oneLine.slice(0, maxChars)}…`;
+}
+
 export type ParsedSearchCandidate = {
   title: string;
   price: number | null;
@@ -98,6 +110,14 @@ export function parseAmazonSearchHtml(
   limit = 12
 ): ParsedSearchCandidate[] {
   if (!html.includes("data-component-type=\"s-search-result\"")) {
+    productSerpDebug({
+      store: "amazon",
+      phase: "parse_amazon",
+      reason: "missing_data_component_s_search_result",
+      htmlLength: html.length,
+      htmlHead: htmlHeadSnippet(html, 900),
+      approxDpLinks: (html.match(/\/dp\/[A-Z0-9]{10}\b/gi) ?? []).length,
+    });
     return [];
   }
 
@@ -122,9 +142,29 @@ export function parseAmazonSearchHtml(
     });
   }
 
-  return dedupeByProductUrl(out)
-    .filter((row) => isValidProductDetailUrl("amazon", row.productUrl))
-    .slice(0, limit);
+  const deduped = dedupeByProductUrl(out);
+  const filtered = deduped.filter((row) =>
+    isValidProductDetailUrl("amazon", row.productUrl)
+  );
+  productSerpDebug({
+    store: "amazon",
+    phase: "parse_amazon_pre_post_pdp",
+    searchResultSplitCount: Math.max(0, parts.length - 1),
+    rawTileCount: out.length,
+    afterDedupe: deduped.length,
+    afterPdpFilter: filtered.length,
+    pdpRejectedCount: deduped.length - filtered.length,
+    first3PrePdp: deduped.slice(0, 3).map((r) => ({
+      title: r.title.slice(0, 120),
+      productUrl: r.productUrl,
+      price: r.price,
+    })),
+    samplePdpRejected: deduped
+      .filter((row) => !isValidProductDetailUrl("amazon", row.productUrl))
+      .slice(0, 3)
+      .map((r) => r.productUrl),
+  });
+  return filtered.slice(0, limit);
 }
 
 function extractWalmartIpFromContext(before: string): string | null {
@@ -150,6 +190,13 @@ export function parseWalmartSearchHtml(
   limit = 12
 ): ParsedSearchCandidate[] {
   if (/Robot or human/i.test(html)) {
+    productSerpDebug({
+      store: "walmart",
+      phase: "parse_walmart",
+      reason: "bot_interstitial_robot_or_human",
+      htmlLength: html.length,
+      htmlHead: htmlHeadSnippet(html, 900),
+    });
     return [];
   }
 
@@ -203,9 +250,32 @@ export function parseWalmartSearchHtml(
     pos = h3close + 5;
   }
 
-  return dedupeByProductUrl(out)
-    .filter((row) => isValidProductDetailUrl("walmart", row.productUrl))
-    .slice(0, limit);
+  const deduped = dedupeByProductUrl(out);
+  const filtered = deduped.filter((row) =>
+    isValidProductDetailUrl("walmart", row.productUrl)
+  );
+  productSerpDebug({
+    store: "walmart",
+    phase: "parse_walmart_pre_post_pdp",
+    productTitleMarkers: (
+      html.match(/data-automation-id=["']product-title["']/gi) ?? []
+    ).length,
+    approxIpUrls: (html.match(/walmart\.com\/ip\//gi) ?? []).length,
+    rawTileCount: out.length,
+    afterDedupe: deduped.length,
+    afterPdpFilter: filtered.length,
+    pdpRejectedCount: deduped.length - filtered.length,
+    first3PrePdp: deduped.slice(0, 3).map((r) => ({
+      title: r.title.slice(0, 120),
+      productUrl: r.productUrl,
+      price: r.price,
+    })),
+    samplePdpRejected: deduped
+      .filter((row) => !isValidProductDetailUrl("walmart", row.productUrl))
+      .slice(0, 3)
+      .map((r) => r.productUrl),
+  });
+  return filtered.slice(0, limit);
 }
 
 export async function fetchParsedAmazonSearch(
@@ -314,6 +384,24 @@ export async function fetchAmazonSerpWithDiagnostics(
   const candidates = html
     ? parseAmazonSearchHtml(html, limit)
     : [];
+  productSerpDebug({
+    store: "amazon",
+    phase: "fetch_amazon",
+    url,
+    httpStatus,
+    byteLength,
+    fetchOk: html != null && html.length > 0,
+    htmlHead: htmlHeadSnippet(html),
+    hasSearchResultMarker:
+      html != null && html.includes('data-component-type="s-search-result"'),
+    possibleCaptcha:
+      html != null &&
+      /api-services-support|Enter the characters you see/i.test(html),
+    approxDpLinks:
+      html == null ? 0 : (html.match(/\/dp\/[A-Z0-9]{10}\b/gi) ?? []).length,
+    parsedCandidateCount: candidates.length,
+    hints: amazonSerpHints(html, candidates.length),
+  });
   const diagnostics: StoreSerpDiagnostics = {
     store: "amazon",
     url,
@@ -355,6 +443,25 @@ export async function fetchWalmartSerpWithDiagnostics(
   const candidates = html
     ? parseWalmartSearchHtml(html, limit)
     : [];
+  productSerpDebug({
+    store: "walmart",
+    phase: "fetch_walmart",
+    url,
+    httpStatus,
+    byteLength,
+    fetchOk: html != null && html.length > 0,
+    htmlHead: htmlHeadSnippet(html),
+    botInterstitial: html != null && /Robot or human/i.test(html),
+    productTitleMarkers:
+      html == null
+        ? 0
+        : (html.match(/data-automation-id=["']product-title["']/gi) ?? [])
+            .length,
+    approxIpUrls:
+      html == null ? 0 : (html.match(/walmart\.com\/ip\//gi) ?? []).length,
+    parsedCandidateCount: candidates.length,
+    hints: walmartSerpHints(html, candidates.length),
+  });
   const diagnostics: StoreSerpDiagnostics = {
     store: "walmart",
     url,
@@ -429,6 +536,22 @@ export async function fetchTargetSerpWithDiagnostics(
     await fetchSearchPageHtmlDetailed(url);
   const candidates: ParsedSearchCandidate[] = [];
   void limit;
+  productSerpDebug({
+    store: "target",
+    phase: "fetch_target",
+    url,
+    httpStatus,
+    byteLength,
+    fetchOk: html != null && html.length > 0,
+    htmlHead: htmlHeadSnippet(html),
+    note: "parse_target_serp_not_implemented_empty_candidates",
+    approxPdpPaths:
+      html == null
+        ? 0
+        : (html.match(/target\.com\/p\/[^"'\s>]+\/-\/A-\d+/gi) ?? []).length,
+    parsedCandidateCount: 0,
+    hints: targetSerpHints(html, candidates.length),
+  });
   const diagnostics: StoreSerpDiagnostics = {
     store: "target",
     url,
