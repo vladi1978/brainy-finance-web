@@ -267,7 +267,7 @@ export async function compareProduct(
     demoMode,
   });
 
-  const parsed = parseProductInput(input);
+  const parsed = await parseProductInput(input);
 
   let scrapedSource: SourceProduct | null = null;
   if (parsed.inputUrl && !demoMode) {

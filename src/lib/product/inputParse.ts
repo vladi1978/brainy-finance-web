@@ -1,4 +1,7 @@
-import { extractProductQueryFromRetailUrl } from "./urlProductQuery";
+import {
+  expandKnownShortRetailUrl,
+  extractProductQueryFromRetailUrl,
+} from "./urlProductQuery";
 import type { StoreId } from "./types";
 
 export type ParsedProductInput = {
@@ -22,8 +25,13 @@ function isHttpUrl(s: string): boolean {
 /**
  * Parse pasted text or URL: exposes raw input, optional URL, detected retailer
  * (when recognizable), and a fallback query string for search/normalization.
+ *
+ * Known short URLs (allowlisted hosts) are expanded via HEAD/redirect follow
+ * before URL-derived query extraction; on failure the original paste is kept.
  */
-export function parseProductInput(raw: string): ParsedProductInput {
+export async function parseProductInput(
+  raw: string
+): Promise<ParsedProductInput> {
   const rawInput = raw.trim();
   if (!rawInput) {
     return { rawInput, productQuery: "", detectedStore: null };
@@ -37,16 +45,31 @@ export function parseProductInput(raw: string): ParsedProductInput {
     };
   }
 
-  const inputUrl = rawInput.split("#")[0]?.trim() ?? rawInput;
+  const hashIdx = rawInput.indexOf("#");
+  const headPart = hashIdx >= 0 ? rawInput.slice(0, hashIdx) : rawInput;
+  const fragment = hashIdx >= 0 ? rawInput.slice(hashIdx) : "";
+
+  const expandedHref = await expandKnownShortRetailUrl(headPart.trim());
+  const rebuiltBase =
+    expandedHref != null
+      ? (expandedHref.split("#")[0]?.trim() ?? expandedHref.trim())
+      : headPart.trim();
+  const reconstructed = `${rebuiltBase}${fragment}`;
+
+  const inputUrl = reconstructed.split("#")[0]?.trim() ?? reconstructed;
   const { productQuery, store } = extractProductQueryFromRetailUrl(inputUrl);
   const cleaned = productQuery.replace(/\s+/g, " ").trim();
   const fallback =
     cleaned.length >= 3
       ? cleaned
-      : inputUrl.replace(/^https?:\/\/[^/]+\//i, "").replace(/[/?#].*$/, "").replace(/-/g, " ").trim();
+      : inputUrl
+          .replace(/^https?:\/\/[^/]+\//i, "")
+          .replace(/[/?#].*$/, "")
+          .replace(/-/g, " ")
+          .trim();
 
   return {
-    rawInput,
+    rawInput: reconstructed,
     inputUrl,
     detectedStore: store,
     productQuery: fallback.length >= 3 ? fallback : cleaned,

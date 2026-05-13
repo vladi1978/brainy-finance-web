@@ -1,5 +1,134 @@
 import type { StoreId } from "./types";
 
+const SHORT_EXPAND_HOST_SUFFIXES = [
+  "a.co",
+  "amzn.to",
+  "bit.ly",
+  "tinyurl.com",
+];
+
+const SHORT_URL_TIMEOUT_MS = 4500;
+
+function hostnameIsKnownShort(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^www\./, "");
+  return SHORT_EXPAND_HOST_SUFFIXES.some(
+    (s) => h === s || h.endsWith(`.${s}`)
+  );
+}
+
+async function probeFinalUrlViaFetch(
+  href: string,
+  method: "HEAD" | "GET"
+): Promise<string | undefined> {
+  try {
+    const res = await fetch(href, {
+      method,
+      redirect: "follow",
+      signal: AbortSignal.timeout(SHORT_URL_TIMEOUT_MS),
+      headers:
+        method === "GET"
+          ? { Range: "bytes=0-0", Accept: "*/*" }
+          : { Accept: "*/*" },
+    });
+    return res.url;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Expand allowlisted retailer / generic short URLs to their final HTTPS target.
+ * Logs are temporary instrumentation (short_url_*).
+ *
+ * Returns `null` when the input is not a known short URL, resolution fails,
+ * or the URL does not change after probing.
+ */
+export async function expandKnownShortRetailUrl(
+  httpUrlSansFragment: string
+): Promise<string | null> {
+  let normalized: URL;
+  try {
+    normalized = new URL(httpUrlSansFragment.trim());
+  } catch {
+    return null;
+  }
+  if (normalized.protocol !== "http:" && normalized.protocol !== "https:") {
+    return null;
+  }
+  if (!hostnameIsKnownShort(normalized.hostname)) {
+    return null;
+  }
+
+  const inputHref = normalized.href;
+  const preview = () => ({
+    preview: httpUrlSansFragment.trim().slice(0, 200),
+  });
+
+  console.log("[short_url_detected]", JSON.stringify({ ...preview() }));
+
+  const canonHref = (h: string | undefined): string | null => {
+    if (h == null) return null;
+    try {
+      return new URL(h).href;
+    } catch {
+      return null;
+    }
+  };
+
+  let resolvedHref = await probeFinalUrlViaFetch(inputHref, "HEAD");
+  if (
+    resolvedHref == null ||
+    canonHref(resolvedHref) === normalized.href
+  ) {
+    resolvedHref = await probeFinalUrlViaFetch(inputHref, "GET");
+  }
+
+  if (resolvedHref == null) {
+    console.log(
+      "[short_url_failed]",
+      JSON.stringify({
+        ...preview(),
+        reason: "fetch_failed",
+      })
+    );
+    return null;
+  }
+
+  let out: URL;
+  try {
+    out = new URL(resolvedHref.split("#")[0] ?? resolvedHref);
+  } catch {
+    console.log(
+      "[short_url_failed]",
+      JSON.stringify({ ...preview(), reason: "invalid_final_url" })
+    );
+    return null;
+  }
+  if (out.protocol !== "http:" && out.protocol !== "https:") {
+    console.log(
+      "[short_url_failed]",
+      JSON.stringify({ ...preview(), reason: "non_http_final_protocol" })
+    );
+    return null;
+  }
+  if (out.href === inputHref || out.href === normalized.href) {
+    console.log(
+      "[short_url_failed]",
+      JSON.stringify({ ...preview(), reason: "no_expansion" })
+    );
+    return null;
+  }
+
+  console.log(
+    "[short_url_resolved]",
+    JSON.stringify({
+      from: inputHref.slice(0, 200),
+      to: out.href.slice(0, 200),
+    })
+  );
+  return out.href;
+}
+
 /**
  * Derive a human-readable product query from retailer URLs without scraping.
  * Used for search-first comparison (URL is not a trusted "source product").
