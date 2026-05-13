@@ -13,6 +13,10 @@ import {
   productProviderRegistry,
 } from "./registry";
 import { rankMatchTypes } from "./searchRelevance";
+import {
+  isProductDetailStoreKey,
+  isValidProductDetailUrl,
+} from "./productDetailUrl";
 import type {
   CandidateProduct,
   CandidateStepTrace,
@@ -425,6 +429,32 @@ export async function compareProduct(
       titlePreview: c.title.slice(0, 120),
     });
 
+    if (
+      !isProductDetailStoreKey(c.store) ||
+      !isValidProductDetailUrl(c.store, c.productUrl)
+    ) {
+      candidateSteps.push({
+        key: candidateKey(c, candidateSteps.length),
+        store: c.store,
+        title: c.title,
+        price: c.price,
+        productUrl: c.productUrl,
+        outcome: "invalid_product_url",
+        rejectionReason: "invalid_product_url",
+        detail: "invalid_product_url",
+      });
+      pipelineLog("candidate_rejected", {
+        store: c.store,
+        title: c.title.slice(0, 80),
+        reason: "invalid_product_url",
+      });
+      traceLog("invalid_product_url", {
+        store: c.store,
+        urlPreview: c.productUrl.slice(0, 200),
+      });
+      continue;
+    }
+
     if (inputUrl && areSameRetailerListings(inputUrl, c.productUrl)) {
       candidateSteps.push({
         key: candidateKey(c, candidateSteps.length),
@@ -500,7 +530,11 @@ export async function compareProduct(
     });
   }
 
-  const flatSorted = sortCandidatesForDisplay(rows.map((r) => r.api));
+  const flatSorted = sortCandidatesForDisplay(rows.map((r) => r.api)).filter(
+    (api) =>
+      isProductDetailStoreKey(api.store) &&
+      isValidProductDetailUrl(api.store, api.productUrl)
+  );
 
   const sourceProduct =
     scrapedOk && scrapedSource
@@ -575,7 +609,10 @@ export async function compareProduct(
 
   const highPriced = rows.filter(
     (r) =>
-      r.rel.matchType === "high" && isValidComparablePrice(r.api.price)
+      r.rel.matchType === "high" &&
+      isValidComparablePrice(r.api.price) &&
+      isProductDetailStoreKey(r.api.store) &&
+      isValidProductDetailUrl(r.api.store, r.api.productUrl)
   );
 
   let bestDeal: CompareProductDeal | null = null;
@@ -594,7 +631,13 @@ export async function compareProduct(
     const winner = highPriced[0]!;
     const rest = highPriced.slice(1);
     bestDeal = toDeal(winner.api, winner.rel);
-    alternatives = rest.map((x) => toDeal(x.api, x.rel));
+    alternatives = rest
+      .filter(
+        (x) =>
+          isProductDetailStoreKey(x.api.store) &&
+          isValidProductDetailUrl(x.api.store, x.api.productUrl)
+      )
+      .map((x) => toDeal(x.api, x.rel));
     showBestDeal = true;
     const prices = highPriced
       .map((x) => x.api.price)
@@ -602,12 +645,30 @@ export async function compareProduct(
     if (prices.length >= 2) {
       savings = Math.max(...prices) - Math.min(...prices);
     }
-    selectionBase.pickedStore = bestDeal.store;
-    pipelineLog("selection_final_best_deal", {
-      store: bestDeal.store,
-      price: bestDeal.price,
-      highTierCount: highPriced.length,
-    });
+    if (
+      !isProductDetailStoreKey(bestDeal.store) ||
+      !isValidProductDetailUrl(bestDeal.store, bestDeal.productUrl)
+    ) {
+      pipelineLog("selection_final", {
+        bestDeal: null,
+        reason: "invalid_product_url",
+      });
+      bestDeal = null;
+      alternatives = [];
+      showBestDeal = false;
+      savings = null;
+      comparisonMessage = "Closest matches found";
+      message = null;
+      selectionBase.pickedStore = null;
+      selectionBase.reasonNoDeal = "invalid_product_url";
+    } else {
+      selectionBase.pickedStore = bestDeal.store;
+      pipelineLog("selection_final_best_deal", {
+        store: bestDeal.store,
+        price: bestDeal.price,
+        highTierCount: highPriced.length,
+      });
+    }
   } else {
     showBestDeal = false;
     bestDeal = null;

@@ -1,6 +1,7 @@
 import { scrapeProduct } from "../scrapeProduct";
 import { fetchTargetSerpWithDiagnostics } from "../searchParse";
 import { buildNormalizedProduct, normalizeTitle } from "../normalize";
+import { isValidProductDetailUrl } from "../productDetailUrl";
 import type {
   CandidateProduct,
   ProductProvider,
@@ -106,7 +107,9 @@ export const targetProvider: ProductProvider = {
     );
 
     return {
-      candidates: candidates.map((c) => rowToCandidate(c, effectiveQuery)),
+      candidates: candidates
+        .filter((c) => isValidProductDetailUrl("target", c.productUrl))
+        .map((c) => rowToCandidate(c, effectiveQuery)),
       diagnostics: toDiagnostics(effectiveQuery, diagnostics),
     };
   },

@@ -1,6 +1,7 @@
 import { scrapeProduct } from "../scrapeProduct";
 import { fetchTemuSerpWithDiagnostics } from "../searchParse";
 import { buildNormalizedProduct, normalizeTitle } from "../normalize";
+import { isValidProductDetailUrl } from "../productDetailUrl";
 import type {
   CandidateProduct,
   ProductProvider,
@@ -108,7 +109,9 @@ export const temuProvider: ProductProvider = {
     );
 
     return {
-      candidates: candidates.map((c) => rowToCandidate(c, effectiveQuery)),
+      candidates: candidates
+        .filter((c) => isValidProductDetailUrl("temu", c.productUrl))
+        .map((c) => rowToCandidate(c, effectiveQuery)),
       diagnostics: toDiagnostics(effectiveQuery, diagnostics),
     };
   },

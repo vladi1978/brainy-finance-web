@@ -1,6 +1,7 @@
 import { scrapeProduct } from "../scrapeProduct";
 import { fetchWalmartSerpWithDiagnostics } from "../searchParse";
 import { buildNormalizedProduct, normalizeTitle } from "../normalize";
+import { isValidProductDetailUrl } from "../productDetailUrl";
 import type {
   CandidateProduct,
   ProductProvider,
@@ -126,7 +127,9 @@ export const walmartProvider: ProductProvider = {
     const ranked = rankRowsByQueryRelevance(candidates, effectiveQuery);
 
     return {
-      candidates: ranked.map((c) => rowToCandidate(c, effectiveQuery)),
+      candidates: ranked
+        .filter((c) => isValidProductDetailUrl("walmart", c.productUrl))
+        .map((c) => rowToCandidate(c, effectiveQuery)),
       diagnostics: toDiagnostics(effectiveQuery, diagnostics),
     };
   },

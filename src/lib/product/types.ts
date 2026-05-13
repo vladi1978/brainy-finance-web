@@ -190,7 +190,8 @@ export type CandidateStepTrace = {
     | "evaluated"
     | "rejected_hard_gate"
     | "skipped_duplicate_source_url"
-    | "skipped_same_source_item";
+    | "skipped_same_source_item"
+    | "invalid_product_url";
   matchConfidence?: MatchConfidenceLabel | "none";
   matchScore?: number;
   matchReasons?: string[];

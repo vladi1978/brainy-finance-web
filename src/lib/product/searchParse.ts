@@ -2,6 +2,7 @@ import {
   fetchSearchPageHtml,
   fetchSearchPageHtmlDetailed,
 } from "./scrapeProduct";
+import { isValidProductDetailUrl } from "./productDetailUrl";
 
 export type ParsedSearchCandidate = {
   title: string;
@@ -121,7 +122,9 @@ export function parseAmazonSearchHtml(
     });
   }
 
-  return dedupeByProductUrl(out).slice(0, limit);
+  return dedupeByProductUrl(out)
+    .filter((row) => isValidProductDetailUrl("amazon", row.productUrl))
+    .slice(0, limit);
 }
 
 function extractWalmartIpFromContext(before: string): string | null {
@@ -200,7 +203,9 @@ export function parseWalmartSearchHtml(
     pos = h3close + 5;
   }
 
-  return dedupeByProductUrl(out).slice(0, limit);
+  return dedupeByProductUrl(out)
+    .filter((row) => isValidProductDetailUrl("walmart", row.productUrl))
+    .slice(0, limit);
 }
 
 export async function fetchParsedAmazonSearch(
