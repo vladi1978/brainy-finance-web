@@ -4,6 +4,13 @@ import {
 } from "./attributeMatch";
 import { parseProductInput } from "./inputParse";
 import {
+  buildManualNormalizationTitle,
+  buildUniversalManualQueryPack,
+  manualFormHasSearchableCore,
+  parsePricePaidRaw,
+  truncateFeatures,
+} from "./manualProductInput";
+import {
   areSameRetailerListings,
   buildNormalizedProduct,
   buildNormalizedSearchQuery,
@@ -456,7 +463,17 @@ export async function compareProduct(
   rawInput: string,
   options: CompareProductOptions = {}
 ): Promise<CompareProductResponse> {
-  const input = rawInput.trim();
+  const manual = options.manualProduct ?? null;
+  const manualLink = manual?.link?.trim() ?? "";
+  const useManualForm = Boolean(
+    manual && !manualLink && manualFormHasSearchableCore(manual)
+  );
+
+  let input = rawInput.trim();
+  if (useManualForm) {
+    input = buildManualNormalizationTitle(manual!).trim();
+  }
+
   if (!input) {
     throw new Error("Missing product input");
   }
@@ -471,9 +488,37 @@ export async function compareProduct(
   pipelineLog("input_received", {
     inputPreview: input.slice(0, 200),
     demoMode,
+    manualForm: useManualForm,
   });
 
   const parsed = await parseProductInput(input);
+
+  let explicitQueryPack: RetailSearchQueryPack | null = null;
+  let explicitReferenceQuery: string | null = null;
+
+  if (useManualForm) {
+    const safeLog = {
+      brand: manual!.brand ?? "",
+      productNameOrModel: manual!.productNameOrModel ?? "",
+      category: manual!.category ?? "",
+      sizeDimensionsCapacity: manual!.sizeDimensionsCapacity ?? "",
+      colorVariant: manual!.colorVariant ?? "",
+      keyFeaturesPreview: truncateFeatures(manual!.keyFeatures ?? "", 100),
+      hasPricePaid: Boolean(parsePricePaidRaw(manual!.pricePaid)),
+    };
+    console.log("[MANUAL_PRODUCT_INPUT]", JSON.stringify(safeLog));
+
+    explicitQueryPack = buildUniversalManualQueryPack(manual!);
+    explicitReferenceQuery = explicitQueryPack.primaryQuery;
+    console.log(
+      "[QUERY_PACK_FROM_FORM]",
+      JSON.stringify({
+        primaryQuery: explicitQueryPack.primaryQuery,
+        simplifiedQuery: explicitQueryPack.simplifiedQuery,
+        specsQuery: explicitQueryPack.specsQuery,
+      })
+    );
+  }
 
   let scrapedSource: SourceProduct | null = null;
   if (parsed.inputUrl && !demoMode) {
@@ -494,7 +539,10 @@ export async function compareProduct(
   const scrapedOk = Boolean(scrapedSource?.title?.trim());
   const referenceProductQuery = scrapedOk
     ? scrapedSource!.title.trim()
-    : parsed.productQuery.trim();
+    : (
+        explicitReferenceQuery?.replace(/\s+/g, " ").trim() ||
+        parsed.productQuery.replace(/\s+/g, " ").trim()
+      );
 
   if (!referenceProductQuery) {
     pipelineLog("derive_query_empty", { inputUrl: parsed.inputUrl ?? null });
@@ -516,19 +564,31 @@ export async function compareProduct(
     };
   }
 
+  const normSourceText = scrapedOk
+    ? scrapedSource!.title
+    : parsed.productQuery.trim();
+
+  const priceFromManual =
+    useManualForm && manual ? parsePricePaidRaw(manual.pricePaid) : null;
+
   const referenceNormalized = scrapedOk
     ? scrapedSource!.normalized
-    : buildNormalizedProduct(parsed.productQuery);
+    : buildNormalizedProduct(
+        normSourceText,
+        priceFromManual != null ? { price: priceFromManual } : undefined
+      );
+
+  const normalizedQueryFallback =
+    scrapedOk ? referenceProductQuery : normSourceText || referenceProductQuery;
 
   const normalizedQuery = buildNormalizedSearchQuery(
     referenceNormalized,
-    referenceProductQuery
+    normalizedQueryFallback
   );
 
-  const searchQueryPack = buildRetailSearchQueryPack(
-    referenceNormalized,
-    referenceProductQuery
-  );
+  const searchQueryPack =
+    explicitQueryPack ??
+    buildRetailSearchQueryPack(referenceNormalized, referenceProductQuery);
 
   console.log(
     "[QUERY_PACK]",
@@ -783,7 +843,7 @@ export async function compareProduct(
     scrapedOk && scrapedSource
       ? extractedSourceSummary(scrapedSource, parsed.inputUrl)
       : queryDerivedSourceSummary(
-          parsed.productQuery,
+          referenceProductQuery,
           parsed.detectedStore,
           referenceNormalized
         );
@@ -811,7 +871,7 @@ export async function compareProduct(
                     scrapedSource.sourceUrl ?? parsed.inputUrl ?? undefined,
                 }
               : {
-                  title: parsed.productQuery,
+                  title: referenceProductQuery,
                   store: parsed.detectedStore ?? "unknown",
                   originalPrice: null,
                 },

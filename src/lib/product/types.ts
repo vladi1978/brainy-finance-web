@@ -175,9 +175,16 @@ export type ProductProvider = {
   toAffiliateUrl(productUrl: string): string;
 };
 
+import type { ManualProductFormFields } from "./manualProductInput";
+
 export type CompareProductOptions = {
   /** When true, attaches `comparisonTrace` and enables verbose console logs */
   debug?: boolean;
+  /**
+   * When set without `link`, builds universal search queries from structured fields.
+   * When `link` is set, callers should run the URL flow instead (`compareProduct(url)`).
+   */
+  manualProduct?: ManualProductFormFields | null;
 };
 
 export type CandidateStepTrace = {

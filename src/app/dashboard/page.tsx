@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { CompareApiCandidate, CompareProductResponse } from "@/lib/product/types";
+import { manualFormHasSearchableCore } from "@/lib/product/manualProductInput";
 
 function formatPrice(n: number | null): string {
   if (n == null || !Number.isFinite(n)) return "—";
@@ -23,17 +24,50 @@ function MatchBadge({ type }: { type: CompareApiCandidate["matchType"] }) {
   );
 }
 
+type InputMode = "link" | "manual";
+
 export default function DashboardPage() {
-  const [inputValue, setInputValue] = useState("");
+  const [inputMode, setInputMode] = useState<InputMode>("link");
+  const [linkValue, setLinkValue] = useState("");
+  const [manualBrand, setManualBrand] = useState("");
+  const [manualProductName, setManualProductName] = useState("");
+  const [manualCategory, setManualCategory] = useState("");
+  const [manualSize, setManualSize] = useState("");
+  const [manualColor, setManualColor] = useState("");
+  const [manualFeatures, setManualFeatures] = useState("");
+  const [manualPricePaid, setManualPricePaid] = useState("");
   const [result, setResult] = useState<CompareProductResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
   const handleCompare = async () => {
-    if (!inputValue.trim()) return;
+    setErrorMessage("");
+
+    let body: Record<string, unknown>;
+
+    if (inputMode === "link") {
+      if (!linkValue.trim()) return;
+      body = { input: linkValue.trim() };
+    } else {
+      const manualProduct = {
+        brand: manualBrand.trim() || null,
+        productNameOrModel: manualProductName.trim() || null,
+        category: manualCategory.trim() || null,
+        sizeDimensionsCapacity: manualSize.trim() || null,
+        colorVariant: manualColor.trim() || null,
+        keyFeatures: manualFeatures.trim() || null,
+        pricePaid: manualPricePaid.trim() || null,
+      };
+      if (!manualFormHasSearchableCore(manualProduct)) {
+        setErrorMessage(
+          "Add at least a brand, product name/model, or category to search without a link."
+        );
+        return;
+      }
+      body = { manualProduct };
+    }
 
     setLoading(true);
-    setErrorMessage("");
     setResult(null);
 
     try {
@@ -42,7 +76,7 @@ export default function DashboardPage() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ input: inputValue }),
+        body: JSON.stringify(body),
       });
 
       const data = (await response.json()) as CompareProductResponse & {
@@ -117,21 +151,103 @@ export default function DashboardPage() {
         <div className="rounded-2xl border border-white/10 p-6 bg-white/5">
           <h2 className="text-2xl font-bold mb-4">Compare a Product</h2>
 
-          <div className="flex flex-col md:flex-row gap-3 mb-6">
-            <input
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              placeholder="Paste a store URL or type a product name"
-              className="flex-1 rounded-xl bg-black border border-white/15 px-4 py-3 text-white outline-none"
-            />
-
+          <div className="flex flex-wrap gap-3 mb-6">
             <button
-              onClick={handleCompare}
-              className="rounded-xl bg-green-500 px-6 py-3 font-semibold text-black hover:bg-green-400 transition"
+              type="button"
+              onClick={() => setInputMode("link")}
+              className={`rounded-xl px-4 py-2 text-sm font-medium transition border ${
+                inputMode === "link"
+                  ? "bg-green-500/20 border-green-500/50 text-green-300"
+                  : "bg-black/40 border-white/15 text-white/70 hover:border-white/25"
+              }`}
             >
-              {loading ? "Searching..." : "Compare Now"}
+              I have a product link
+            </button>
+            <button
+              type="button"
+              onClick={() => setInputMode("manual")}
+              className={`rounded-xl px-4 py-2 text-sm font-medium transition border ${
+                inputMode === "manual"
+                  ? "bg-green-500/20 border-green-500/50 text-green-300"
+                  : "bg-black/40 border-white/15 text-white/70 hover:border-white/25"
+              }`}
+            >
+              I don&apos;t have a link
             </button>
           </div>
+
+          {inputMode === "link" ? (
+            <div className="flex flex-col md:flex-row gap-3 mb-6">
+              <input
+                value={linkValue}
+                onChange={(e) => setLinkValue(e.target.value)}
+                placeholder="Paste a store URL or type a product name"
+                className="flex-1 rounded-xl bg-black border border-white/15 px-4 py-3 text-white outline-none"
+              />
+              <button
+                type="button"
+                onClick={handleCompare}
+                className="rounded-xl bg-green-500 px-6 py-3 font-semibold text-black hover:bg-green-400 transition"
+              >
+                {loading ? "Searching..." : "Compare Now"}
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-4 mb-6">
+              <div className="grid sm:grid-cols-2 gap-3">
+                <input
+                  value={manualBrand}
+                  onChange={(e) => setManualBrand(e.target.value)}
+                  placeholder="Brand (e.g. Samsung, Nike)"
+                  className="rounded-xl bg-black border border-white/15 px-4 py-3 text-white outline-none"
+                />
+                <input
+                  value={manualProductName}
+                  onChange={(e) => setManualProductName(e.target.value)}
+                  placeholder="Product name / model"
+                  className="rounded-xl bg-black border border-white/15 px-4 py-3 text-white outline-none"
+                />
+                <input
+                  value={manualCategory}
+                  onChange={(e) => setManualCategory(e.target.value)}
+                  placeholder="Category / product type"
+                  className="rounded-xl bg-black border border-white/15 px-4 py-3 text-white outline-none"
+                />
+                <input
+                  value={manualSize}
+                  onChange={(e) => setManualSize(e.target.value)}
+                  placeholder="Size / dimensions / capacity"
+                  className="rounded-xl bg-black border border-white/15 px-4 py-3 text-white outline-none"
+                />
+                <input
+                  value={manualColor}
+                  onChange={(e) => setManualColor(e.target.value)}
+                  placeholder="Color / variant"
+                  className="rounded-xl bg-black border border-white/15 px-4 py-3 text-white outline-none"
+                />
+                <input
+                  value={manualPricePaid}
+                  onChange={(e) => setManualPricePaid(e.target.value)}
+                  placeholder="Price paid (optional)"
+                  className="rounded-xl bg-black border border-white/15 px-4 py-3 text-white outline-none"
+                />
+              </div>
+              <textarea
+                value={manualFeatures}
+                onChange={(e) => setManualFeatures(e.target.value)}
+                placeholder="Key features (short phrases — avoid pasting a full product description)"
+                rows={3}
+                className="w-full rounded-xl bg-black border border-white/15 px-4 py-3 text-white outline-none resize-y min-h-[5rem]"
+              />
+              <button
+                type="button"
+                onClick={handleCompare}
+                className="rounded-xl bg-green-500 px-6 py-3 font-semibold text-black hover:bg-green-400 transition"
+              >
+                {loading ? "Searching..." : "Compare Now"}
+              </button>
+            </div>
+          )}
 
           {errorMessage && (
             <div className="mb-4 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-red-300">
