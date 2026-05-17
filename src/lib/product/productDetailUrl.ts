@@ -229,6 +229,18 @@ export function isValidProductDetailUrl(
 
   if (!/^https?:$/i.test(u.protocol)) return false;
 
+  const hrefLower = u.href.toLowerCase();
+  if (
+    hrefLower.includes("/search") ||
+    hrefLower.includes("searchterm") ||
+    hrefLower.includes("?q=") ||
+    hrefLower.includes("?k=") ||
+    hrefLower.includes("?st=") ||
+    hrefLower.includes("_nkw=")
+  ) {
+    return true;
+  }
+
   const host = normHost(u.hostname);
 
   if (hostMatchesStoreKey(store, host) && isRetailerSearchLandingUrl(store, u)) {
