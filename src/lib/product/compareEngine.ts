@@ -22,6 +22,7 @@ import {
   buildNormalizedSearchQuery,
   extractSearchQuery,
 } from "./normalize";
+import { isGenericRetailProductQuery } from "./urlProductQuery";
 import { findProductProviderForUrl } from "./registry";
 import { rankMatchTypes } from "./searchRelevance";
 import {
@@ -183,6 +184,154 @@ function buildSpecsQuery(norm: NormalizedProduct, referenceTitle: string): strin
   return extractSearchQuery(referenceTitle).replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Short series/model token for PDP-led search (e.g. "U8000" from "U8000 Series"),
+ * preferable to a long UN… SKU for Google Shopping recall.
+ */
+function extractPdpShortModelKey(pdpTitle: string, norm: NormalizedProduct): string | null {
+  const ser = pdpTitle.match(/\b(U\d{4})\b/);
+  if (ser) return ser[1]!.toUpperCase();
+  const ser2 = pdpTitle.match(/\b([A-Z]{1,2}\d{3,5})\s+Series\b/i);
+  if (ser2) return ser2[1]!.toUpperCase();
+  const mf = norm.structured.modelFamily?.trim();
+  if (mf && mf.length >= 3 && mf.length <= 12) return mf.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return null;
+}
+
+/** PDP query line: never use the vague word "Product" (hurts SERP recall). */
+function inferPdpProductTypeWord(norm: NormalizedProduct, pdpTitle: string): string {
+  const t = pdpTitle.toLowerCase();
+  if (norm.category === "tv" || /\b(smart\s+)?tv\b/.test(t)) return "TV";
+  if (norm.category === "monitor" || /\bmonitor\b/.test(t)) return "Monitor";
+  if (
+    /\b(headphone|earbud|ear\s*buds?)\b/.test(t) ||
+    norm.category === "audio"
+  ) {
+    return "Headphones";
+  }
+  if (/\b(shoe|sneaker|boot)\b/.test(t) || norm.category === "footwear") {
+    return "Shoes";
+  }
+  if (/\bsock\b/.test(t) || norm.category === "socks") return "Socks";
+  if (/\b(hoodie|shirt|jacket)\b/.test(t) || norm.category === "apparel")
+    return "Clothing";
+  if (/\b(cleaner|detergent|laundry|soap|spray)\b/.test(t)) return "Household";
+  if (norm.category !== "general") return categoryTypeWord(norm.category);
+  return "item";
+}
+
+function pdpSpecsDisplayPhrase(
+  norm: NormalizedProduct,
+  pdpTitle: string
+): string | null {
+  if (/\bcrystal\s*uhd\b/i.test(pdpTitle)) return "Crystal UHD";
+  if (/\bneo\s*qled\b/i.test(pdpTitle)) return "Neo QLED";
+  if (/\bmini\s*led\b/i.test(pdpTitle)) return "Mini LED";
+  const fromNorm =
+    norm.category === "tv" && norm.tv
+      ? tvDisplayTechLabel(norm.tv.displayTech)
+      : null;
+  if (fromNorm) return fromNorm;
+  return inferDisplayTechLabelFromText(pdpTitle);
+}
+
+function pdpCompactExtractFallback(pdpTitle: string): string {
+  const ex = extractSearchQuery(pdpTitle).replace(/\s+/g, " ").trim();
+  if (ex.length > 0 && ex.length <= 90) return ex;
+  const tok = pdpTitle
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 8)
+    .join(" ");
+  return tok.slice(0, 88).trim();
+}
+
+function isUsableRetailerQuery(q: string): boolean {
+  const t = q.replace(/\s+/g, " ").trim();
+  if (t.length < 4) return false;
+  if (isGenericRetailProductQuery(t)) return false;
+  if (/^product$/i.test(t)) return false;
+  return true;
+}
+
+/**
+ * URL/PDP path: three short, retailer-style queries from the scraped PDP title only
+ * (no URL slug, no single giant raw title as the primary search string).
+ */
+export function buildPdpRetailSearchQueryPack(
+  norm: NormalizedProduct,
+  pdpTitle: string
+): RetailSearchQueryPack {
+  const title = pdpTitle.replace(/\s+/g, " ").trim();
+  const brand = formatBrandTitleCase(norm.brand);
+  const typeWord = inferPdpProductTypeWord(norm, title);
+  const size = norm.sizeInches;
+
+  const shortSeries = extractPdpShortModelKey(title, norm);
+  const skuCompact = pickShortModelForPrimary(norm);
+
+  let modelPrimary: string;
+  if (brand && shortSeries) {
+    modelPrimary = `${brand} ${shortSeries}`.replace(/\s+/g, " ").trim();
+  } else if (brand && skuCompact) {
+    const sku = skuCompact.length > 14 ? shortSeries || skuCompact.slice(0, 12) : skuCompact;
+    modelPrimary = `${brand} ${sku}`.replace(/\s+/g, " ").trim();
+  } else if (shortSeries) {
+    modelPrimary = shortSeries;
+  } else if (skuCompact) {
+    modelPrimary = skuCompact;
+  } else if (brand) {
+    const mini = extractSearchQuery(title).replace(/\s+/g, " ").trim().slice(0, 48);
+    modelPrimary = mini ? `${brand} ${mini}`.replace(/\s+/g, " ").trim() : brand;
+  } else {
+    modelPrimary = pdpCompactExtractFallback(title);
+  }
+
+  let core: string;
+  if (brand) {
+    core =
+      size != null
+        ? `${brand} ${size} inch ${typeWord}`.replace(/\s+/g, " ").trim()
+        : `${brand} ${typeWord}`.replace(/\s+/g, " ").trim();
+  } else if (size != null) {
+    core = `${size} inch ${typeWord}`.replace(/\s+/g, " ").trim();
+  } else {
+    core = `${extractSearchQuery(title).replace(/\s+/g, " ").trim()}`.slice(0, 80);
+  }
+
+  const specPhrase = pdpSpecsDisplayPhrase(norm, title);
+  const specsParts: string[] = [];
+  if (size != null) specsParts.push(`${size} inch`);
+  if (specPhrase) specsParts.push(specPhrase);
+  specsParts.push(typeWord);
+  let specs = specsParts.join(" ").replace(/\s+/g, " ").trim();
+  if (specs.length < 6) {
+    const tw = inferPdpProductTypeWord(norm, title);
+    const altParts: string[] = [];
+    if (size != null) altParts.push(`${size} inch`);
+    const ph = pdpSpecsDisplayPhrase(norm, title);
+    if (ph) altParts.push(ph);
+    altParts.push(tw);
+    specs = altParts.join(" ").replace(/\s+/g, " ").trim();
+  }
+
+  const fallback = pdpCompactExtractFallback(title);
+
+  const ensure = (s: string, alt: string) => {
+    const t = s.replace(/\s+/g, " ").trim();
+    if (isUsableRetailerQuery(t)) return t;
+    const u = alt.replace(/\s+/g, " ").trim();
+    return isUsableRetailerQuery(u) ? u : fallback.slice(0, 90);
+  };
+
+  return {
+    primaryQuery: ensure(modelPrimary, core),
+    simplifiedQuery: ensure(core, specs),
+    specsQuery: ensure(specs, core),
+  };
+}
+
 export function buildRetailSearchQueryPack(
   norm: NormalizedProduct,
   referenceTitle: string
@@ -215,8 +364,21 @@ export function buildUniversalShoppingQueryPlan(args: {
   referenceNormalized: NormalizedProduct;
   referenceTitle: string;
   explicitQueryPack: RetailSearchQueryPack | null;
+  /** When set (e.g. after PDP scrape), use this pack instead of rebuilding from `referenceTitle` */
+  resolvedRetailPack?: RetailSearchQueryPack | null;
+  /**
+   * Scraped PDP title path: run Shopping with only the short 3-query pack (no long
+   * critical-segment / URL-noise prefixes).
+   */
+  pdpTitleSearchPlanOnly?: boolean;
 }): string[] {
-  const { referenceNormalized, referenceTitle, explicitQueryPack } = args;
+  const {
+    referenceNormalized,
+    referenceTitle,
+    explicitQueryPack,
+    resolvedRetailPack,
+    pdpTitleSearchPlanOnly,
+  } = args;
   const brand = formatBrandTitleCase(referenceNormalized.brand);
   const brandStrippedNorm: NormalizedProduct = {
     ...referenceNormalized,
@@ -241,8 +403,27 @@ export function buildUniversalShoppingQueryPlan(args: {
     brand && hardStrict ? `${brand} ${hardStrict}`.replace(/\s+/g, " ").trim() : "";
 
   const pack =
+    resolvedRetailPack ??
     explicitQueryPack ??
     buildRetailSearchQueryPack(referenceNormalized, referenceTitle);
+
+  if (pdpTitleSearchPlanOnly) {
+    const orderedPdp = [
+      pack.primaryQuery,
+      pack.simplifiedQuery,
+      pack.specsQuery,
+    ];
+    const seenPdp = new Set<string>();
+    const outPdp: string[] = [];
+    for (const q of orderedPdp) {
+      const t = q.replace(/\s+/g, " ").trim();
+      if (t.length < 4) continue;
+      if (seenPdp.has(t)) continue;
+      seenPdp.add(t);
+      outPdp.push(t);
+    }
+    return outPdp;
+  }
 
   const ordered = [
     hardStrict,
@@ -613,12 +794,19 @@ export async function compareProduct(
 
   const searchQueryPack =
     explicitQueryPack ??
-    buildRetailSearchQueryPack(referenceNormalized, referenceProductQuery);
+    (scrapedOk
+      ? buildPdpRetailSearchQueryPack(
+          referenceNormalized,
+          scrapedSource!.title.trim()
+        )
+      : buildRetailSearchQueryPack(referenceNormalized, referenceProductQuery));
 
   const shoppingQueryPlan = buildUniversalShoppingQueryPlan({
     referenceNormalized,
     referenceTitle: referenceProductQuery,
     explicitQueryPack,
+    resolvedRetailPack: searchQueryPack,
+    pdpTitleSearchPlanOnly: Boolean(scrapedOk && !explicitQueryPack),
   });
 
   console.log(
