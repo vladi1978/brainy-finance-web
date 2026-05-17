@@ -31,7 +31,7 @@ const STOPWORDS = new Set([
 
 /** Known consumer brands — extend as needed. */
 const BRAND_PATTERN =
-  /\b(samsung|lg|sony|tcl|hisense|vizio|insignia|onn|apple|google|beats|bose|jbl|sonos|anker|nike|adidas|reebok|puma|new balance|asics|crocs|ugg|hanes|gildan|champion|microsoft|dell|hp|lenovo|asus|acer|msi)\b/i;
+  /\b(samsung|lg|sony|tcl|hisense|vizio|insignia|onn|apple|google|beats|bose|jbl|sonos|anker|nike|adidas|reebok|puma|new balance|asics|crocs|ugg|hanes|gildan|champion|microsoft|dell|hp|lenovo|asus|acer|msi|intex|bestway|coleman)\b/i;
 
 /**
  * Lowercase, strip punctuation noise, collapse whitespace (search / matching).
@@ -543,6 +543,9 @@ export function detectStoreFromProductUrl(raw: string): StoreId | null {
   if (/walmart\.com/i.test(t)) return "walmart";
   if (/target\.com/i.test(t)) return "target";
   if (/temu\.com/i.test(t)) return "temu";
+  if (/bestbuy\.com/i.test(t)) return "bestbuy";
+  if (/homedepot\.com/i.test(t)) return "homedepot";
+  if (/lowes\.com/i.test(t)) return "lowes";
   return null;
 }
 

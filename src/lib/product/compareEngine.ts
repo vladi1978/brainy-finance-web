@@ -2,6 +2,12 @@ import {
   scoreAttributeMatch,
   type AttributeMatchResult,
 } from "./attributeMatch";
+import { toAffiliateUrl } from "./affiliateUrl";
+import {
+  buildCriticalShoppingCoreSegments,
+  withCriticalAttributes,
+} from "./criticalAttributes";
+import { fetchGoogleShoppingCandidatesWithDiagnostics } from "./googleShoppingSearch";
 import { parseProductInput } from "./inputParse";
 import {
   buildManualNormalizationTitle,
@@ -16,10 +22,7 @@ import {
   buildNormalizedSearchQuery,
   extractSearchQuery,
 } from "./normalize";
-import {
-  findProductProviderForUrl,
-  productProviderRegistry,
-} from "./registry";
+import { findProductProviderForUrl } from "./registry";
 import { rankMatchTypes } from "./searchRelevance";
 import {
   isProductDetailStoreKey,
@@ -36,9 +39,7 @@ import type {
   ComparisonTrace,
   NormalizedProduct,
   ProductCategory,
-  ProductProvider,
   ProviderSearchDiagnostics,
-  ProviderResult,
   SelectionTrace,
   SourceProduct,
   StoreId,
@@ -206,54 +207,72 @@ export function buildRetailSearchQueryPack(
   };
 }
 
-async function searchCandidatesWithOrderedQueries(
-  provider: ProductProvider,
-  queries: string[],
-  baseCtx: { rawInput: string; productQuery: string }
-): Promise<ProviderResult & { queryUsed: string }> {
+/**
+ * Progressive Google Shopping queries: immutable specs first (cross-brand), then brand-anchor,
+ * then legacy retailer packs for recall.
+ */
+export function buildUniversalShoppingQueryPlan(args: {
+  referenceNormalized: NormalizedProduct;
+  referenceTitle: string;
+  explicitQueryPack: RetailSearchQueryPack | null;
+}): string[] {
+  const { referenceNormalized, referenceTitle, explicitQueryPack } = args;
+  const brand = formatBrandTitleCase(referenceNormalized.brand);
+  const brandStrippedNorm: NormalizedProduct = {
+    ...referenceNormalized,
+    brand: null,
+    structured: { ...referenceNormalized.structured, brand: null },
+  };
+  let titleForCore = referenceTitle;
+  if (referenceNormalized.brand) {
+    const rawB = referenceNormalized.brand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    titleForCore = referenceTitle.replace(new RegExp(`\\b${rawB}\\b`, "gi"), " ");
+  }
+  const core = buildNormalizedSearchQuery(brandStrippedNorm, titleForCore).replace(/\s+/g, " ");
+  const segments = buildCriticalShoppingCoreSegments(
+    referenceNormalized,
+    referenceTitle
+  ).join(" ");
+  let hardStrict = `${segments} ${core}`.replace(/\s+/g, " ").trim();
+  if (hardStrict.length < 8) {
+    hardStrict = extractSearchQuery(referenceTitle).replace(/\s+/g, " ");
+  }
+  const withBrand =
+    brand && hardStrict ? `${brand} ${hardStrict}`.replace(/\s+/g, " ").trim() : "";
+
+  const pack =
+    explicitQueryPack ??
+    buildRetailSearchQueryPack(referenceNormalized, referenceTitle);
+
+  const ordered = [
+    hardStrict,
+    withBrand,
+    pack.primaryQuery,
+    pack.simplifiedQuery,
+    pack.specsQuery,
+  ];
+
   const seen = new Set<string>();
-  const ordered: string[] = [];
-  for (const q of queries) {
+  const out: string[] = [];
+  for (const q of ordered) {
     const t = q.replace(/\s+/g, " ").trim();
-    if (t.length < 2) continue;
+    if (t.length < 4) continue;
     if (seen.has(t)) continue;
     seen.add(t);
-    ordered.push(t);
+    out.push(t);
   }
-
-  const fallbackQ =
-    baseCtx.productQuery.replace(/\s+/g, " ").trim().slice(0, 80) || "product";
-
-  if (ordered.length === 0) {
-    const res = await provider.searchCandidates({
-      ...baseCtx,
-      searchQuery: fallbackQ,
-    });
-    return { ...res, queryUsed: res.diagnostics.query };
-  }
-
-  let last: ProviderResult | null = null;
-  for (const q of ordered) {
-    last = await provider.searchCandidates({
-      ...baseCtx,
-      searchQuery: q,
-    });
-    if (last.candidates.length > 0) {
-      return {
-        candidates: last.candidates,
-        diagnostics: { ...last.diagnostics, query: q },
-        queryUsed: q,
-      };
-    }
-  }
-
-  const finalQ = ordered[ordered.length - 1]!;
-  return {
-    ...last!,
-    diagnostics: { ...last!.diagnostics, query: finalQ },
-    queryUsed: finalQ,
-  };
+  return out;
 }
+
+const DEMO_STORES: StoreId[] = [
+  "amazon",
+  "walmart",
+  "target",
+  "temu",
+  "bestbuy",
+  "homedepot",
+  "lowes",
+];
 
 const MIN_HIGH_CONFIDENCE_FOR_BEST_DEAL = 2;
 
@@ -306,6 +325,9 @@ const DEMO_PRICE_BY_STORE: Record<StoreId, number> = {
   walmart: 119.0,
   target: 124.49,
   temu: 109.0,
+  bestbuy: 122.0,
+  homedepot: 118.0,
+  lowes: 121.0,
 };
 
 function buildDemoCandidates(
@@ -353,12 +375,9 @@ function candidateKey(c: CandidateProduct, index: number): string {
   return `${c.store}:${index}:${c.productUrl.slice(-14)}`;
 }
 
-function emptyDiagnostics(
-  store: StoreId,
-  query: string
-): ProviderSearchDiagnostics {
+function emptyGoogleDiagnostics(query: string): ProviderSearchDiagnostics {
   return {
-    store,
+    store: "google_shopping",
     query,
     fetchOk: false,
     httpStatus: null,
@@ -435,19 +454,20 @@ function groupByStore(rows: CompareApiCandidate[]): {
   store: StoreId;
   candidates: CompareApiCandidate[];
 }[] {
-  const order = productProviderRegistry.map((p) => p.id);
   const map = new Map<StoreId, CompareApiCandidate[]>();
+  const order: StoreId[] = [];
   for (const r of rows) {
-    const list = map.get(r.store as StoreId) ?? [];
-    list.push(r);
-    map.set(r.store as StoreId, list);
+    const s = r.store as StoreId;
+    if (!map.has(s)) {
+      order.push(s);
+      map.set(s, []);
+    }
+    map.get(s)!.push(r);
   }
-  return order
-    .filter((s) => map.has(s))
-    .map((store) => ({
-      store,
-      candidates: sortCandidatesForDisplay(map.get(store)!),
-    }));
+  return order.map((store) => ({
+    store,
+    candidates: sortCandidatesForDisplay(map.get(store)!),
+  }));
 }
 
 function overallConfidenceFromDeal(
@@ -571,12 +591,17 @@ export async function compareProduct(
   const priceFromManual =
     useManualForm && manual ? parsePricePaidRaw(manual.pricePaid) : null;
 
-  const referenceNormalized = scrapedOk
+  let referenceNormalized = scrapedOk
     ? scrapedSource!.normalized
     : buildNormalizedProduct(
         normSourceText,
         priceFromManual != null ? { price: priceFromManual } : undefined
       );
+
+  referenceNormalized = withCriticalAttributes(
+    `${referenceProductQuery} ${normSourceText}`.trim(),
+    referenceNormalized
+  );
 
   const normalizedQueryFallback =
     scrapedOk ? referenceProductQuery : normSourceText || referenceProductQuery;
@@ -590,12 +615,19 @@ export async function compareProduct(
     explicitQueryPack ??
     buildRetailSearchQueryPack(referenceNormalized, referenceProductQuery);
 
+  const shoppingQueryPlan = buildUniversalShoppingQueryPlan({
+    referenceNormalized,
+    referenceTitle: referenceProductQuery,
+    explicitQueryPack,
+  });
+
   console.log(
     "[QUERY_PACK]",
     JSON.stringify({
       primaryQuery: searchQueryPack.primaryQuery,
       simplifiedQuery: searchQueryPack.simplifiedQuery,
       specsQuery: searchQueryPack.specsQuery,
+      shoppingPlan: shoppingQueryPlan,
     })
   );
 
@@ -612,13 +644,14 @@ export async function compareProduct(
     category: referenceNormalized.category,
   });
 
-  let providerQueries = productProviderRegistry.map((p) => ({
-    store: p.id,
-    query: searchQueryPack.primaryQuery,
+  let providerQueries = shoppingQueryPlan.map((q) => ({
+    store: "google_shopping",
+    query: q,
   }));
   traceLog("provider_query_used", {
     normalizedQuery,
     searchQueryPack,
+    shoppingQueryPlan,
     providerQueries,
   });
 
@@ -626,10 +659,10 @@ export async function compareProduct(
   const candidatesPerProvider: { store: string; count: number }[] = [];
   let providerDiagnostics: ProviderSearchDiagnostics[] = [];
 
-  const registeredStores = productProviderRegistry.map((p) => p.id);
   const searchCtxBase = {
     rawInput: input,
     productQuery: referenceProductQuery,
+    searchQuery: shoppingQueryPlan[0] ?? searchQueryPack.primaryQuery,
   };
 
   if (demoMode) {
@@ -637,56 +670,39 @@ export async function compareProduct(
     allCandidates = buildDemoCandidates(
       referenceNormalized,
       searchQueryPack.primaryQuery,
-      registeredStores
+      DEMO_STORES
     );
-    providerDiagnostics = registeredStores.map((store) =>
-      emptyDiagnostics(store, searchQueryPack.primaryQuery)
-    );
-    for (const p of productProviderRegistry) {
-      const n = allCandidates.filter((c) => c.store === p.id).length;
-      candidatesPerProvider.push({ store: p.id, count: n });
-    }
+    providerDiagnostics = [emptyGoogleDiagnostics(searchQueryPack.primaryQuery)];
+    candidatesPerProvider.push({
+      store: "google_shopping",
+      count: allCandidates.length,
+    });
   } else {
-    const packOrder = [
-      searchQueryPack.primaryQuery,
-      searchQueryPack.simplifiedQuery,
-      searchQueryPack.specsQuery,
-    ];
-    const outcomes = await Promise.all(
-      productProviderRegistry.map(async (p) => {
-        const result = await searchCandidatesWithOrderedQueries(
-          p,
-          packOrder,
-          searchCtxBase
-        );
-        return { store: p.id, result };
-      })
-    );
-
-    providerQueries = outcomes.map((o) => ({
-      store: o.store,
-      query: o.result.queryUsed,
-    }));
-
-    for (const o of outcomes) {
-      console.log(
-        "[QUERY_USED_BY_STORE]",
-        JSON.stringify({ store: o.store, query: o.result.queryUsed })
+    const { candidates, diagnostics, queriesTried } =
+      await fetchGoogleShoppingCandidatesWithDiagnostics(
+        shoppingQueryPlan,
+        searchCtxBase,
+        { totalLimit: 56, perQueryLimit: 28 }
       );
-      providerDiagnostics.push(o.result.diagnostics);
-      candidatesPerProvider.push({
-        store: o.store,
-        count: o.result.candidates.length,
-      });
+    allCandidates = candidates;
+    providerDiagnostics = diagnostics;
+    providerQueries = queriesTried.map((q) => ({
+      store: "google_shopping",
+      query: q,
+    }));
+    for (const d of diagnostics) {
       pipelineLog("candidates_by_store", {
-        store: o.store,
-        count: o.result.candidates.length,
-        query: o.result.diagnostics.query,
-        fetchOk: o.result.diagnostics.fetchOk,
+        store: "google_shopping",
+        count: d.candidateCount,
+        query: d.query,
+        fetchOk: d.fetchOk,
       });
-      traceLog("provider_search_diagnostics", o.result.diagnostics);
-      allCandidates = allCandidates.concat(o.result.candidates);
+      traceLog("provider_search_diagnostics", d);
     }
+    candidatesPerProvider.push({
+      store: "google_shopping",
+      count: allCandidates.length,
+    });
   }
 
   console.log("[CANDIDATES_TOTAL]", JSON.stringify({ total: allCandidates.length }));
@@ -710,9 +726,7 @@ export async function compareProduct(
 
   const deduped = dedupeByStoreAndUrl(priced);
 
-  const affiliateFor = (c: CandidateProduct) =>
-    productProviderRegistry.find((p) => p.id === c.store)?.toAffiliateUrl(c.productUrl) ??
-    c.affiliateUrl;
+  const affiliateFor = (c: CandidateProduct) => toAffiliateUrl(c.productUrl, c.store);
 
   const candidateSteps: CandidateStepTrace[] = [];
   const queryForMatch = `${referenceProductQuery} ${normalizedQuery}`.trim();
@@ -883,6 +897,13 @@ export async function compareProduct(
         }
       : undefined;
 
+  const shoppingApiMissing =
+    !demoMode &&
+    allCandidates.length === 0 &&
+    providerDiagnostics.some((d) =>
+      d.hints.includes("no_shopping_api_key_or_failed")
+    );
+
   if (flatSorted.length === 0) {
     const allFilteredByAttributes = deduped.length > 0 && rows.length === 0;
     pipelineLog("selection_final", {
@@ -898,14 +919,18 @@ export async function compareProduct(
       showBestDeal: false,
       confidence: null,
       message: allFilteredByAttributes
-        ? "No listings matched closely enough after attribute checks. Try adding brand, size, or model number."
-        : "No search results with prices yet. Try a different product name.",
+        ? "No listings matched closely enough after attribute checks. Try adding more specific size, model, or accessory details."
+        : shoppingApiMissing
+          ? "Live shopping search is not configured. Add SERPER_API_KEY or SERPAPI_API_KEY on the server."
+          : "No search results with prices yet. Try a different product description.",
       sourceProduct,
       alternatives: [],
       savings: null,
       comparisonMessage: allFilteredByAttributes
         ? "No close matches passed filters."
-        : "No priced listings found for that search.",
+        : shoppingApiMissing
+          ? "Shopping API credentials missing."
+          : "No priced listings found for that search.",
       ...(tracePayload() ? { comparisonTrace: tracePayload()! } : {}),
     };
   }

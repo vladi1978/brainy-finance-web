@@ -1,13 +1,7 @@
 import type { StoreId } from "./types";
 
-/**
- * Registered retailers plus common US hosts we may wire later — PDP rules are enforced here.
- */
-export type ProductDetailStoreKey =
-  | StoreId
-  | "bestbuy"
-  | "homedepot"
-  | "lowes";
+/** Retailers with PDP heuristics — mirrors {@link StoreId}. */
+export type ProductDetailStoreKey = StoreId;
 
 const PDP_STORE_KEYS = new Set<string>([
   "amazon",
@@ -79,6 +73,18 @@ function universalBadRetailUrl(u: URL): boolean {
 
   if (href.includes("/gp/slredirect") || path.includes("/gp/slredirect")) return true;
   if (/slredirect/i.test(href)) return true;
+
+  /** Block Google Shopping / search / redirect hops — we only surface merchant PDPs. */
+  if (host === "google.com" || host.endsWith(".google.com")) {
+    if (
+      path.includes("/shopping") ||
+      path === "/url" ||
+      path.startsWith("/search") ||
+      path.startsWith("/imgres")
+    ) {
+      return true;
+    }
+  }
 
   if (path.includes("/redirect") || /\/rd\//i.test(path)) return true;
 

@@ -3,8 +3,18 @@
  * source → normalized source → provider search → candidate normalization → match scoring → API result.
  */
 
-/** Registered retailers — extend as you add provider modules. */
-export type StoreId = "amazon" | "walmart" | "target" | "temu";
+/**
+ * Registered retailers we can validate as PDP links and surface in compare results.
+ * (Search is unified via Google Shopping; per-store HTML SERP is legacy.)
+ */
+export type StoreId =
+  | "amazon"
+  | "walmart"
+  | "target"
+  | "temu"
+  | "bestbuy"
+  | "homedepot"
+  | "lowes";
 
 export type ProductCategory =
   | "tv"
@@ -86,6 +96,16 @@ export type TvNormalizedAttributes = {
   modelFamilyTokens: string[];
 };
 
+/** Hard-filter tokens derived from user text (dimensions, product kind, bundled accessories). */
+export type CriticalListingAttributes = {
+  /** Normalized substrings expected in comparable titles (e.g. `18x51`, `55inch`). */
+  dimensionSignatures: string[];
+  /** Short phrases pinning the product kind (e.g. `smart tv`, `above ground pool`). */
+  kindPhrases: string[];
+  /** Stem words that must appear when the user required an accessory (e.g. `pump`). */
+  accessoryMustInclude: string[];
+};
+
 export type NormalizedProduct = {
   /** Canonical structured snapshot (gates + scoring use this). */
   structured: StructuredProduct;
@@ -102,6 +122,11 @@ export type NormalizedProduct = {
   gender: string | null;
   /** Strict TV matching signals — only when classified as a television */
   tv?: TvNormalizedAttributes;
+  /**
+   * Optional strict-comparison profile (Pilar 1). When present, candidates must satisfy
+   * these token constraints in addition to category gates.
+   */
+  critical?: CriticalListingAttributes;
 };
 
 export type SourceProduct = {
@@ -153,7 +178,8 @@ export type ProviderSearchContext = {
 
 /** One provider’s search outcome — candidates plus fetch/parse diagnostics. */
 export type ProviderSearchDiagnostics = {
-  store: StoreId;
+  /** Retailer id, or `google_shopping` for the unified Serper/SerpAPI pipeline. */
+  store: StoreId | "google_shopping";
   query: string;
   fetchOk: boolean;
   httpStatus: number | null;

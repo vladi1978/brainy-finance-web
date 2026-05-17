@@ -10,6 +10,7 @@ import type {
 import {
   inferTvFamilyFromFullModel,
   isLikelyScreenProductTitle,
+  normalizeTitle,
   toComparisonCategory,
 } from "./normalize";
 
@@ -25,6 +26,12 @@ export const SCORE_EQUIVALENT_MIN = 52;
 export const SCORE_ALTERNATIVE_MIN = 34;
 
 export const WEAK_MATCH_MIN_SCORE = SCORE_ALTERNATIVE_MIN;
+
+export type HardGateResult = { ok: true } | { ok: false; reason: string };
+
+function hardGateFail(reason: string): HardGateResult {
+  return { ok: false, reason };
+}
 
 const SOFT_BRAND_CATEGORIES = new Set<ProductCategory>([
   "socks",
@@ -50,6 +57,62 @@ function normalizedModelKey(tokens: string[]): string {
   return u.join("|");
 }
 
+/** Word-boundary aware check so bare inch counts (e.g. `55`) do not match inside `155`. */
+function blobHasSignature(blob: string, sig: string): boolean {
+  if (/^\d{1,3}$/.test(sig)) {
+    return new RegExp(`\\b${sig}\\b`).test(blob);
+  }
+  return blob.includes(sig);
+}
+
+export function checkCriticalListingGate(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): HardGateResult {
+  const c = source.critical;
+  if (
+    !c ||
+    (c.dimensionSignatures.length === 0 &&
+      c.kindPhrases.length === 0 &&
+      c.accessoryMustInclude.length === 0)
+  ) {
+    return { ok: true };
+  }
+
+  const blob =
+    candidate.titleNorm +
+    " " +
+    normalizeTitle(candidate.structured.title);
+
+  for (const dim of c.dimensionSignatures) {
+    if (!blobHasSignature(blob, dim)) {
+      return hardGateFail(`critical_dimension_missing(${dim})`);
+    }
+  }
+
+  for (const acc of c.accessoryMustInclude) {
+    if (!blob.includes(acc)) {
+      return hardGateFail(`critical_accessory_missing(${acc})`);
+    }
+  }
+
+  if (c.kindPhrases.length > 0) {
+    const hit = c.kindPhrases.some((p) => blob.includes(p));
+    if (!hit) {
+      return hardGateFail("critical_kind_mismatch");
+    }
+  }
+
+  return { ok: true };
+}
+
+function tvRequiresStrictModelLine(source: NormalizedProduct): boolean {
+  if (source.structured.fullModel) return true;
+  if (source.structured.modelFamily) return true;
+  const toks = source.tv?.modelFamilyTokens ?? [];
+  return toks.some((t) => normFam(t).length >= 4);
+}
+
 /**
  * When either side has extractable model/SKU fragments in the title, both must list the same
  * normalized identity (MVP — no fuzzy family or partial overlap).
@@ -58,11 +121,6 @@ function checkFootwearModelIdentityGate(
   source: NormalizedProduct,
   candidate: NormalizedProduct
 ): HardGateResult {
-  if (source.brand && candidate.brand && source.brand !== candidate.brand) {
-    return hardGateFail(
-      `footwear_brand_mismatch(source=${source.brand},candidate=${candidate.brand})`
-    );
-  }
   const a = source.modelTokens;
   const b = candidate.modelTokens;
   if (a.length === 0 && b.length === 0) return { ok: true };
@@ -142,12 +200,6 @@ export function checkComparisonCategoryGate(
   const b: ComparisonCategory = toComparisonCategory(candidate.category);
   if (a === b) return { ok: true };
   return hardGateFail(`comparison_category_mismatch(${a} vs ${b})`);
-}
-
-export type HardGateResult = { ok: true } | { ok: false; reason: string };
-
-function hardGateFail(reason: string): HardGateResult {
-  return { ok: false, reason };
 }
 
 /** Normalized search text: title + structured model fields (for substring / fuzzy model-id match). */
@@ -306,7 +358,6 @@ export function runMonitorHardGates(
   candidate: NormalizedProduct
 ): HardGateResult {
   const gates: Array<() => HardGateResult> = [
-    () => checkMonitorBrandStrictGate(source, candidate),
     () => checkMonitorModelGate(source, candidate),
   ];
   for (const g of gates) {
@@ -391,6 +442,9 @@ export function checkTvStructuredModelGate(
   candidate: NormalizedProduct
 ): HardGateResult {
   if (source.category !== "tv" || candidate.category !== "tv") {
+    return { ok: true };
+  }
+  if (!tvRequiresStrictModelLine(source)) {
     return { ok: true };
   }
   const s = source.structured;
@@ -510,7 +564,6 @@ export function runTvHardGates(
   candidate: NormalizedProduct
 ): HardGateResult {
   const gates: Array<() => HardGateResult> = [
-    () => checkTvBrandStrictGate(source, candidate),
     () => checkTvDisplayTechGate(source, candidate),
     () => checkTvResolutionGate(source, candidate),
     () => checkTvStructuredModelGate(source, candidate),
@@ -744,6 +797,9 @@ export function runHardGates(
 ): HardGateResult {
   const bucket = checkComparisonCategoryGate(source, candidate);
   if (!bucket.ok) return bucket;
+
+  const critical = checkCriticalListingGate(source, candidate);
+  if (!critical.ok) return critical;
 
   const generalScreen = checkBothGeneralDisplaySizeStrictGate(source, candidate);
   if (!generalScreen.ok) return generalScreen;
