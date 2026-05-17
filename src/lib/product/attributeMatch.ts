@@ -1,4 +1,8 @@
-import { attributeScoreForPair, runHardGates } from "./match";
+import {
+  attributeScoreForPair,
+  missingCriticalDimensionSignatures,
+  runHardGates,
+} from "./match";
 import type { NormalizedProduct } from "./types";
 import type { SearchMatchType } from "./types";
 import { scoreQueryRelevance } from "./searchRelevance";
@@ -18,6 +22,10 @@ const MIN_COMBINED_RELEVANCE = 32;
 /** Tier thresholds on blended 0–100 score */
 const TIER_HIGH = 70;
 const TIER_MEDIUM = 46;
+
+/** Lower structured-component score when reference critical dims are absent from candidate text. */
+const CRITICAL_DIM_SOFT_PENALTY_EACH = 12;
+const CRITICAL_DIM_SOFT_PENALTY_CAP = 40;
 
 /**
  * Attribute-first matching: hard filters, structured score, light keyword blend.
@@ -41,10 +49,27 @@ export function scoreAttributeMatch(
   }
 
   const attr = attributeScoreForPair(source, candidate);
+  const missingDims = missingCriticalDimensionSignatures(source, candidate);
+  let attrScore = attr.score;
+  const dimPenaltyReasons: string[] = [];
+  if (missingDims.length > 0) {
+    const deduction = Math.min(
+      CRITICAL_DIM_SOFT_PENALTY_CAP,
+      missingDims.length * CRITICAL_DIM_SOFT_PENALTY_EACH
+    );
+    attrScore = Math.max(0, attrScore - deduction);
+    for (const dim of missingDims) {
+      dimPenaltyReasons.push(
+        `soft_penalty:critical_dimension_unconfirmed(${dim})`
+      );
+    }
+  }
+
   const kw = scoreQueryRelevance(queryText, candidateTitle);
-  const blended = Math.round(attr.score * 0.82 + kw.relevanceScore * 0.18);
+  const blended = Math.round(attrScore * 0.82 + kw.relevanceScore * 0.18);
   const reasons = [
     ...attr.reasons,
+    ...dimPenaltyReasons,
     ...kw.reasons.map((r) => `kw:${r}`),
     `blended=${blended}`,
   ];

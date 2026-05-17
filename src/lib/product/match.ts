@@ -65,6 +65,25 @@ function blobHasSignature(blob: string, sig: string): boolean {
   return blob.includes(sig);
 }
 
+/**
+ * Critical dimensions from the reference listing that do not appear in the candidate title blob.
+ * Used for soft scoring only — {@link checkCriticalListingGate} no longer rejects on these.
+ */
+export function missingCriticalDimensionSignatures(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): string[] {
+  const c = source.critical;
+  if (!c || c.dimensionSignatures.length === 0) return [];
+
+  const blob =
+    candidate.titleNorm +
+    " " +
+    normalizeTitle(candidate.structured.title);
+
+  return c.dimensionSignatures.filter((dim) => !blobHasSignature(blob, dim));
+}
+
 export function checkCriticalListingGate(
   source: NormalizedProduct,
   candidate: NormalizedProduct
@@ -83,12 +102,6 @@ export function checkCriticalListingGate(
     candidate.titleNorm +
     " " +
     normalizeTitle(candidate.structured.title);
-
-  for (const dim of c.dimensionSignatures) {
-    if (!blobHasSignature(blob, dim)) {
-      return hardGateFail(`critical_dimension_missing(${dim})`);
-    }
-  }
 
   for (const acc of c.accessoryMustInclude) {
     if (!blob.includes(acc)) {
@@ -190,7 +203,8 @@ export function displayTechsComparable(
 }
 
 /**
- * Comparison bucket must align (tv / apparel / generic) — no TV ↔ fuzzy general cross-matches.
+ * Comparison bucket must align for categorized candidates.
+ * Unknown/generic bucket on the candidate passes — Shopping listings often lack category.
  */
 export function checkComparisonCategoryGate(
   source: NormalizedProduct,
@@ -199,6 +213,7 @@ export function checkComparisonCategoryGate(
   const a: ComparisonCategory = toComparisonCategory(source.category);
   const b: ComparisonCategory = toComparisonCategory(candidate.category);
   if (a === b) return { ok: true };
+  if (b === "generic") return { ok: true };
   return hardGateFail(`comparison_category_mismatch(${a} vs ${b})`);
 }
 
