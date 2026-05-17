@@ -22,14 +22,14 @@ export default function Home() {
             href="/compare"
             className="rounded-xl bg-green-500 px-6 py-3 font-semibold text-black transition hover:bg-green-400"
           >
-            Open comparador
+            Open Compare
           </Link>
 
           <Link
             href="/statements"
             className="rounded-xl border border-white/20 px-6 py-3 font-semibold text-white transition hover:bg-white/10"
           >
-            Extractos / suscripciones
+            Statements & Subscriptions
           </Link>
         </div>
       </section>

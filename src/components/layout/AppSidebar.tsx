@@ -13,37 +13,37 @@ type NavItem = {
 
 const PRIMARY: NavItem[] = [
   {
-    label: "Comparar tiendas",
+    label: "Compare Stores",
     href: "/compare",
     description: "Amazon · Walmart · Target",
   },
   {
-    label: "Extractos y suscripciones",
+    label: "Statements & Subscriptions",
     href: "/statements",
     description: "PDF / Excel",
   },
   {
-    label: "Planes familiares",
+    label: "Family Sharing",
     href: "/family-sharing",
-    description: "Compartir con confianza",
+    description: "Share with confidence",
   },
 ];
 
 const FUTURE: NavItem[] = [
   {
-    label: "Price match",
+    label: "Price Match",
     href: "/coming-soon?p=price-match",
     soon: true,
     soonKey: "price-match",
   },
   {
-    label: "Seguros auto / hogar",
+    label: "Auto & Home Insurance",
     href: "/coming-soon?p=insurance",
     soon: true,
     soonKey: "insurance",
   },
   {
-    label: "Facturas del hogar",
+    label: "Household Bills",
     href: "/coming-soon?p=utilities",
     soon: true,
     soonKey: "utilities",
@@ -79,7 +79,7 @@ function NavButton({
         <span className="text-sm font-medium text-white">{item.label}</span>
         {item.soon && (
           <span className="rounded-full border border-amber-400/35 bg-amber-400/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200/95">
-            Próximamente
+            Coming Soon
           </span>
         )}
       </span>
@@ -102,7 +102,7 @@ export default function AppSidebar() {
         <Link
           href="/"
           className="flex h-10 w-10 items-center justify-center rounded-xl border border-emerald-400/25 bg-emerald-400/10 text-sm font-bold text-emerald-300 transition hover:border-emerald-400/40"
-          aria-label="BrainyFinance inicio"
+          aria-label="BrainyFinance home"
         >
           B
         </Link>
@@ -112,14 +112,14 @@ export default function AppSidebar() {
               BrainyFinance
             </p>
           </Link>
-          <p className="text-xs text-white/45">MVP · ahorro inteligente</p>
+          <p className="text-xs text-white/45">MVP · smart savings</p>
         </div>
       </div>
 
       <nav className="flex-1 space-y-8 overflow-y-auto px-3 pb-8">
         <div>
           <p className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wider text-white/35">
-            Producto activo
+            Active product
           </p>
           <div className="space-y-1.5">
             {PRIMARY.map((item) => (
@@ -153,8 +153,8 @@ export default function AppSidebar() {
 
       <div className="border-t border-white/[0.08] px-5 py-4">
         <p className="text-[11px] leading-relaxed text-white/40">
-          Los módulos en roadmap abren una vista temporal para que el layout no
-          cambie cuando habilitemos cada pilar.
+          Roadmap items open a placeholder view so the layout stays stable as we
+          ship each pillar.
         </p>
       </div>
     </aside>

@@ -15,11 +15,16 @@ function MatchBadge({ type }: { type: CompareApiCandidate["matchType"] }) {
     medium: "bg-amber-500/20 text-amber-200 border-amber-500/40",
     low: "bg-white/10 text-white/60 border-white/20",
   };
+  const labels: Record<CompareApiCandidate["matchType"], string> = {
+    high: "Strong match",
+    medium: "Possible match",
+    low: "Broad match",
+  };
   return (
     <span
       className={`text-xs font-medium px-2 py-0.5 rounded-md border ${colors[type]}`}
     >
-      {type}
+      {labels[type]}
     </span>
   );
 }
@@ -102,10 +107,10 @@ export default function ComparePage() {
   return (
     <main className="flex-1 bg-black text-white px-6 py-10">
       <div className="mx-auto max-w-6xl">
-        <h1 className="text-4xl font-bold mb-2">Comparar tiendas</h1>
+        <h1 className="text-4xl font-bold mb-2">Compare Stores</h1>
         <p className="text-white/70 mb-8">
-          Amazon, Walmart y Target — enlace o descripción. Suscripciones y
-          extractos viven en su propio módulo.
+          Amazon, Walmart, and Target — paste a link or describe the product.
+          Statements and subscriptions live in their own module.
         </p>
 
         <div className="grid md:grid-cols-3 gap-6 mb-8">

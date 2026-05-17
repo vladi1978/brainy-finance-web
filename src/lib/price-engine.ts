@@ -35,7 +35,7 @@ export type ProductData = {
       .trim();
   }
   
-  // Acepta link, nombre o descripción
+  // Accepts a link, short name, or longer description.
   export async function extractProductFromURL(input: string): Promise<ProductData> {
     const cleaned = input.trim();
     const inputType = detectInputType(cleaned);
@@ -74,7 +74,7 @@ export type ProductData = {
     };
   }
   
-  // Genera link de afiliado fake por ahora
+  // Placeholder affiliate link for now
   export function generateAffiliateLink(input: string): string {
     const encoded = encodeURIComponent(input.trim());
     return `https://brainyfinance.app/deal?query=${encoded}&ref=brainyfinance`;

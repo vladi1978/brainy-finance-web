@@ -16,7 +16,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "BrainyFinance",
-  description: "Ahorro inteligente — comparador, extractos y planes familiares",
+  description:
+    "Smart savings — compare prices, statements, and family sharing",
 };
 
 function SidebarFallback() {
