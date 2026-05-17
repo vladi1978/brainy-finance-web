@@ -32,7 +32,7 @@ export type AttributeMatchOptions = {
 export type { ProductUnderstanding } from "./aiExtractor";
 
 /** Obvious mismatches and noise fall below this; weak-similar tier starts at this score. */
-const MIN_COMBINED_RELEVANCE = 15;
+const MIN_COMBINED_RELEVANCE = 10;
 
 /** Structured + keyword blend needed for “same product line” tier. */
 const TIER1_BLEND_MIN = 36;

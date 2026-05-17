@@ -631,7 +631,8 @@ function toCompareApiCandidate(
     title: c.title,
     price: c.price,
     currency: c.currency,
-    productUrl: c.productUrl,
+    /** Store search URL from listing title (outbound links; PDP from Google is internal-only). */
+    productUrl: affiliateUrl,
     affiliateUrl,
     imageUrl: c.imageUrl,
     normalized: c.normalized,
@@ -1211,16 +1212,7 @@ export async function compareProduct(
     });
   }
 
-  const hasStrongTier = rows.some(
-    (r) =>
-      !r.rel.rejected &&
-      (r.rel.matchType === "high" || r.rel.matchType === "equivalent")
-  );
-  const rowsForDisplay = hasStrongTier
-    ? rows.filter((r) => r.rel.matchType !== "similar_product")
-    : rows;
-
-  const baseFiltered = rowsForDisplay
+  const baseFiltered = rows
     .map((r) => r.api)
     .filter(
       (api) =>
@@ -1243,7 +1235,7 @@ export async function compareProduct(
         );
 
   const selectionBase: SelectionTrace = {
-    trustworthyCount: rowsForDisplay.filter(
+    trustworthyCount: rows.filter(
       (r) =>
         (r.rel.matchType === "high" || r.rel.matchType === "equivalent") &&
         !r.rel.rejected
@@ -1359,7 +1351,7 @@ export async function compareProduct(
           (c) =>
             !(c.store === bestApi!.store && c.productUrl === bestApi!.productUrl)
         )
-        .slice(0, 3)
+        .slice(0, 9)
         .map((c) => {
           const r = rowForApi(c);
           return r ? toDeal(c, r.rel) : null;
