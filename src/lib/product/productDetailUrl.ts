@@ -59,6 +59,58 @@ function hostMatchesStoreKey(store: ProductDetailStoreKey, host: string): boolea
   }
 }
 
+function searchParamValueInsensitive(sp: URLSearchParams, name: string): string | null {
+  const w = name.toLowerCase();
+  for (const [k, v] of sp) {
+    if (k.toLowerCase() === w) return v;
+  }
+  return null;
+}
+
+/**
+ * Store search URLs accepted when Google Shopping rows lack merchant PDP links.
+ */
+function isRetailerSearchLandingUrl(store: ProductDetailStoreKey, u: URL): boolean {
+  const path = u.pathname;
+  const pl = path.toLowerCase();
+
+  switch (store) {
+    case "amazon": {
+      if (pl !== "/s" && !pl.startsWith("/s/")) return false;
+      const k = searchParamValueInsensitive(u.searchParams, "k");
+      return Boolean(k?.trim());
+    }
+    case "walmart": {
+      if (pl !== "/search" && !pl.startsWith("/search/")) return false;
+      const q = searchParamValueInsensitive(u.searchParams, "q");
+      return Boolean(q?.trim());
+    }
+    case "bestbuy": {
+      if (!pl.includes("searchpage.jsp")) return false;
+      const st = searchParamValueInsensitive(u.searchParams, "st");
+      return Boolean(st?.trim());
+    }
+    case "target": {
+      if (pl !== "/s") return false;
+      const term = searchParamValueInsensitive(u.searchParams, "searchterm");
+      return Boolean(term?.trim());
+    }
+    case "homedepot": {
+      const m = path.match(/^\/s\/(.+)/i);
+      return Boolean(m?.[1]?.trim());
+    }
+    case "temu": {
+      if (!pl.includes("search_result.html")) return false;
+      const sk = searchParamValueInsensitive(u.searchParams, "search_key");
+      return Boolean(sk?.trim());
+    }
+    case "lowes":
+      return false;
+    default:
+      return false;
+  }
+}
+
 function isDemoPdpPlaceholder(host: string, pathname: string): boolean {
   return /\.example\.com$/i.test(host) && pathname.toLowerCase().startsWith("/p/");
 }
@@ -157,7 +209,8 @@ function lowesPdpPath(path: string): boolean {
 }
 
 /**
- * True when `url` looks like a retailer product detail page for `store`, not search/category/redirect.
+ * True when `url` is a retailer product detail page or an allowed store search fallback
+ * (used when Shopping APIs only return Google hops), for `store`.
  */
 export function isValidProductDetailUrl(
   store: ProductDetailStoreKey,
@@ -173,9 +226,14 @@ export function isValidProductDetailUrl(
   if (!/^https?:$/i.test(u.protocol)) return false;
 
   const host = normHost(u.hostname);
-  const path = u.pathname;
+
+  if (hostMatchesStoreKey(store, host) && isRetailerSearchLandingUrl(store, u)) {
+    return true;
+  }
 
   if (universalBadRetailUrl(u)) return false;
+
+  const path = u.pathname;
 
   if (isDemoPdpPlaceholder(host, path)) {
     return demoHostMatchesStore(store, host);

@@ -207,8 +207,60 @@ export function finalizeMerchantProductUrl(rawLink: string): string | null {
   }
 }
 
-function pickFirstFinalMerchantUrl(row: Record<string, unknown>): string | null {
+/**
+ * Prefer `link`-like strings on a Serper Shopping nested row (offer / PDP row).
+ */
+function pickHttpLinkFromNestedShoppingEntry(entry: Record<string, unknown>): string | null {
   const keys = [
+    "link",
+    "product_link",
+    "productUrl",
+    "merchantUrl",
+    "offerPageUrl",
+    "directUrl",
+    "merchant_link",
+    "direct_link",
+    "url",
+  ];
+  for (const k of keys) {
+    const v = entry[k];
+    if (typeof v === "string" && v.startsWith("http")) return v;
+  }
+  return null;
+}
+
+function pickFirstFinalMerchantUrl(row: Record<string, unknown>): string | null {
+  /** 1) Serper nests merchant PDP URLs under shoppingResults[].link (camelCase) or snake_case. */
+  const bundle = row.shoppingResults ?? row.shopping_results;
+  if (Array.isArray(bundle) && bundle.length > 0) {
+    const first = bundle[0];
+    if (first != null && typeof first === "object") {
+      const raw = pickHttpLinkFromNestedShoppingEntry(first as Record<string, unknown>);
+      if (raw != null) {
+        const u = finalizeMerchantProductUrl(raw);
+        if (u) return u;
+      }
+    }
+  }
+
+  const serperDirectFields = [
+    "productUrl",
+    "merchantUrl",
+    "offerPageUrl",
+    "directUrl",
+    "product_url",
+    "merchant_url",
+    "offer_page_url",
+    "direct_url",
+  ];
+  for (const k of serperDirectFields) {
+    const v = row[k];
+    if (typeof v !== "string" || !v.startsWith("http")) continue;
+    const u = finalizeMerchantProductUrl(v);
+    if (u) return u;
+  }
+
+  const fallbackKeys = [
     "merchant_link",
     "direct_link",
     "product_link_cleaned",
@@ -219,7 +271,7 @@ function pickFirstFinalMerchantUrl(row: Record<string, unknown>): string | null 
     "tracking_link",
     "url",
   ];
-  for (const k of keys) {
+  for (const k of fallbackKeys) {
     const v = row[k];
     if (typeof v !== "string" || !v.startsWith("http")) continue;
     const u = finalizeMerchantProductUrl(v);
@@ -228,12 +280,38 @@ function pickFirstFinalMerchantUrl(row: Record<string, unknown>): string | null 
   return null;
 }
 
+/**
+ * When Serper only returns a Google `link`, build a retailer search URL from `source` + row title.
+ */
+function buildFallbackMerchantSearchUrlFromSource(
+  source: string | null,
+  title: string
+): string | null {
+  if (typeof source !== "string" || !source.trim() || !title.trim()) return null;
+  const s = source.toLowerCase();
+  const q = encodeURIComponent(title.trim());
+
+  if (s.includes("best buy"))
+    return `https://www.bestbuy.com/site/searchpage.jsp?st=${q}`;
+  if (s.includes("home depot"))
+    return `https://www.homedepot.com/s/${q}`;
+  if (s.includes("walmart")) return `https://www.walmart.com/search?q=${q}`;
+  if (s.includes("amazon")) return `https://www.amazon.com/s?k=${q}`;
+  if (s.includes("target"))
+    return `https://www.target.com/s?searchTerm=${q}`;
+  if (s.includes("temu"))
+    return `https://www.temu.com/search_result.html?search_key=${q}`;
+  return null;
+}
+
 function tryAddShoppingRow(
   raw: Record<string, unknown>,
   seen: Set<string>,
   out: Record<string, unknown>[]
 ): void {
-  const nested = raw.shopping_results ?? raw.inline_shopping_results ?? raw.products;
+  const nested =
+    /** Serper keeps merchant PDP URLs on the parent row under `shoppingResults`; do not flatten it (child rows lack titles). */
+    raw.shopping_results ?? raw.inline_shopping_results ?? raw.products;
   if (Array.isArray(nested)) {
     for (const inner of nested) {
       if (inner != null && typeof inner === "object") {
@@ -257,6 +335,7 @@ function normalizeShoppingRows(payload: unknown): Record<string, unknown>[] {
 
   const arrayCandidates: unknown[] = [
     root.shopping,
+    root.shoppingResults,
     root.shopping_results,
     root.inline_shopping_results,
     (root as { items?: unknown }).items,
@@ -291,6 +370,34 @@ function normalizeShoppingRows(payload: unknown): Record<string, unknown>[] {
   }
 
   return out;
+}
+
+/** First top-level shopping array from Serper-style JSON (for debug logs). */
+function extractRawSerperShoppingItems(payload: unknown): unknown[] {
+  if (payload == null || typeof payload !== "object") return [];
+  const root = payload as Record<string, unknown>;
+  const buckets: unknown[] = [
+    root.shopping,
+    root.shoppingResults,
+    root.shopping_results,
+    root.inline_shopping_results,
+    (root as { items?: unknown }).items,
+    root.organic_results,
+  ];
+  const pr = root.product_results;
+  if (Array.isArray(pr)) buckets.push(pr);
+  else if (pr != null && typeof pr === "object") {
+    const prodObj = pr as Record<string, unknown>;
+    buckets.push(prodObj.products);
+    buckets.push(prodObj.items);
+  }
+  for (const b of buckets) {
+    if (Array.isArray(b) && b.length > 0) return b;
+  }
+  for (const b of buckets) {
+    if (Array.isArray(b)) return b;
+  }
+  return [];
 }
 
 function parsedItemFromShoppingRow(row: Record<string, unknown>): ParsedSerpShoppingItem | null {
@@ -409,7 +516,9 @@ function rowToCandidate(
         : null;
   if (!title || title.length < 3) return null;
 
-  const productUrl = pickFirstFinalMerchantUrl(row);
+  const productUrl =
+    pickFirstFinalMerchantUrl(row) ??
+    buildFallbackMerchantSearchUrlFromSource(pickSourceLabel(row), title);
   if (!productUrl) return null;
 
   let store =
@@ -462,10 +571,30 @@ function rowToCandidate(
   };
 }
 
+/** Preserve distinct search fallbacks that only differ by query or /s/ segment. */
+function candidateDedupeKey(productUrl: string): string {
+  try {
+    const u = new URL(productUrl);
+    const path = u.pathname.toLowerCase();
+    if (
+      path === "/search" ||
+      path === "/s" ||
+      path.startsWith("/s/") ||
+      path.includes("searchpage.jsp") ||
+      path.includes("search_result.html")
+    ) {
+      return productUrl.toLowerCase();
+    }
+  } catch {
+    /* ignore */
+  }
+  return productUrl.split("?")[0].toLowerCase();
+}
+
 function dedupeCandidates(items: CandidateProduct[]): CandidateProduct[] {
   const map = new Map<string, CandidateProduct>();
   for (const item of items) {
-    const key = item.productUrl.split("?")[0].toLowerCase();
+    const key = candidateDedupeKey(item.productUrl);
     const prev = map.get(key);
     if (
       !prev ||
@@ -511,6 +640,16 @@ async function fetchShoppingForQuery(
 
   const data = typeof payload === "object" && payload !== null ? payload : null;
   const rows = normalizeShoppingRows(payload);
+
+  if (hints[0] === "serper") {
+    const items = extractRawSerperShoppingItems(payload);
+    console.log("[SERPER_TOTAL_ITEMS]", items.length);
+    const firstItem = items[0];
+    if (firstItem != null && typeof firstItem === "object" && !Array.isArray(firstItem)) {
+      console.log("[SERPER_ROW_KEYS]", Object.keys(firstItem as Record<string, unknown>));
+    }
+    console.log("[SERPER_RAW_ITEMS]", JSON.stringify(items.slice(0, 5), null, 2));
+  }
 
   const parsedItems = rows
     .map(parsedItemFromShoppingRow)
