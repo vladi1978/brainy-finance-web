@@ -1,4 +1,9 @@
-import { scrapeProduct } from "../scrapeProduct";
+import {
+  scrapeProduct,
+  composeRetailShoppingTitleFromPdp,
+  logRetailPdpShoppingIdentity,
+} from "../scrapeProduct";
+import { finalizedSlugShoppingLine } from "../urlProductQuery";
 import { fetchAmazonSerpWithDiagnostics } from "../searchParse";
 import { buildNormalizedProduct, normalizeTitle } from "../normalize";
 import { isValidProductDetailUrl } from "../productDetailUrl";
@@ -33,18 +38,6 @@ function toDiagnostics(
     candidateCount: d.candidateCount,
     hints: d.hints,
   };
-}
-
-function titleFromAmazonUrl(input: string): string {
-  const m = input.match(/amazon\.[^/]+\/([^/]+)\/dp\/[A-Z0-9]{9,14}/i);
-  if (m?.[1] && !/^dp$/i.test(m[1])) {
-    try {
-      return decodeURIComponent(m[1]).replace(/-/g, " ").trim();
-    } catch {
-      return m[1].replace(/-/g, " ").trim();
-    }
-  }
-  return "";
 }
 
 function rankRowsByQueryRelevance<
@@ -108,9 +101,26 @@ export const amazonProvider: ProductProvider = {
 
   async extractSourceProduct(url: string): Promise<SourceProduct | null> {
     const scraped = await scrapeProduct(url);
-    const urlTitle = titleFromAmazonUrl(url);
-    const title = scraped?.productName?.trim() || urlTitle;
+    const slugLine = finalizedSlugShoppingLine(url);
+    const { primaryTitle, primarySource } = composeRetailShoppingTitleFromPdp({
+      scraped,
+      slugDerivedQueryLine: slugLine,
+    });
+
+    const title = primaryTitle.trim();
     if (!title) return null;
+
+    const brandLog = scraped?.brand?.trim() || null;
+    const modelLog =
+      scraped?.model?.trim() || scraped?.sku?.trim() || null;
+
+    logRetailPdpShoppingIdentity({
+      store: STORE,
+      title,
+      brand: brandLog,
+      model: modelLog,
+      fallbackUsed: primarySource === "slug_path",
+    });
 
     return {
       sourceUrl: url,
@@ -118,7 +128,11 @@ export const amazonProvider: ProductProvider = {
       title,
       originalPrice: scraped?.price ?? null,
       currency: scraped?.currency ?? "USD",
-      normalized: buildNormalizedProduct(title),
+      normalized: buildNormalizedProduct(title, {
+        price: scraped?.price ?? null,
+        currency: scraped?.currency ?? null,
+        productUrl: url,
+      }),
     };
   },
 

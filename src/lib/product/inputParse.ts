@@ -1,6 +1,8 @@
 import {
   expandKnownShortRetailUrl,
   extractProductQueryFromRetailUrl,
+  isGenericRetailProductQuery,
+  pathnameSlugShoppingFallback,
 } from "./urlProductQuery";
 import type { StoreId } from "./types";
 
@@ -57,21 +59,20 @@ export async function parseProductInput(
   const reconstructed = `${rebuiltBase}${fragment}`;
 
   const inputUrl = reconstructed.split("#")[0]?.trim() ?? reconstructed;
-  const { productQuery, store } = extractProductQueryFromRetailUrl(inputUrl);
-  const cleaned = productQuery.replace(/\s+/g, " ").trim();
-  const fallback =
-    cleaned.length >= 3
-      ? cleaned
-      : inputUrl
-          .replace(/^https?:\/\/[^/]+\//i, "")
-          .replace(/[/?#].*$/, "")
-          .replace(/-/g, " ")
-          .trim();
+
+  let { productQuery, store } = extractProductQueryFromRetailUrl(inputUrl);
+  productQuery = productQuery.replace(/\s+/g, " ").trim();
+
+  if (!productQuery || isGenericRetailProductQuery(productQuery)) {
+    productQuery = pathnameSlugShoppingFallback(inputUrl)
+      .replace(/\s+/g, " ")
+      .trim();
+  }
 
   return {
     rawInput: reconstructed,
     inputUrl,
     detectedStore: store,
-    productQuery: fallback.length >= 3 ? fallback : cleaned,
+    productQuery: isGenericRetailProductQuery(productQuery) ? "" : productQuery,
   };
 }

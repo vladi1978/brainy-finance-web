@@ -1,4 +1,9 @@
-import { scrapeProduct } from "../scrapeProduct";
+import {
+  scrapeProduct,
+  composeRetailShoppingTitleFromPdp,
+  logRetailPdpShoppingIdentity,
+} from "../scrapeProduct";
+import { finalizedSlugShoppingLine } from "../urlProductQuery";
 import { fetchWalmartSerpWithDiagnostics } from "../searchParse";
 import { buildNormalizedProduct, normalizeTitle } from "../normalize";
 import { isValidProductDetailUrl } from "../productDetailUrl";
@@ -33,16 +38,6 @@ function toDiagnostics(
     candidateCount: d.candidateCount,
     hints: d.hints,
   };
-}
-
-function cleanWalmartTitleFromUrl(input: string): string {
-  return input
-    .replace(/^https?:\/\/(www\.)?walmart\.com\/ip\//i, "")
-    .replace(/\?.*$/, "")
-    .replace(/-/g, " ")
-    .replace(/\bip\b/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 function rankRowsByQueryRelevance<
@@ -106,9 +101,22 @@ export const walmartProvider: ProductProvider = {
 
   async extractSourceProduct(url: string): Promise<SourceProduct | null> {
     const scraped = await scrapeProduct(url);
-    const title =
-      scraped?.productName?.trim() || cleanWalmartTitleFromUrl(url);
+    const slugLine = finalizedSlugShoppingLine(url);
+    const { primaryTitle, primarySource } = composeRetailShoppingTitleFromPdp({
+      scraped,
+      slugDerivedQueryLine: slugLine,
+    });
+
+    const title = primaryTitle.trim();
     if (!title) return null;
+
+    logRetailPdpShoppingIdentity({
+      store: STORE,
+      title,
+      brand: scraped?.brand?.trim() || null,
+      model: scraped?.model?.trim() || scraped?.sku?.trim() || null,
+      fallbackUsed: primarySource === "slug_path",
+    });
 
     return {
       sourceUrl: url,
@@ -116,7 +124,11 @@ export const walmartProvider: ProductProvider = {
       title,
       originalPrice: scraped?.price ?? null,
       currency: scraped?.currency ?? "USD",
-      normalized: buildNormalizedProduct(title),
+      normalized: buildNormalizedProduct(title, {
+        price: scraped?.price ?? null,
+        currency: scraped?.currency ?? null,
+        productUrl: url,
+      }),
     };
   },
 

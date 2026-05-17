@@ -129,45 +129,181 @@ export async function expandKnownShortRetailUrl(
   return out.href;
 }
 
-/**
- * Derive a human-readable product query from retailer URLs without scraping.
- * Used for search-first comparison (URL is not a trusted "source product").
- */
+/** Collapse hyphenated / underscored PDP slugs into a human shopping query. */
+function slugToSpaces(raw: string): string {
+  const s = raw.replace(/[+_]/g, " ").replace(/-/g, " ");
+  return s.replace(/\s+/g, " ").trim();
+}
+
+function tryDecode(seg: string): string {
+  try {
+    return decodeURIComponent(seg);
+  } catch {
+    return seg;
+  }
+}
+
+/** True when segment is SKU / opaque id noise, not descriptive text. */
+function isOpaquePathSegment(seg: string): boolean {
+  const s = seg.trim();
+  if (s.length < 4) return true;
+  if (/^[\d.-]+$/i.test(s)) return true;
+  if (/^[a-z\d]{10}$/i.test(s)) return true;
+  if (/^g-\d+$/i.test(s)) return true;
+  if (/^-a-\d+$/i.test(s)) return true;
+
+  /** Best Buy leaf: `6426149.p` */
+  if (/^\d{5,}\.p$/i.test(s)) return true;
+
+  /** File-like but not prose (e.g. product.html numeric prefix) — keep if has many letters */
+  if (/\.(?:html|htm)$/i.test(s)) {
+    const base = s.replace(/\.(?:html|htm)$/i, "");
+    if (/^\d+[a-z0-9_-]*$/i.test(base)) return /^[\d_-]+$/i.test(base.replace(/-/g, ""));
+  }
+
+  if (!/[a-z]/i.test(s)) return true;
+  /** Very short alphanumeric codes */
+  if (s.length <= 5 && !/-|_|\s/.test(s) && /^\w+$/i.test(s))
+    return /^\d+[a-z]?\d*$/i.test(s);
+  return false;
+}
+
+/** True when derived query looks like hostname / site boilerplate rather than item text. */
+export function isGenericRetailProductQuery(candidate: string): boolean {
+  const t = slugToSpaces(tryDecode(candidate.trim()));
+  if (!t || t.length < 4) return true;
+  if (/^product$/i.test(t)) return true;
+
+  const collapsed = t.toLowerCase().replace(/\s+/g, " ").trim();
+
+  const siteOnlyPatterns: RegExp[] = [
+    /^amazon(\s+\.|[\s.])(com|[a-z.]+)$/,
+    /^walmart\s+com$/,
+    /^target\s+com$/,
+    /^best\s*buy$/,
+    /^home\s+depot$/,
+    /^lowe'?s$/,
+    /^temu$/,
+    /^temu\s+shop$/,
+    /^(www\s+)?(amazon|walmart|target)\s+(com)$/,
+    /^(shop|buy|browse|search)\s+/,
+    /^(welcome|sign\s*in)$/i,
+    /^gift\s*(cards)?$/i,
+  ];
+  if (siteOnlyPatterns.some((re) => re.test(collapsed))) return true;
+
+  const tokens = collapsed.split(/\s+/).filter(Boolean);
+  /** Only host-shaped tokens ("amazon","com","www") etc. */
+  const stopHost = new Set([
+    "www",
+    "com",
+    "co",
+    "shop",
+    "store",
+    "amazon",
+    "walmart",
+    "target",
+    "temu",
+    "bestbuy",
+    "best",
+    "buy",
+    "homdepot",
+    "home",
+    "depot",
+    "lowes",
+    "lowe",
+    "s",
+    "m",
+    "http",
+    "https",
+    "html",
+    "ip",
+    "p",
+    "pd",
+    "site",
+    "product",
+    "products",
+    "dp",
+    "gp",
+    "item",
+    "shopping",
+    "cart",
+    "help",
+    "ssl",
+    "smile",
+  ]);
+  if (tokens.length > 0 && tokens.every((w) => stopHost.has(w))) return true;
+
+  if (/^\d+$/.test(collapsed)) return true;
+
+  return false;
+}
 
 export function productQueryFromAmazonUrl(input: string): string {
-  const m = input.match(/amazon\.[^/]+\/([^/]+)\/dp\/[A-Z0-9]{9,14}/i);
-  if (m?.[1] && !/^dp$/i.test(m[1])) {
-    try {
-      return decodeURIComponent(m[1]).replace(/-/g, " ").trim();
-    } catch {
-      return m[1].replace(/-/g, " ").trim();
-    }
-  }
-  const short = input.match(/\/dp\/([A-Z0-9]{10})/i);
-  if (short) {
-    return "";
+  const pathMatch = input.match(
+    /amazon\.[^/]+\/([^/]+)\/(?:dp|gp\/(?:product|aw\/d)|exec\/obidos\/asin)\//i
+  );
+  if (pathMatch?.[1]) {
+    const seg = pathMatch[1];
+    if (
+      /^dp$/i.test(seg) ||
+      /^(gp|exec|oauth|stores|wishlist|checkout|cart|browse|portal|homepage|mz|oauth2|apid|help|forum)$/i.test(
+        seg
+      )
+    )
+      return "";
+    return slugToSpaces(decodeURIComponentSmart(seg));
   }
   return "";
 }
 
+function decodeURIComponentSmart(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
 export function productQueryFromWalmartUrl(input: string): string {
-  return input
+  if (!/^https?:\/\/[^/]*walmart\.com\/ip\//i.test(input)) return "";
+  const rest = input
     .replace(/^https?:\/\/(www\.)?walmart\.com\/ip\//i, "")
-    .replace(/\?.*$/, "")
-    .replace(/\/\d{6,}\s*$/i, "")
-    .replace(/-/g, " ")
+    .replace(/\?.*$/, "");
+  /** `/ip/Product-Here/6223345` → first slug segment words */
+  const parts = rest.split("/").filter(Boolean);
+  let slugParts = [...parts];
+
+  /** Drop trailing long numeric SKU id segment */
+  if (slugParts.length > 0 && /^\d{5,}$/.test(slugParts[slugParts.length - 1]!))
+    slugParts = slugParts.slice(0, -1);
+
+  if (slugParts.length === 0) return "";
+
+  const joined = slugToSpaces(slugParts.join(" "))
     .replace(/\bip\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
+  return joined.length >= 3 ? joined : "";
 }
 
 export function productQueryFromTargetUrl(input: string): string {
   if (!/target\.com\/p\//i.test(input)) return "";
-  return input
-    .replace(/^https?:\/\/[^/]+\/p\//i, "")
-    .replace(/\/-\/A-\d+.*$/i, "")
-    .replace(/-/g, " ")
-    .trim();
+  try {
+    const u = new URL(input);
+    const path = u.pathname;
+    /** `/p/Product-Slug/-/A-123` */
+    const afterP = path.replace(/^\/p\//i, "");
+    const first = afterP.split("/")[0]?.trim() ?? "";
+    if (!first || first.length < 3) return "";
+    return slugToSpaces(decodeURIComponentSmart(first));
+  } catch {
+    return input
+      .replace(/^https?:\/\/[^/]+\/p\//i, "")
+      .split("/")[0]!
+      .replace(/-/g, " ")
+      .trim();
+  }
 }
 
 export function productQueryFromTemuUrl(input: string): string {
@@ -176,7 +312,9 @@ export function productQueryFromTemuUrl(input: string): string {
     const seg = u.pathname.split("/").filter(Boolean);
     const last = seg[seg.length - 1];
     if (last && /\.html$/i.test(last)) {
-      return decodeURIComponent(last.replace(/\.html$/i, "")).replace(/-/g, " ").trim();
+      const base = last.replace(/\.html$/i, "");
+      const q = slugToSpaces(tryDecode(base));
+      return q.length >= 3 ? q : "";
     }
   } catch {
     /* ignore */
@@ -184,13 +322,73 @@ export function productQueryFromTemuUrl(input: string): string {
   return "";
 }
 
+export function productQueryFromBestBuyUrl(input: string): string {
+  if (!/bestbuy\.com/i.test(input)) return "";
+  try {
+    const u = new URL(input);
+    const parts = u.pathname.split("/").filter(Boolean);
+    const siteIx = parts.indexOf("site");
+    if (siteIx >= 0 && parts[siteIx + 1]) {
+      const slug = parts[siteIx + 1]!;
+      const q = slugToSpaces(slug.replace(/\.p$/i, ""));
+      return q.length >= 3 ? q : "";
+    }
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
+/** Home Depot PDP: `/p/Description-Frag/ModelSlug` → join descriptive chunks */
+export function productQueryFromHomeDepotUrl(input: string): string {
+  try {
+    const u = new URL(input);
+    if (!/[.]homedepot[.]com$/i.test(u.hostname.replace(/^www\./, ""))) {
+      return "";
+    }
+
+    const segs = u.pathname.split("/").filter(Boolean);
+    const pIx = segs.indexOf("p");
+    const after = pIx >= 0 ? segs.slice(pIx + 1) : [];
+    const words = after
+      .filter((seg) => !isOpaquePathSegment(seg))
+      .map((s) => slugToSpaces(tryDecode(s)));
+    const joined = words.join(" ").replace(/\s+/g, " ").trim();
+    return joined.length >= 4 ? joined : "";
+  } catch {
+    return "";
+  }
+}
+
+export function productQueryFromLowesUrl(input: string): string {
+  if (!/lowes\.com/i.test(input)) return "";
+  try {
+    const u = new URL(input);
+    const parts = u.pathname.split("/").filter(Boolean);
+    const pdIx = parts.indexOf("pd");
+    /** `/pd/Product-Slug/itemId` → first prose segment */
+    const slug = pdIx >= 0 && parts[pdIx + 1] ? parts[pdIx + 1]! : parts[1] ?? "";
+    if (!slug || /^pd$/i.test(slug)) return "";
+    const q = slugToSpaces(tryDecode(slug));
+    return q.replace(/\s+/g, " ").trim().length >= 4 ? q : "";
+  } catch {
+    return "";
+  }
+}
+
 function detectUrlStore(raw: string): StoreId | null {
   const t = raw.trim();
   if (!/^https?:\/\//i.test(t)) return null;
-  if (/\bamazon\.[a-z.]{2,}\b|\/\/a\.co\/|\/\/amzn\.to\//i.test(t)) return "amazon";
+  if (
+    /\bamazon\.[a-z.]{2,}\b|\/\/a\.co\/|\/\/amzn\.to\//i.test(t)
+  )
+    return "amazon";
   if (/walmart\.com/i.test(t)) return "walmart";
   if (/target\.com/i.test(t)) return "target";
   if (/temu\.com/i.test(t)) return "temu";
+  if (/bestbuy\.com/i.test(t)) return "bestbuy";
+  if (/homedepot\.com/i.test(t)) return "homedepot";
+  if (/lowes\.com/i.test(t)) return "lowes";
   return null;
 }
 
@@ -199,16 +397,88 @@ export type UrlDerivedQuery = {
   store: StoreId | null;
 };
 
+/** Longest PDP-like path segment heuristic for any HTTPS URL. */
+export function pathnameSlugShoppingFallback(httpUrlSansFragment: string): string {
+  let u: URL;
+  try {
+    u = new URL(httpUrlSansFragment.trim());
+  } catch {
+    return "";
+  }
+  const segs = u.pathname
+    .split("/")
+    .map((seg) => tryDecode(seg))
+    .filter(Boolean);
+
+  /** Prefer substantive segments; drop obvious ids last */
+  const candidates = [...segs].filter((seg) => !isOpaquePathSegment(seg));
+  const weighted = candidates
+    .filter((seg) => seg.replace(/-+|\./g, " ").trim().split(/\s+/).length >= 2 || seg.length >= 12)
+    .map((seg) => slugToSpaces(seg.replace(/\.(?:html|htm)$/i, "")));
+
+  weighted.sort((a, b) => b.length - a.length);
+  for (const w of weighted) {
+    if (!isGenericRetailProductQuery(w) && w.length >= 8) return w;
+  }
+
+  weighted.length = 0;
+  const soft = [...segs]
+    .slice()
+    .reverse()
+    .map((seg) => slugToSpaces(seg.replace(/\.(?:html|htm)$/i, "")))
+    .filter((s) => s.length >= 6);
+
+  for (const w of soft) {
+    if (!isGenericRetailProductQuery(w)) return w.slice(0, 200).trim();
+  }
+
+  const lastMeaning =
+    [...segs]
+      .reverse()
+      .find(
+        (s) =>
+          !isOpaquePathSegment(s) &&
+          /[a-z]{3}/i.test(s) &&
+          s.length >= 5
+      ) ?? "";
+  const out = slugToSpaces(lastMeaning.replace(/\.(?:html|htm)$/i, ""));
+  return !isGenericRetailProductQuery(out) ? out.trim() : "";
+}
+
 /**
  * Best-effort product description string from a product page URL (slug/title segment only).
  */
 export function extractProductQueryFromRetailUrl(url: string): UrlDerivedQuery {
   const store = detectUrlStore(url);
   let productQuery = "";
+
   if (store === "amazon") productQuery = productQueryFromAmazonUrl(url);
   else if (store === "walmart") productQuery = productQueryFromWalmartUrl(url);
   else if (store === "target") productQuery = productQueryFromTargetUrl(url);
   else if (store === "temu") productQuery = productQueryFromTemuUrl(url);
+  else if (store === "bestbuy") productQuery = productQueryFromBestBuyUrl(url);
+  else if (store === "homedepot") productQuery = productQueryFromHomeDepotUrl(url);
+  else if (store === "lowes") productQuery = productQueryFromLowesUrl(url);
+
+  if (!productQuery || isGenericRetailProductQuery(productQuery)) {
+    productQuery = pathnameSlugShoppingFallback(url);
+  }
+
+  /** Unknown host: pathname-only derivation + null store hint */
+  if (!store && productQuery === "") {
+    productQuery = pathnameSlugShoppingFallback(url);
+  }
 
   return { productQuery, store };
+}
+
+/** Slug-derived Google Shopping baseline — hardened against domain-only prose. */
+export function finalizedSlugShoppingLine(url: string): string {
+  const q = extractProductQueryFromRetailUrl(url).productQuery
+    .replace(/\s+/g, " ")
+    .trim();
+  if (q.length >= 4 && !isGenericRetailProductQuery(q)) return q;
+  const extra = pathnameSlugShoppingFallback(url).replace(/\s+/g, " ").trim();
+  if (extra.length >= 4 && !isGenericRetailProductQuery(extra)) return extra;
+  return q.length ? q : extra;
 }

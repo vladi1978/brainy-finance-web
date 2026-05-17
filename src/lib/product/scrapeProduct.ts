@@ -1,7 +1,18 @@
+import type { StoreId } from "./types";
+import { isGenericRetailProductQuery } from "./urlProductQuery";
+
 export type ScrapedProduct = {
+  /** Listing / PDP-visible product title when parseable — may be empty when only meta/sku cues exist */
   productName: string;
   price: number | null;
   currency: string;
+  brand: string | null;
+  /** Retailer SKU when present */
+  sku: string | null;
+  /** MPN / model string when tighter than SKU */
+  model: string | null;
+  /** Breadcrumb-derived category hint */
+  category: string | null;
 };
 
 /** Chrome-on-macOS fingerprint: matches real navigation from a desktop browser. */
@@ -57,6 +68,64 @@ function getMetaProperty(html: string, property: string): string | null {
   return m ? decodeHtmlEntities(m[1]) : null;
 }
 
+function mergeLongestTextLine(
+  a: string | undefined | null,
+  b: string | undefined | null
+): string {
+  const x = a?.trim() ?? "";
+  const y = b?.trim() ?? "";
+  if (!y) return x;
+  if (!x) return y;
+  return y.length > x.length ? y : x;
+}
+
+function coerceJsonLdBrand(raw: unknown): string | null {
+  if (typeof raw === "string" && raw.trim().length >= 2) return raw.trim();
+  if (raw != null && typeof raw === "object" && !Array.isArray(raw)) {
+    const nm = (raw as { name?: unknown }).name;
+    if (typeof nm === "string" && nm.trim().length >= 2) return nm.trim();
+  }
+  return null;
+}
+
+function coerceJsonLdStringField(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const t = raw.trim();
+  return t.length >= 2 ? t : null;
+}
+
+/** Parse first sensible breadcrumb trail from JSON-LD. */
+function readBreadcrumbCategory(o: Record<string, unknown>): string | null {
+  const els = o["itemListElement"];
+  const list = Array.isArray(els) ? els : els != null ? [els] : [];
+  const names: string[] = [];
+  for (const raw of list) {
+    if (raw == null || typeof raw !== "object") continue;
+    const item = raw as Record<string, unknown>;
+    let label: string | null = coerceJsonLdStringField(item.name);
+    if (
+      label == null &&
+      item.item &&
+      typeof item.item === "object" &&
+      !Array.isArray(item.item)
+    ) {
+      const sub = item.item as Record<string, unknown>;
+      label = coerceJsonLdStringField(sub.name);
+    }
+    if (label) names.push(label);
+  }
+
+  /** Drop leading “Home / Shop / …” site chrome */
+  const skip = /^home\b|^shop\b|^departments\b|^all\s+departments\b/i;
+  while (names.length > 1 && skip.test(names[0]!)) {
+    names.shift();
+  }
+
+  const trail = names.join(" › ").trim();
+  if (trail.length < 4 || trail.split("›").length < 2) return null;
+  return trail.slice(0, 200).trim();
+}
+
 function parsePriceFromString(raw: string | null | undefined): number | null {
   if (raw == null || raw === "") return null;
   const cleaned = String(raw)
@@ -71,10 +140,18 @@ function isPlausibleProductPrice(n: number): boolean {
   return Number.isFinite(n) && n >= 0.01 && n < 1_000_000;
 }
 
-function visitJsonLdNode(
-  node: unknown,
-  out: { name?: string; price?: number; currency?: string }
-): void {
+type JsonLdProductHints = {
+  name?: string;
+  price?: number;
+  currency?: string;
+  brand?: string;
+  sku?: string;
+  mpn?: string;
+  model?: string;
+  category?: string;
+};
+
+function visitJsonLdNode(node: unknown, out: JsonLdProductHints): void {
   if (node == null || typeof node !== "object") return;
 
   const o = node as Record<string, unknown>;
@@ -83,6 +160,19 @@ function visitJsonLdNode(
     : o["@type"] != null
       ? [o["@type"]]
       : [];
+
+  const typeStrList = types.map((x) => String(x));
+
+  /** Breadcrumbs — richer category cue than SKU-only pages */
+  if (typeStrList.some((t) => /BreadcrumbList/i.test(t))) {
+    const cat = readBreadcrumbCategory(o);
+    if (
+      cat &&
+      (!out.category || cat.length > out.category.length)
+    ) {
+      out.category = cat;
+    }
+  }
 
   const isOffer = types.some(
     (x) => x === "Offer" || x === "AggregateOffer" || x === "OfferForPurchase"
@@ -110,18 +200,49 @@ function visitJsonLdNode(
     }
   }
 
-  if (
-    types.some((x) => x === "Product" || x === "IndividualProduct") &&
-    typeof o.name === "string" &&
-    !out.name
-  ) {
-    out.name = o.name;
+  const isProduct = types.some(
+    (x) => x === "Product" || x === "IndividualProduct"
+  );
+
+  if (isProduct && typeof o.name === "string") {
+    const merged = mergeLongestTextLine(out.name, o.name);
+    if (merged) out.name = merged;
   }
 
-  if (
-    types.some((x) => x === "Product" || x === "IndividualProduct") &&
-    o.offers
-  ) {
+  if (isProduct) {
+    const br = coerceJsonLdBrand(o.brand);
+    if (br && (!out.brand || br.length > out.brand.length)) out.brand = br;
+
+    const skuRaw =
+      coerceJsonLdStringField(o.sku) ??
+      coerceJsonLdStringField(o.gtin13) ??
+      coerceJsonLdStringField(o.gtin14) ??
+      coerceJsonLdStringField(o.productID);
+    if (
+      skuRaw &&
+      skuRaw.length >= 4 &&
+      (!out.sku || skuRaw.length > out.sku.length)
+    )
+      out.sku = skuRaw;
+
+    const mpn = coerceJsonLdStringField(o.mpn);
+    if (
+      mpn &&
+      mpn.length >= 3 &&
+      (!out.mpn || mpn.length > out.mpn.length)
+    )
+      out.mpn = mpn;
+
+    const modelRaw = coerceJsonLdStringField(o.model);
+    if (
+      modelRaw &&
+      modelRaw.length >= 3 &&
+      (!out.model || modelRaw.length > out.model.length)
+    )
+      out.model = modelRaw;
+  }
+
+  if (isProduct && o.offers) {
     const offers = o.offers;
     const list = Array.isArray(offers) ? offers : [offers];
     for (const off of list) {
@@ -171,11 +292,7 @@ function visitJsonLdNode(
     }
   }
 
-  if (
-    types.some((x) => x === "Product" || x === "IndividualProduct") &&
-    out.price == null &&
-    o.price != null
-  ) {
+  if (isProduct && out.price == null && o.price != null) {
     const p = o.price;
     const n =
       typeof p === "number" ? p : parseFloat(String(p).replace(/[^0-9.]/g, ""));
@@ -187,12 +304,8 @@ function visitJsonLdNode(
   }
 }
 
-function extractFromJsonLd(html: string): {
-  name?: string;
-  price?: number;
-  currency?: string;
-} {
-  const out: { name?: string; price?: number; currency?: string } = {};
+function extractFromJsonLd(html: string): JsonLdProductHints {
+  const out: JsonLdProductHints = {};
   const scripts = html.matchAll(
     /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
   );
@@ -248,6 +361,59 @@ function tryWalmartDirectTitle(html: string): string | null {
     if (t.length > 3) return t;
   }
   return null;
+}
+
+function tryRetailStructuredH1(html: string): string | null {
+  const patterns = [
+    /<h1[^>]*itemprop=["']name["'][^>]*>([\s\S]*?)<\/h1>/i,
+    /<h1[^>]*sku-title-heading[^>]*>([\s\S]*?)<\/h1>/i,
+    /<h1[^>]*data-testid=["']product-title(?:-heading)?["'][^>]*>([\s\S]*?)<\/h1>/i,
+    /<h1[^>]*id=["'](?:Heading|sku-title-heading|(?:productHeading))["'][^>]*>([\s\S]*?)<\/h1>/i,
+    /<h1[^>]*class=["'][^"']*product[^"']*title[^"']*["'][^>]*>([\s\S]*?)<\/h1>/i,
+  ];
+  let best = "";
+  for (const re of patterns) {
+    const m = html.match(re);
+    if (!m?.[1]) continue;
+    const t = stripTags(m[1]).replace(/\s+/g, " ").trim();
+    if (t.length > best.length && t.length > 4) best = t;
+  }
+  return best || null;
+}
+
+/** Strip storefront boilerplate prefixes/suffixes from listing titles. */
+function polishRetailerListingTitle(raw: string, host: string): string {
+  let t = stripTags(raw).replace(/\s+/g, " ").trim();
+
+  /** `Amazon.com: …` prefix */
+  t = t.replace(
+    /^Amazon\s*[.:]?\s*(?:com(?:\.[a-z.]+|\s+))?[/\s:]+/i,
+    ""
+  ).trim();
+
+  /** `Title : Shopping at Walmart.com — …` */
+  t = t.replace(/\s*:\s*Shopping\b.*$/i, "").trim();
+
+  t = t.replace(/\s*[|\u2013\u2014-]\s*(?:Walmart(?:\.|[\s ])com|Wal-Mart).*$/i, "");
+  t = t.replace(/\s*[|\u2013\u2014-]\s*Target(?:\.|[\s ])(?:com|Corporation).*$/i, "");
+  t = t.replace(/\s*[|\u2013\u2014-]\s*(?:Best\s*Buy|The\s*Best\s*Buy).*$/i, "");
+  t = t.replace(/\s*[|\u2013\u2014-]\s*Lowe'?s\b.*$/i, "");
+  t = t.replace(/\s*[|\u2013\u2014-]\s*The\s*Home\s*Depot.*$/i, "");
+  t = t.replace(/\s*[|\u2013\u2014-]\s*Temu\b.*$/i, "");
+
+  if (/amazon/i.test(host) || /\.amazon\./i.test(host)) {
+    t = t.replace(/\s+[|\u2013\u2014-]\s*Amazon\.(?:com|[a-z.]+).*$/i, "").trim();
+  }
+
+  /** Document-title style “…” */
+  const docClean = stripTags(t)
+    .replace(/\s*[|\u2013\u2014-]\s*Walmart(?:\.[\s]*)?com.*$/i, "")
+    .replace(/\s*[|\u2013\u2014-]\s*Amazon\.(?:com|[a-z.]+).*$/i, "")
+    .trim();
+  t = docClean.length >= 4 ? docClean : t;
+
+  const max = 240;
+  return t.length > max ? `${t.slice(0, max - 3).trim()}...` : t;
 }
 
 /**
@@ -486,6 +652,9 @@ function pickTitle(
     if (t) return t;
   }
 
+  const h1Retail = tryRetailStructuredH1(html);
+  if (h1Retail) return h1Retail;
+
   const og = getMetaProperty(html, "og:title");
   if (og && og.trim()) return og.trim();
 
@@ -563,7 +732,7 @@ export async function scrapeProduct(url: string): Promise<ScrapedProduct | null>
 
   const jsonLd = extractFromJsonLd(html);
 
-  let productName = pickTitle(html, host, jsonLd);
+  let productName = pickTitle(html, host, jsonLd) ?? null;
 
   const { price, currency } = pickPrice(html, jsonLd, host);
 
@@ -574,24 +743,171 @@ export async function scrapeProduct(url: string): Promise<ScrapedProduct | null>
 
   if (!productName) {
     const docTitle = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-    if (docTitle?.[1]) {
-      const t = stripTags(docTitle[1])
-        .replace(/\s*[|\u2013\u2014-]\s*Walmart\.com.*$/i, "")
-        .replace(/\s*[|\u2013\u2014-]\s*Amazon\.com.*$/i, "")
-        .trim();
-      if (t.length > 3) productName = t;
-    }
+    if (docTitle?.[1]) productName = stripTags(docTitle[1]).trim();
   }
 
+  /** Last-rescue: visible H1 heuristic for Temu/Target/Best Buy-style shells */
   if (!productName) {
-    return null;
+    productName = tryRetailStructuredH1(html);
+  }
+
+  if (productName) {
+    productName = polishRetailerListingTitle(productName, host);
+  }
+
+  /** Meta / Json-Ld identity crumbs still useful when title is storefront-only */
+  const metaBrandHint =
+    getMetaProperty(html, "product:brand") ||
+    getMetaProperty(html, "brand") ||
+    null;
+
+  const brandMergedRaw = mergeLongestTextLine(jsonLd.brand, metaBrandHint);
+  const brandLine = brandMergedRaw.trim()
+    ? stripTags(brandMergedRaw).trim() || null
+    : null;
+
+  const skuRaw = jsonLd.sku?.trim() || "";
+  const skuLine = skuRaw.length >= 4 ? skuRaw : null;
+
+  /** Prefer concise model / MPN for logs and rescue strings */
+  const modelLineCandidateRaw = mergeLongestTextLine(jsonLd.model, jsonLd.mpn);
+  let modelLine =
+    modelLineCandidateRaw.trim().length >= 4 ? modelLineCandidateRaw.trim() : null;
+
+  if (skuLine && modelLine && skuLine.trim() === modelLine.trim())
+    modelLine = null;
+
+  /** Category breadcrumbs from JSON-LD */
+  const ctTrail = jsonLd.category?.trim();
+  const categoryTrail =
+    ctTrail && ctTrail.length >= 4 ? ctTrail : null;
+
+  return {
+    productName: productName?.trim() || "",
+    price,
+    currency: currency || "USD",
+    brand: brandLine,
+    sku: skuLine,
+    model: modelLine,
+    category: categoryTrail,
+  };
+}
+
+function attachDetachedScrapedBrand(
+  productTitle: string,
+  scraped: ScrapedProduct | null
+): string {
+  const line = productTitle.replace(/\s+/g, " ").trim();
+  const b = scraped?.brand?.replace(/\s+/g, " ").trim();
+  if (!b || b.length < 2) return line;
+  if (!line) return b;
+  const low = line.toLowerCase();
+  const bl = b.toLowerCase().replace(/\s+/g, " ");
+  if (low.includes(bl)) return line;
+  if (/\b(low|high)voltage\b/i.test(low) && bl === "lowe") return line;
+  return `${b} ${line}`.replace(/\s+/g, " ").trim();
+}
+
+export type ShoppingTitlePrimarySource =
+  | "scraped_listing"
+  | "scraped_identity"
+  | "slug_path"
+  | "weak_scraped_listing";
+
+/** Choose Google-Shopping-facing title: PDP scrape when trustworthy, URL slug fallback otherwise. */
+export function composeRetailShoppingTitleFromPdp(opts: {
+  scraped: ScrapedProduct | null;
+  slugDerivedQueryLine: string;
+}): {
+  primaryTitle: string;
+  primarySource: ShoppingTitlePrimarySource;
+} {
+  const scraped = opts.scraped;
+  const slug = opts.slugDerivedQueryLine.replace(/\s+/g, " ").trim();
+  const listing = scraped?.productName?.replace(/\s+/g, " ").trim() ?? "";
+
+  const slugOk =
+    slug.length >= 5 && !isGenericRetailProductQuery(slug);
+
+  const scrapedListingOk =
+    listing.length >= 5 &&
+    !isGenericRetailProductQuery(listing) &&
+    !/^product$/i.test(listing);
+
+  const brand = scraped?.brand?.trim() ?? "";
+  const sku = scraped?.sku?.trim() ?? "";
+  const mdl = scraped?.model?.trim() ?? "";
+  const salvageParts: string[] = [];
+  if (brand) salvageParts.push(brand);
+  if (mdl) salvageParts.push(mdl);
+  else if (sku) salvageParts.push(sku);
+  const salvageLine = salvageParts.join(" ").trim();
+  const salvageOk =
+    salvageLine.length >= 6 && !isGenericRetailProductQuery(salvageLine);
+
+  let primaryTitle: string;
+  let primarySource: ShoppingTitlePrimarySource;
+
+  if (scrapedListingOk) {
+    primaryTitle = listing;
+    primarySource = "scraped_listing";
+  } else if (salvageOk) {
+    primaryTitle = salvageLine;
+    primarySource = "scraped_identity";
+  } else if (slugOk) {
+    primaryTitle = slug;
+    primarySource = "slug_path";
+  } else if (listing.length >= 10) {
+    primaryTitle = listing;
+    primarySource = "weak_scraped_listing";
+  } else if (listing.length >= 6) {
+    primaryTitle = listing;
+    primarySource = "weak_scraped_listing";
+  } else if (listing.length >= 1) {
+    primaryTitle = listing;
+    primarySource = "weak_scraped_listing";
+  } else if (slug.length >= 4) {
+    primaryTitle = slug;
+    primarySource = "slug_path";
+  } else {
+    primaryTitle = salvageLine || slug || listing;
+    primarySource =
+      salvageLine.length >= 3
+        ? "scraped_identity"
+        : slug
+          ? "slug_path"
+          : "weak_scraped_listing";
+  }
+
+  primaryTitle = attachDetachedScrapedBrand(primaryTitle, scraped);
+
+  if (
+    primaryTitle &&
+    isGenericRetailProductQuery(primaryTitle) &&
+    slugOk
+  ) {
+    primaryTitle = attachDetachedScrapedBrand(slug, scraped).trim();
+    primarySource = "slug_path";
   }
 
   return {
-    productName,
-    price,
-    currency: currency || "USD",
+    primaryTitle: primaryTitle.replace(/\s+/g, " ").trim(),
+    primarySource,
   };
+}
+
+export function logRetailPdpShoppingIdentity(args: {
+  store: StoreId;
+  title: string;
+  brand: string | null;
+  model: string | null;
+  fallbackUsed: boolean;
+}): void {
+  console.log("[PDP_SOURCE_STORE]", args.store);
+  console.log("[PDP_TITLE]", args.title);
+  console.log("[PDP_BRAND]", args.brand ?? "");
+  console.log("[PDP_MODEL]", args.model ?? "");
+  console.log("[PDP_FALLBACK_USED]", args.fallbackUsed);
 }
 
 export type FetchHtmlResult = {
