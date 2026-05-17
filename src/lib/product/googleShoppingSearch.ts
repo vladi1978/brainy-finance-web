@@ -4,6 +4,7 @@ import type {
   CandidateProduct,
   ProviderSearchContext,
   ProviderSearchDiagnostics,
+  StoreId,
 } from "./types";
 
 function shoppingLog(payload: Record<string, unknown>): void {
@@ -23,6 +24,128 @@ function parsePriceLoose(raw: string | null | undefined): number | null {
   const cleaned = String(raw).replace(/[^0-9.]/g, "");
   const n = parseFloat(cleaned);
   return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** Loose Serp shopping row flattened for logs / pre-match inspection. */
+export type ParsedSerpShoppingItem = {
+  title: string | null;
+  /** Raw price string when present — may still be absent for weak listings */
+  price: string | number | null;
+  link: string | null;
+  source: string | null;
+  thumbnail: string | null;
+};
+
+function coerceExtractedPriceToString(val: unknown): string | null {
+  if (val == null) return null;
+  if (typeof val === "number" && Number.isFinite(val)) return String(val);
+  if (typeof val === "string" && val.trim()) return val.trim();
+  if (typeof val === "object") {
+    const o = val as Record<string, unknown>;
+    const v =
+      typeof o.value === "number"
+        ? o.value
+        : typeof o.extracted_value === "number"
+          ? o.extracted_value
+          : typeof o.price === "string"
+            ? NaN
+            : typeof o.price === "number"
+              ? o.price
+              : NaN;
+    if (Number.isFinite(v)) return String(v);
+    const ps = typeof o.price === "string" ? o.price.trim() : null;
+    if (ps) return ps;
+  }
+  return null;
+}
+
+function inferStoreFromSourceLabel(label: unknown): StoreId | null {
+  if (typeof label !== "string") return null;
+  const combined = `${label} ${label.replace(/^https?:\/\//i, "")}`.toLowerCase();
+  if (/\bamazon\b|amazon\.(?:com|[a-z.]+)\b|\.amazon\./i.test(combined))
+    return "amazon";
+  if (/\bwalmart\b|walmart\.com\b/i.test(combined)) return "walmart";
+  if (/\btarget\b|target\.com\b/i.test(combined)) return "target";
+  if (/\btemu\b|temu\.com\b/i.test(combined)) return "temu";
+  if (/\bbest\s*buy\b|bestbuy\.com\b/i.test(combined)) return "bestbuy";
+  if (/\bhome\s*depot\b|homedepot\.com\b/i.test(combined)) return "homedepot";
+  if (/\blowes\b|lowes\.com\b/i.test(combined)) return "lowes";
+  return null;
+}
+
+function pickSourceLabel(row: Record<string, unknown>): string | null {
+  const candidates = [
+    row.source,
+    row.seller,
+    row.retailer,
+    row.merchant,
+    row.store,
+    row.displayed_link,
+  ];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim()) return c.trim();
+  }
+  return null;
+}
+
+function pickThumbnailFromRow(row: Record<string, unknown>): string | null {
+  const direct = [
+    row.thumbnail,
+    row.serpapi_thumbnail,
+    row.imageUrl,
+    row.image,
+  ];
+  for (const d of direct) {
+    if (typeof d === "string" && d.startsWith("http")) return d;
+  }
+  const thumbs = row.thumbnails;
+  if (Array.isArray(thumbs)) {
+    for (const t of thumbs) {
+      if (typeof t === "string" && t.startsWith("http")) return t;
+    }
+  }
+  const st = row.serpapi_thumbnails;
+  if (Array.isArray(st)) {
+    for (const t of st) {
+      if (typeof t === "string" && t.startsWith("http")) return t;
+    }
+  }
+  return null;
+}
+
+function pickPriceRawFromRow(row: Record<string, unknown>): string | null {
+  if (typeof row.price === "string" && row.price.trim()) return row.price.trim();
+  const fromExtracted =
+    coerceExtractedPriceToString(row.extracted_price) ??
+    coerceExtractedPriceToString(
+      typeof row.installment === "object" && row.installment !== null
+        ? (row.installment as Record<string, unknown>).price
+        : null
+    ) ??
+    (typeof row.alternative_price === "string" ? row.alternative_price.trim() : null);
+  if (fromExtracted) return fromExtracted;
+  return coerceExtractedPriceToString(row.alternative_price) ?? null;
+}
+
+function dedupeShoppingRowKey(row: Record<string, unknown>): string {
+  const link =
+    (typeof row.product_link === "string" ? row.product_link : null) ||
+    (typeof row.link === "string" ? row.link : null) ||
+    (typeof row.tracking_link === "string" ? row.tracking_link : null) ||
+    (typeof row.url === "string" ? row.url : null);
+  const title =
+    typeof row.title === "string"
+      ? row.title
+      : typeof row.name === "string"
+        ? row.name
+        : "";
+  const pos =
+    typeof row.position === "number"
+      ? String(row.position)
+      : typeof row.position === "string"
+        ? row.position
+        : "";
+  return (link ?? "").slice(0, 800) || `${title}:${pos}:${typeof row.product_id}`;
 }
 
 /**
@@ -64,11 +187,33 @@ export function unwrapMerchantUrl(raw: string, depth = 0): string | null {
   }
 }
 
+function resolveShoppingListingUrl(rawLink: string): string | null {
+  const trimmed = rawLink.trim();
+  if (!trimmed.startsWith("http")) return null;
+
+  const unwrapped = unwrapMerchantUrl(trimmed);
+  if (unwrapped) return unwrapped;
+
+  try {
+    const u = new URL(trimmed);
+    const host = u.hostname.replace(/^www\./i, "").toLowerCase();
+    if (host !== "google.com") return null;
+    if (/^\/shopping\/product\//i.test(u.pathname)) {
+      return u.toString();
+    }
+  } catch {
+    /* ignore */
+  }
+
+  return null;
+}
+
 function pickRawLink(row: Record<string, unknown>): string | null {
   const keys = [
     "link",
     "product_link",
     "product_link_cleaned",
+    "tracking_link",
     "direct_link",
     "merchant_link",
     "offer_url",
@@ -82,23 +227,99 @@ function pickRawLink(row: Record<string, unknown>): string | null {
   return null;
 }
 
+function tryAddShoppingRow(
+  raw: Record<string, unknown>,
+  seen: Set<string>,
+  out: Record<string, unknown>[]
+): void {
+  const nested = raw.shopping_results ?? raw.inline_shopping_results ?? raw.products;
+  if (Array.isArray(nested)) {
+    for (const inner of nested) {
+      if (inner != null && typeof inner === "object") {
+        tryAddShoppingRow(inner as Record<string, unknown>, seen, out);
+      }
+    }
+    return;
+  }
+  const key = dedupeShoppingRowKey(raw);
+  if (seen.has(key)) return;
+  seen.add(key);
+  out.push(raw);
+}
+
+/**
+ * Normalize rows from Serper + SerpAPI Google Shopping payloads (different top-level buckets).
+ */
 function normalizeShoppingRows(payload: unknown): Record<string, unknown>[] {
   if (payload == null || typeof payload !== "object") return [];
   const root = payload as Record<string, unknown>;
 
-  const tryArrays = [
+  const arrayCandidates: unknown[] = [
     root.shopping,
     root.shopping_results,
+    root.inline_shopping_results,
     (root as { items?: unknown }).items,
+    root.organic_results,
   ];
 
-  for (const arr of tryArrays) {
-    if (Array.isArray(arr)) {
-      return arr.filter((x): x is Record<string, unknown> => x != null && typeof x === "object");
+  const pr = root.product_results;
+  if (Array.isArray(pr)) arrayCandidates.push(pr);
+  else if (pr != null && typeof pr === "object") {
+    const prodObj = pr as Record<string, unknown>;
+    arrayCandidates.push(prodObj.products);
+    arrayCandidates.push(prodObj.items);
+    /** Single enriched product capsule */
+    if (
+      typeof prodObj.title === "string" ||
+      prodObj.link != null ||
+      prodObj.product_link != null
+    ) {
+      arrayCandidates.push([prodObj]);
     }
   }
-  return [];
+
+  const out: Record<string, unknown>[] = [];
+  const seen = new Set<string>();
+
+  for (const bucket of arrayCandidates) {
+    if (!Array.isArray(bucket)) continue;
+    for (const raw of bucket) {
+      if (raw == null || typeof raw !== "object") continue;
+      tryAddShoppingRow(raw as Record<string, unknown>, seen, out);
+    }
+  }
+
+  return out;
 }
+
+function parsedItemFromShoppingRow(row: Record<string, unknown>): ParsedSerpShoppingItem | null {
+  const title =
+    typeof row.title === "string"
+      ? row.title
+      : typeof row.name === "string"
+        ? row.name
+        : typeof row.snippet === "string"
+          ? row.snippet.slice(0, 280)
+          : null;
+  if (!title || title.length < 2) return null;
+
+  const priceStr = pickPriceRawFromRow(row);
+  const extractedNum =
+    typeof row.extracted_price === "number" && Number.isFinite(row.extracted_price)
+      ? row.extracted_price
+      : null;
+
+  const link = pickRawLink(row);
+  return {
+    title,
+    /** Raw display string preferred; fallback to extracted numeric — may be absent for weak rows */
+    price: priceStr ?? extractedNum,
+    link,
+    source: pickSourceLabel(row),
+    thumbnail: pickThumbnailFromRow(row),
+  };
+}
+
 
 async function fetchSerperShoppingJson(query: string): Promise<unknown | null> {
   const apiKey = process.env.SERPER_API_KEY?.trim();
@@ -175,38 +396,33 @@ function rowToCandidate(
       ? row.title
       : typeof row.name === "string"
         ? row.name
+        : typeof row.snippet === "string"
+          ? row.snippet.slice(0, 280).trim()
         : null;
   if (!title || title.length < 3) return null;
 
   const rawLink = pickRawLink(row);
   if (!rawLink) return null;
 
-  const productUrl = unwrapMerchantUrl(rawLink);
+  const productUrl = resolveShoppingListingUrl(rawLink);
   if (!productUrl) return null;
 
-  const store = detectStoreFromProductUrl(productUrl);
+  let store =
+    detectStoreFromProductUrl(productUrl) ??
+    inferStoreFromSourceLabel(pickSourceLabel(row));
+
   if (!store) return null;
   if (!isProductDetailStoreKey(store)) return null;
-  if (!isValidProductDetailUrl(store, productUrl)) return null;
 
-  const priceRaw =
-    typeof row.price === "string"
-      ? row.price
-      : typeof row.extracted_price === "number"
-        ? String(row.extracted_price)
-        : typeof row.extracted_price === "string"
-          ? row.extracted_price
-          : null;
-  const price = parsePriceLoose(priceRaw);
+  const googleShoppingListing = /^https:\/\/(www\.)?google\.com\/shopping\/product\//i.test(
+    productUrl
+  );
+  if (!(googleShoppingListing || isValidProductDetailUrl(store, productUrl))) return null;
 
-  const imageUrl =
-    typeof row.imageUrl === "string"
-      ? row.imageUrl
-      : typeof row.thumbnail === "string"
-        ? row.thumbnail
-        : typeof row.image === "string"
-          ? row.image
-          : null;
+  const priceRaw = pickPriceRawFromRow(row);
+  const price = parsePriceLoose(priceRaw ?? undefined);
+
+  const imageUrl = pickThumbnailFromRow(row);
 
   const normalized = buildNormalizedProduct(title, {
     price,
@@ -222,10 +438,15 @@ function rowToCandidate(
   for (const w of qWords) {
     if (normalized.titleNorm.includes(w)) matchWords += 1;
   }
-  const sourceConfidence =
+
+  /** Google Shopping intermediary listings are weaker than direct merchant PDPs */
+  let sourceConfidence =
     qWords.length > 0
       ? Math.min(0.98, 0.45 + (matchWords / qWords.length) * 0.5)
       : 0.72;
+  if (googleShoppingListing) sourceConfidence = Math.min(sourceConfidence, 0.58);
+  /** No parseable numeric price — still keep row, softer confidence cap */
+  if (price == null) sourceConfidence = Math.min(sourceConfidence, 0.52);
 
   return {
     store,
@@ -287,7 +508,19 @@ async function fetchShoppingForQuery(
     };
   }
 
+  const data = typeof payload === "object" && payload !== null ? payload : null;
   const rows = normalizeShoppingRows(payload);
+
+  const parsedItems = rows
+    .map(parsedItemFromShoppingRow)
+    .filter((x): x is ParsedSerpShoppingItem => x != null);
+
+  if (hints[0] === "serpapi") {
+    console.log("[serpapi_raw_keys]", Object.keys(data ?? {}));
+    console.log("[serpapi_items_found]", parsedItems.length);
+    console.log("[serpapi_first_item]", parsedItems[0]);
+  }
+
   const out: CandidateProduct[] = [];
 
   for (const row of rows) {
