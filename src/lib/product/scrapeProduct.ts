@@ -1,4 +1,4 @@
-import type { StoreId } from "./types";
+import type { SourceScrapedHints, StoreId } from "./types";
 import {
   isGenericRetailProductQuery,
   looksLikeAmazonAsinToken,
@@ -797,6 +797,19 @@ export async function scrapeProduct(
     model: modelLine,
     category: categoryTrail,
   };
+}
+
+/** Compact PDP hints for `SourceProduct.scrapedHints` — safe to omit when scrape failed. */
+export function toSourceScrapedHints(
+  scraped: ScrapedProduct | null | undefined
+): SourceScrapedHints | undefined {
+  if (!scraped) return undefined;
+  const categoryTrail = scraped.category?.trim() || null;
+  const retailerSku = scraped.sku?.trim() || null;
+  const modelOrMpn = scraped.model?.trim() || null;
+  const brand = scraped.brand?.trim() || null;
+  if (!categoryTrail && !retailerSku && !modelOrMpn && !brand) return undefined;
+  return { categoryTrail, retailerSku, modelOrMpn, brand };
 }
 
 function attachDetachedScrapedBrand(

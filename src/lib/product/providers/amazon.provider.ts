@@ -2,6 +2,7 @@ import {
   scrapeProduct,
   composeRetailShoppingTitleFromPdp,
   logRetailPdpShoppingIdentity,
+  toSourceScrapedHints,
 } from "../scrapeProduct";
 import { finalizedSlugShoppingLine } from "../urlProductQuery";
 import { fetchAmazonSerpWithDiagnostics } from "../searchParse";
@@ -210,6 +211,7 @@ export const amazonProvider: ProductProvider = {
         currency: scraped?.currency ?? null,
         productUrl: url,
       }),
+      scrapedHints: toSourceScrapedHints(scraped) ?? null,
     };
   },
 

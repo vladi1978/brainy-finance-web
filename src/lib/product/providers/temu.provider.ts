@@ -2,6 +2,7 @@ import {
   scrapeProduct,
   composeRetailShoppingTitleFromPdp,
   logRetailPdpShoppingIdentity,
+  toSourceScrapedHints,
 } from "../scrapeProduct";
 import { finalizedSlugShoppingLine } from "../urlProductQuery";
 import { fetchTemuSerpWithDiagnostics } from "../searchParse";
@@ -103,6 +104,7 @@ export const temuProvider: ProductProvider = {
         currency: scraped?.currency ?? null,
         productUrl: url,
       }),
+      scrapedHints: toSourceScrapedHints(scraped) ?? null,
     };
   },
 

@@ -2,6 +2,7 @@ import {
   scoreAttributeMatch,
   type AttributeMatchResult,
 } from "./attributeMatch";
+import { buildReferenceUnderstanding } from "./aiExtractor";
 import { toAffiliateUrl } from "./affiliateUrl";
 import {
   buildCriticalShoppingCoreSegments,
@@ -608,12 +609,14 @@ function emptyGoogleDiagnostics(query: string): ProviderSearchDiagnostics {
 function relevanceReasonLine(rel: AttributeMatchResult): string {
   const label =
     rel.matchType === "high"
-      ? "Strong attribute match"
-      : rel.matchType === "similar_product"
-        ? "Similar product (possible equivalent)"
-        : rel.matchType === "medium"
-          ? "Moderate attribute match"
-          : "Related listing";
+      ? "Same product line — strongest attribute match"
+      : rel.matchType === "equivalent"
+        ? "Equivalent alternative — compatible core specs"
+        : rel.matchType === "similar_product"
+          ? "Similar product — weaker spec overlap (verify details)"
+          : rel.matchType === "medium"
+            ? "Moderate keyword overlap"
+            : "Related listing";
   return `${label}: ${rel.matchType} (${Math.round(rel.confidence * 100)}% confidence, score ${rel.relevanceScore})`;
 }
 
@@ -769,6 +772,7 @@ function overallConfidenceFromDeal(
   if (deal.matchType === "high" && deal.confidence >= 0.6) return "high";
   if (
     deal.matchType === "high" ||
+    deal.matchType === "equivalent" ||
     deal.matchType === "medium" ||
     deal.matchType === "similar_product"
   )
@@ -905,6 +909,18 @@ export async function compareProduct(
     `${referenceProductQuery} ${normSourceText}`.trim(),
     referenceNormalized
   );
+
+  const referenceUnderstanding = buildReferenceUnderstanding({
+    primaryTitle: referenceProductQuery,
+    supplementaryText: normSourceText,
+    sourceUrl:
+      scrapedSource?.sourceUrl?.trim() ||
+      parsed.inputUrl?.trim() ||
+      null,
+    scrapedHints: scrapedSource?.scrapedHints ?? null,
+    normalized: referenceNormalized,
+    scrapedListingOk: scrapedOk,
+  });
 
   const normalizedQueryFallback =
     scrapedOk ? referenceProductQuery : normSourceText || referenceProductQuery;
@@ -1131,7 +1147,8 @@ export async function compareProduct(
       referenceNormalized,
       c.normalized,
       queryForMatch,
-      c.title
+      c.title,
+      { referenceUnderstanding }
     );
 
     if (rel.rejected) {
@@ -1180,8 +1197,9 @@ export async function compareProduct(
       matchScore: rel.relevanceScore,
       matchReasons: rel.reasons,
       eligibleForComparable:
-        (rel.matchType === "high" || rel.matchType === "similar_product") &&
-        rel.relevanceScore >= 15,
+        rel.matchType === "high" ||
+        rel.matchType === "equivalent" ||
+        (rel.matchType === "similar_product" && rel.relevanceScore >= 23),
       detail: `attribute_match:${rel.matchType}`,
     });
 
@@ -1193,7 +1211,16 @@ export async function compareProduct(
     });
   }
 
-  const baseFiltered = rows
+  const hasStrongTier = rows.some(
+    (r) =>
+      !r.rel.rejected &&
+      (r.rel.matchType === "high" || r.rel.matchType === "equivalent")
+  );
+  const rowsForDisplay = hasStrongTier
+    ? rows.filter((r) => r.rel.matchType !== "similar_product")
+    : rows;
+
+  const baseFiltered = rowsForDisplay
     .map((r) => r.api)
     .filter(
       (api) =>
@@ -1216,10 +1243,9 @@ export async function compareProduct(
         );
 
   const selectionBase: SelectionTrace = {
-    trustworthyCount: rows.filter(
+    trustworthyCount: rowsForDisplay.filter(
       (r) =>
-        (r.rel.matchType === "high" ||
-          (r.rel.matchType === "similar_product" && r.rel.relevanceScore >= 15)) &&
+        (r.rel.matchType === "high" || r.rel.matchType === "equivalent") &&
         !r.rel.rejected
     ).length,
     pickedStore: null,
@@ -1318,7 +1344,9 @@ export async function compareProduct(
       bestApi = orderedForDisplay.find((c) => c.priceCompareSegment === "cheaper");
     }
     if (!bestApi) {
-      bestApi = orderedForDisplay.find((c) => c.matchType === "high");
+      bestApi = orderedForDisplay.find(
+        (c) => c.matchType === "high" || c.matchType === "equivalent"
+      );
     }
     bestApi ??= orderedForDisplay[0];
 

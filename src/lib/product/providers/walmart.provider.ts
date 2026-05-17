@@ -2,6 +2,7 @@ import {
   scrapeProduct,
   composeRetailShoppingTitleFromPdp,
   logRetailPdpShoppingIdentity,
+  toSourceScrapedHints,
 } from "../scrapeProduct";
 import { finalizedSlugShoppingLine } from "../urlProductQuery";
 import { fetchWalmartSerpWithDiagnostics } from "../searchParse";
@@ -129,6 +130,7 @@ export const walmartProvider: ProductProvider = {
         currency: scraped?.currency ?? null,
         productUrl: url,
       }),
+      scrapedHints: toSourceScrapedHints(scraped) ?? null,
     };
   },
 

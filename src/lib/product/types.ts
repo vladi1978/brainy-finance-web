@@ -68,15 +68,19 @@ export type StructuredProduct = {
 export type MatchConfidenceLabel = "exact" | "equivalent" | "alternative";
 
 /**
- * Match bucket for comparison API rows.
- * - `high`: strong attribute + query alignment (blended score ≥ exact tier)
- * - `similar_product`: passed gates with medium blended score (cross-retailer naming variance)
+ * Match tiers:
+ * - `high`: same product line / strongest structured alignment
+ * - `equivalent`: compatible core specs (Tier 2 alternatives)
+ * - `similar_product`: weak similar — omitted when higher tiers exist for the same query
  * - `medium` / `low`: keyword-only tiers inside `scoreQueryRelevance` (internal / legacy)
  */
 export type SearchMatchType =
   | "high"
+  /** Tier 2 — compatible specs / intended use; may differ by retailer naming */
+  | "equivalent"
   | "medium"
   | "low"
+  /** Tier 3 — weak similar; suppressed when stronger tiers exist */
   | "similar_product";
 
 /** Buckets for display-type strict matching (TVs). */
@@ -138,6 +142,17 @@ export type NormalizedProduct = {
   critical?: CriticalListingAttributes;
 };
 
+/**
+ * Structured crumbs from PDP HTML (JSON-LD / meta), richer than title parsing alone.
+ * Populated when `scrapeProduct` succeeds during URL extraction.
+ */
+export type SourceScrapedHints = {
+  categoryTrail: string | null;
+  retailerSku: string | null;
+  modelOrMpn: string | null;
+  brand: string | null;
+};
+
 export type SourceProduct = {
   sourceUrl?: string;
   store: StoreId | "unknown";
@@ -145,6 +160,7 @@ export type SourceProduct = {
   originalPrice: number | null;
   currency: string;
   normalized: NormalizedProduct;
+  scrapedHints?: SourceScrapedHints | null;
 };
 
 /**

@@ -1,10 +1,15 @@
 import {
-  attributeScoreForPair,
+  buildCandidateUnderstanding,
+  scoreUnderstandingOverlap,
+  type ProductUnderstanding,
+} from "./aiExtractor";
+import {
   missingCriticalDimensionSignatures,
-  runHardGates,
+  runUniversalHardGates,
+  scoreUniversalStructured,
   shouldApplyCriticalKindPhraseSoftPenalty,
-  shouldApplyTvSizeIncompleteSoftPenalty,
-} from "./match";
+  shouldApplyDiagonalIncompleteSoftPenalty,
+} from "./matching/universalMatchEngine";
 import type { CompareConfidence, NormalizedProduct, SearchMatchType } from "./types";
 import { scoreQueryRelevance } from "./searchRelevance";
 
@@ -19,32 +24,49 @@ export type AttributeMatchResult = {
   rejectionReason: string | null;
 };
 
-/** Obvious mismatches and noise fall below this; `similar_product` stays from this score up. */
+export type AttributeMatchOptions = {
+  /** Phase 1 structured understanding — blends into scoring; gates unchanged. */
+  referenceUnderstanding?: ProductUnderstanding | null;
+};
+
+export type { ProductUnderstanding } from "./aiExtractor";
+
+/** Obvious mismatches and noise fall below this; weak-similar tier starts at this score. */
 const MIN_COMBINED_RELEVANCE = 15;
 
-/** At or above: treat as exact / high-confidence same-or-equivalent product for ranking and best-deal logic. */
-const TIER_HIGH_CONFIDENCE = 32;
+/** Structured + keyword blend needed for “same product line” tier. */
+const TIER1_BLEND_MIN = 36;
 
-/** Lower structured-component score when reference critical dims are absent from candidate text. */
+/** Blend floor for equivalent alternatives (Tier 2). */
+const TIER2_BLEND_MIN = 23;
+
+/** Structured score shortcut for Tier 1 when blend is borderline. */
+const TIER1_STRUCTURED_MIN = 86;
+
 const CRITICAL_DIM_SOFT_PENALTY_EACH = 12;
 const CRITICAL_DIM_SOFT_PENALTY_CAP = 40;
 
-/** One-sided missing parsed TV diagonal vs peer structured size — soften instead of rejecting. */
-const TV_SIZE_ONE_SIDE_MISSING_FACTOR = 0.8;
+/** One-sided missing parsed diagonal vs peer structured size — soften instead of rejecting. */
+const DIAG_INCOMPLETE_FACTOR = 0.82;
 
-/** Reference kind stems (e.g. smart TV) absent from candidate copy — soften vs hard reject. */
+/** Reference kind stems absent from candidate copy — soften vs hard reject. */
 const CRITICAL_KIND_PHRASE_MISS_FACTOR = 0.85;
 
+/** Minimum reference extraction confidence before structured understanding affects blending. */
+const UNDERSTANDING_BLEND_MIN_CONF = 0.22;
+
 /**
- * Attribute-first matching: hard filters, structured score, light keyword blend.
+ * Universal attribute matching: profile-driven hard gates, weighted structured similarity,
+ * keyword recall blend, optional structured understanding overlap, and three display tiers.
  */
 export function scoreAttributeMatch(
   source: NormalizedProduct,
   candidate: NormalizedProduct,
   queryText: string,
-  candidateTitle: string
+  candidateTitle: string,
+  options?: AttributeMatchOptions
 ): AttributeMatchResult {
-  const gate = runHardGates(source, candidate);
+  const gate = runUniversalHardGates(source, candidate);
   if (!gate.ok) {
     return {
       confidence: 0,
@@ -57,9 +79,9 @@ export function scoreAttributeMatch(
     };
   }
 
-  const attr = attributeScoreForPair(source, candidate);
+  const structured = scoreUniversalStructured(source, candidate);
+  let attrScore = structured.score;
   const missingDims = missingCriticalDimensionSignatures(source, candidate);
-  let attrScore = attr.score;
   const dimPenaltyReasons: string[] = [];
   if (missingDims.length > 0) {
     const deduction = Math.min(
@@ -74,10 +96,10 @@ export function scoreAttributeMatch(
     }
   }
 
-  if (shouldApplyTvSizeIncompleteSoftPenalty(source, candidate)) {
-    attrScore *= TV_SIZE_ONE_SIDE_MISSING_FACTOR;
+  if (shouldApplyDiagonalIncompleteSoftPenalty(source, candidate)) {
+    attrScore *= DIAG_INCOMPLETE_FACTOR;
     dimPenaltyReasons.push(
-      "soft_penalty:tv_size_structured_unknown_one_side(×0.8)"
+      "soft_penalty:diagonal_structured_unknown_one_side(×0.82)"
     );
   }
   if (shouldApplyCriticalKindPhraseSoftPenalty(source, candidate)) {
@@ -88,11 +110,41 @@ export function scoreAttributeMatch(
   }
 
   const kw = scoreQueryRelevance(queryText, candidateTitle);
-  const blended = Math.round(attrScore * 0.82 + kw.relevanceScore * 0.18);
+
+  const refU = options?.referenceUnderstanding ?? null;
+  let understandingScore = 0;
+  let understandingReasons: string[] = [];
+  let identityBoost = false;
+  let uWeight = 0;
+
+  if (
+    refU &&
+    refU.extractionConfidence >= UNDERSTANDING_BLEND_MIN_CONF
+  ) {
+    const candU = buildCandidateUnderstanding(candidate, candidateTitle);
+    const ov = scoreUnderstandingOverlap(refU, candU, candidateTitle);
+    understandingScore = ov.score;
+    identityBoost = ov.exactIdentityMatch;
+    understandingReasons = ov.reasons.map((r) => `understanding:${r}`);
+    uWeight = Math.min(0.22, refU.extractionConfidence * 0.28);
+  }
+
+  const attrFactor = 0.82 - uWeight * 0.55;
+  const kwFactor = 0.18 - uWeight * 0.45;
+  const blended = Math.round(
+    attrScore * attrFactor +
+      kw.relevanceScore * kwFactor +
+      understandingScore * uWeight
+  );
+
   const reasons = [
-    ...attr.reasons,
+    ...structured.reasons,
     ...dimPenaltyReasons,
+    ...understandingReasons,
     ...kw.reasons.map((r) => `kw:${r}`),
+    uWeight > 0
+      ? `blend_weights(attr=${attrFactor.toFixed(3)},kw=${kwFactor.toFixed(3)},understanding=${uWeight.toFixed(3)})`
+      : "blend_weights(attr=0.820,kw=0.180)",
     `blended=${blended}`,
   ];
 
@@ -109,15 +161,27 @@ export function scoreAttributeMatch(
     };
   }
 
+  const tier1 =
+    blended >= TIER1_BLEND_MIN &&
+    (structured.sameProductLineSignals ||
+      structured.score >= TIER1_STRUCTURED_MIN ||
+      (identityBoost &&
+        understandingScore >= 46 &&
+        blended >= TIER2_BLEND_MIN));
+  const tier2 = !tier1 && blended >= TIER2_BLEND_MIN;
+
   let matchType: SearchMatchType;
   let matchConfidenceLabel: CompareConfidence;
-  if (blended >= TIER_HIGH_CONFIDENCE) {
+  if (tier1) {
     matchType = "high";
     matchConfidenceLabel = "high";
+  } else if (tier2) {
+    matchType = "equivalent";
+    matchConfidenceLabel = "medium";
   } else {
     matchType = "similar_product";
     matchConfidenceLabel = "medium";
-    reasons.push("tier:similar_product(cross_retailer_naming)");
+    reasons.push("tier:weak_similar(missing_some_critical_specs)");
   }
 
   const confidence = Math.min(1, blended / 100);

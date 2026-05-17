@@ -2,6 +2,7 @@ import {
   composeRetailShoppingTitleFromPdp,
   logRetailPdpShoppingIdentity,
   scrapeProduct,
+  toSourceScrapedHints,
 } from "../scrapeProduct";
 import { buildNormalizedProduct, normalizeTitle } from "../normalize";
 import type {
@@ -67,6 +68,7 @@ export const homedepotProvider: ProductProvider = {
         currency: scraped?.currency ?? null,
         productUrl: url,
       }),
+      scrapedHints: toSourceScrapedHints(scraped) ?? null,
     };
   },
 

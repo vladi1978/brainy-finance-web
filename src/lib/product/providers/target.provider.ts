@@ -2,6 +2,7 @@ import {
   scrapeProduct,
   composeRetailShoppingTitleFromPdp,
   logRetailPdpShoppingIdentity,
+  toSourceScrapedHints,
 } from "../scrapeProduct";
 import { finalizedSlugShoppingLine } from "../urlProductQuery";
 import { fetchTargetSerpWithDiagnostics } from "../searchParse";
@@ -109,6 +110,7 @@ export const targetProvider: ProductProvider = {
         currency: scraped?.currency ?? null,
         productUrl: url,
       }),
+      scrapedHints: toSourceScrapedHints(scraped) ?? null,
     };
   },
 
