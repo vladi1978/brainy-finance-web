@@ -54,6 +54,12 @@ export function displayPanelsComparable(
   ) {
     return true;
   }
+  if (
+    (a === "crystal_led" && b === "led") ||
+    (a === "led" && b === "crystal_led")
+  ) {
+    return true;
+  }
   return false;
 }
 

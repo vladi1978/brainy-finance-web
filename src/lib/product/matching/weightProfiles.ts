@@ -101,13 +101,13 @@ const GENERIC_GATES: CategoryGateFlags = {
 /** Relative weights — the engine normalizes to sum to 100 internally. */
 export const CATEGORY_MATCH_PROFILES: Record<ProductCategory, CategoryMatchProfile> = {
   tv: {
-    softBrandScoring: false,
+    softBrandScoring: true,
     gates: SCREEN_GATES,
     weights: {
       category_bucket: 6,
-      brand: 6,
-      model_line: 8,
-      diagonal_inches: 18,
+      brand: 8,
+      model_line: 10,
+      diagonal_inches: 22,
       resolution_tier: 12,
       display_panel: 12,
       smart_features: 4,
@@ -116,7 +116,7 @@ export const CATEGORY_MATCH_PROFILES: Record<ProductCategory, CategoryMatchProfi
     },
   },
   monitor: {
-    softBrandScoring: false,
+    softBrandScoring: true,
     gates: MONITOR_GATES,
     weights: {
       category_bucket: 6,
