@@ -70,7 +70,10 @@ function searchParamValueInsensitive(sp: URLSearchParams, name: string): string 
 /**
  * Store search URLs accepted when Google Shopping rows lack merchant PDP links.
  */
-function isRetailerSearchLandingUrl(store: ProductDetailStoreKey, u: URL): boolean {
+export function isRetailerSearchLandingUrl(
+  store: ProductDetailStoreKey,
+  u: URL
+): boolean {
   const path = u.pathname;
   const pl = path.toLowerCase();
 
@@ -210,6 +213,87 @@ function homedepotPdpPath(path: string): boolean {
 
 function lowesPdpPath(path: string): boolean {
   return /^\/pd\/[^/]+\/\d+/i.test(path);
+}
+
+/** True only for retailer-hosted product detail paths (never search/category landing pages). */
+export function isStrictProductDetailUrl(
+  store: ProductDetailStoreKey,
+  url: string
+): boolean {
+  let u: URL;
+  try {
+    u = new URL(url.trim());
+  } catch {
+    return false;
+  }
+
+  if (!/^https?:$/i.test(u.protocol)) return false;
+
+  const host = normHost(u.hostname);
+
+  if (universalBadRetailUrl(u)) return false;
+
+  const path = u.pathname;
+
+  if (isDemoPdpPlaceholder(host, path)) {
+    return demoHostMatchesStore(store, host);
+  }
+
+  if (!hostMatchesStoreKey(store, host)) return false;
+
+  switch (store) {
+    case "amazon":
+      return amazonPdpPath(path);
+    case "walmart":
+      return walmartPdpPath(path);
+    case "target":
+      return targetPdpPath(path);
+    case "temu":
+      return temuPdpPath(path);
+    case "bestbuy":
+      return bestbuyPdpPath(path);
+    case "homedepot":
+      return homedepotPdpPath(path);
+    case "lowes":
+      return lowesPdpPath(path);
+    default:
+      return false;
+  }
+}
+
+/**
+ * Retailer-hosted search/browse URL (same heuristics as {@link isValidProductDetailUrl} search paths,
+ * restricted to matching store host — unlike {@link isValidProductDetailUrl}, does not classify PDPs.)
+ */
+export function isRetailerSearchUrl(store: ProductDetailStoreKey, url: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(url.trim());
+  } catch {
+    return false;
+  }
+
+  if (!/^https?:$/i.test(u.protocol)) return false;
+
+  const host = normHost(u.hostname);
+  if (!hostMatchesStoreKey(store, host)) return false;
+
+  const hrefLower = u.href.toLowerCase();
+  if (
+    hrefLower.includes("/search") ||
+    hrefLower.includes("searchterm") ||
+    hrefLower.includes("?q=") ||
+    hrefLower.includes("&q=") ||
+    hrefLower.includes("?k=") ||
+    hrefLower.includes("&k=") ||
+    hrefLower.includes("?st=") ||
+    hrefLower.includes("&st=") ||
+    hrefLower.includes("_nkw=")
+  ) {
+    return true;
+  }
+
+  return isRetailerSearchLandingUrl(store, u);
 }
 
 /**

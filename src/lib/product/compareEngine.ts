@@ -31,11 +31,8 @@ import { isUsablePdpTitle } from "./usablePdpTitle";
 import { findProductProviderForUrl } from "./registry";
 import { rankMatchTypes } from "./searchRelevance";
 import { getSimulatedStoreCoupons } from "../premium/couponOffers";
-import {
-  isProductDetailStoreKey,
-  isValidProductDetailUrl,
-  type ProductDetailStoreKey,
-} from "./productDetailUrl";
+import { isProductDetailStoreKey } from "./productDetailUrl";
+import { resolveCompareCandidateOutbound } from "./productUrlResolver";
 import type {
   CandidateProduct,
   CandidateStepTrace,
@@ -469,31 +466,7 @@ const DEMO_STORES: StoreId[] = [
 /** Max store rows returned in `candidates` / UI lists */
 const DISPLAY_LIMIT = 10;
 
-/**
- * Retailer search URL using the listing title (honest fallback when PDP/affiliate links are unreliable).
- */
-export function buildRetailerSearchUrlFromTitle(store: StoreId, title: string): string {
-  const q = title.replace(/\s+/g, " ").trim();
-  const enc = encodeURIComponent(q || " ");
-  switch (store) {
-    case "amazon":
-      return `https://www.amazon.com/s?k=${enc}`;
-    case "walmart":
-      return `https://www.walmart.com/search?q=${enc}`;
-    case "target":
-      return `https://www.target.com/s?searchTerm=${enc}`;
-    case "temu":
-      return `https://www.temu.com/search_result.html?search_key=${enc}`;
-    case "bestbuy":
-      return `https://www.bestbuy.com/site/searchpage.jsp?st=${enc}`;
-    case "homedepot":
-      return `https://www.homedepot.com/s/${enc}`;
-    case "lowes":
-      return `https://www.lowes.com/search?searchTerm=${enc}`;
-    default:
-      return `https://www.google.com/search?q=${enc}`;
-  }
-}
+export { buildRetailerSearchUrlFromTitle } from "./productUrlResolver";
 
 function isValidComparablePrice(price: number | null | undefined): boolean {
   return price != null && Number.isFinite(price) && price > 0;
@@ -623,16 +596,19 @@ function relevanceReasonLine(rel: AttributeMatchResult): string {
 function toCompareApiCandidate(
   c: CandidateProduct,
   rel: AttributeMatchResult,
-  affiliateUrl: string,
+  resolution: import("./productUrlResolver").ResolvedCompareCandidateOutbound,
   premiumCoupons?: PremiumCouponOffer[]
 ): CompareApiCandidate {
+  const outboundRaw = resolution.outboundUrlRaw.trim();
+  const affiliateUrl =
+    outboundRaw.length > 0 ? toAffiliateUrl(outboundRaw, c.store) : "";
+
   return {
     store: c.store,
     title: c.title,
     price: c.price,
     currency: c.currency,
-    /** Store search URL from listing title (outbound links; PDP from Google is internal-only). */
-    productUrl: affiliateUrl,
+    productUrl: c.productUrl,
     affiliateUrl,
     imageUrl: c.imageUrl,
     normalized: c.normalized,
@@ -643,7 +619,12 @@ function toCompareApiCandidate(
     score: rel.relevanceScore,
     relevanceReason: relevanceReasonLine(rel),
     premiumCoupons,
-    outboundIsStoreSearch: true,
+    outboundIsStoreSearch: resolution.urlType === "search",
+    resolvedProductUrl: resolution.resolvedProductUrl,
+    outboundUrl: affiliateUrl || outboundRaw,
+    urlType: resolution.urlType,
+    urlConfidence: resolution.urlConfidence,
+    urlResolutionReason: resolution.urlResolutionReason,
   };
 }
 
@@ -669,6 +650,11 @@ function toDeal(
     savingsVsReference: row.savingsVsReference,
     priceCompareSegment: row.priceCompareSegment,
     outboundIsStoreSearch: row.outboundIsStoreSearch,
+    resolvedProductUrl: row.resolvedProductUrl,
+    outboundUrl: row.outboundUrl,
+    urlType: row.urlType,
+    urlConfidence: row.urlConfidence,
+    urlResolutionReason: row.urlResolutionReason,
   };
 }
 
@@ -1080,10 +1066,7 @@ export async function compareProduct(
       titlePreview: c.title.slice(0, 120),
     });
 
-    if (
-      !isProductDetailStoreKey(c.store) ||
-      !isValidProductDetailUrl(c.store, c.productUrl)
-    ) {
+    if (!isProductDetailStoreKey(c.store)) {
       candidateSteps.push({
         key: candidateKey(c, candidateSteps.length),
         store: c.store,
@@ -1091,17 +1074,13 @@ export async function compareProduct(
         price: c.price,
         productUrl: c.productUrl,
         outcome: "invalid_product_url",
-        rejectionReason: "invalid_product_url",
-        detail: "invalid_product_url",
+        rejectionReason: "unsupported_store_for_compare",
+        detail: "unsupported_store_for_compare",
       });
       pipelineLog("candidate_rejected", {
         store: c.store,
         title: c.title.slice(0, 80),
-        reason: "invalid_product_url",
-      });
-      traceLog("invalid_product_url", {
-        store: c.store,
-        urlPreview: c.productUrl.slice(0, 200),
+        reason: "unsupported_store_for_compare",
       });
       continue;
     }
@@ -1178,13 +1157,12 @@ export async function compareProduct(
     }
 
     const coupons = getSimulatedStoreCoupons(c.store, c.normalized.category);
-    const outboundSearch = buildRetailerSearchUrlFromTitle(c.store, c.title);
-    const api = toCompareApiCandidate(
-      c,
-      rel,
-      toAffiliateUrl(outboundSearch, c.store),
-      coupons
-    );
+    const resolution = resolveCompareCandidateOutbound({
+      store: c.store,
+      listingProductUrl: c.productUrl,
+      title: c.title,
+    });
+    const api = toCompareApiCandidate(c, rel, resolution, coupons);
     rows.push({ api, rel });
 
     candidateSteps.push({
@@ -1216,8 +1194,9 @@ export async function compareProduct(
     .map((r) => r.api)
     .filter(
       (api) =>
+        (api.urlType === "product" || api.urlType === "search") &&
         isProductDetailStoreKey(api.store) &&
-        isValidProductDetailUrl(api.store, api.productUrl)
+        Boolean(api.outboundUrl?.trim())
     );
 
   const orderedForDisplay = annotateAndOrderCandidates(
@@ -1367,10 +1346,8 @@ export async function compareProduct(
     if (
       bestDeal &&
       (!isProductDetailStoreKey(bestDeal.store) ||
-        !isValidProductDetailUrl(
-          bestDeal.store as ProductDetailStoreKey,
-          bestDeal.affiliateUrl
-        ))
+        bestDeal.urlType === "unknown" ||
+        !bestDeal.outboundUrl?.trim())
     ) {
       pipelineLog("selection_final", {
         bestDeal: null,

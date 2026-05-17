@@ -322,6 +322,13 @@ export type CompareProductDeal = {
   savingsVsReference?: number | null;
   priceCompareSegment?: "cheaper" | "not_cheaper" | "unknown";
   outboundIsStoreSearch?: boolean;
+  /** Raw merchant PDP when {@link urlType} is `"product"` (canonical listing URL). */
+  resolvedProductUrl?: string;
+  /** Prefer this for outbound navigation (normally affiliate-wrapped). */
+  outboundUrl: string;
+  urlType: "product" | "search" | "unknown";
+  urlConfidence: "high" | "medium" | "low";
+  urlResolutionReason?: string;
 };
 
 /** Search-first API candidate (shared shape across stores). */
@@ -358,6 +365,13 @@ export type CompareApiCandidate = {
    * Kept explicit so the UI does not imply a direct product page.
    */
   outboundIsStoreSearch?: boolean;
+  /** Raw merchant PDP when {@link urlType} is `"product"`. */
+  resolvedProductUrl?: string;
+  /** Prefer this for outbound navigation (normally affiliate-wrapped). */
+  outboundUrl: string;
+  urlType: "product" | "search" | "unknown";
+  urlConfidence: "high" | "medium" | "low";
+  urlResolutionReason?: string;
 };
 
 /** API payload — dashboard reads `bestDeal`, `candidates`, `comparisonMessage`. */

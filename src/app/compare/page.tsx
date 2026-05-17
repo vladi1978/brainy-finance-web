@@ -20,13 +20,15 @@ function formatPrice(n: number | null): string {
 function MatchBadge({ type }: { type: CompareApiCandidate["matchType"] }) {
   const colors = {
     high: "bg-green-500/20 text-green-300 border-green-500/40",
+    equivalent: "bg-emerald-500/18 text-emerald-200 border-emerald-500/35",
     medium: "bg-amber-500/20 text-amber-200 border-amber-500/40",
     low: "bg-white/10 text-white/60 border-white/20",
     similar_product:
       "bg-sky-500/15 text-sky-200 border-sky-500/35",
   };
   const labels: Record<CompareApiCandidate["matchType"], string> = {
-    high: "Strong match",
+    high: "Same product line",
+    equivalent: "Equivalent pick",
     medium: "Possible match",
     low: "Broad match",
     similar_product: "Similar product",
@@ -189,7 +191,8 @@ export default function ComparePage() {
       setTrackMessage("Precio objetivo no válido.");
       return;
     }
-    const outbound = c.affiliateUrl || c.productUrl;
+    const outbound =
+      c.outboundUrl?.trim() || c.affiliateUrl || c.productUrl;
     const res = await fetch("/api/price-alerts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -473,7 +476,12 @@ export default function ComparePage() {
 
               {showBest && best && (
                 <p className="text-green-400/95 text-sm font-medium">
-                  Best deal (among {result.candidates.filter((x) => x.matchType === "high").length}{" "}
+                  Best deal (among{" "}
+                  {
+                    result.candidates.filter(
+                      (x) => x.matchType === "high" || x.matchType === "equivalent"
+                    ).length
+                  }{" "}
                   strong matches): {formatPrice(best.price)} at {storeDisplayLabel(best.store)}
                 </p>
               )}
@@ -484,8 +492,8 @@ export default function ComparePage() {
                     {result.comparisonMessage ?? "Coincidencias"}
                   </h3>
                   <p className="text-white/50 text-sm mb-4">
-                    Los enlaces abren una búsqueda en cada tienda con el título del listado para que
-                    encuentres la ficha equivalente.
+                    Algunos enlaces abren la ficha del producto y otros una búsqueda en la tienda;
+                    revisa el listado antes de comprar.
                   </p>
                 </div>
               )}
@@ -512,8 +520,16 @@ export default function ComparePage() {
                           best &&
                           c.productUrl === best.productUrl &&
                           c.store === best.store;
-                        const outbound = c.affiliateUrl || c.productUrl;
+                        const outbound =
+                          (c.outboundUrl?.trim() || c.affiliateUrl || c.productUrl);
                         const storeLabel = storeDisplayLabel(c.store);
+                        const showSearchDisclaimer = c.urlType === "search";
+                        const outboundButtonLabel =
+                          c.urlType === "product"
+                            ? `Ver producto en ${storeLabel}`
+                            : c.urlType === "search"
+                              ? `Ver resultados en ${storeLabel}`
+                              : `Ver en ${storeLabel}`;
                         const showSimilarBanner =
                           firstNotCheap >= 0 &&
                           idx === firstNotCheap &&
@@ -572,10 +588,11 @@ export default function ComparePage() {
                                 <p className="text-green-400 font-semibold mt-1">
                                   {formatPrice(c.price)}
                                 </p>
-                                {c.outboundIsStoreSearch ? (
-                                  <p className="text-white/45 text-xs mt-2">
-                                    Enlace: búsqueda en {storeLabel} con este título (no es la ficha
-                                    del producto).
+                                {showSearchDisclaimer ? (
+                                  <p className="text-white/45 text-xs mt-2 space-y-1">
+                                    <span className="block">
+                                      Enlace de búsqueda, verifica el producto antes de comprar.
+                                    </span>
                                   </p>
                                 ) : null}
                                 <div className="mt-3 flex flex-wrap gap-2">
@@ -585,7 +602,7 @@ export default function ComparePage() {
                                     rel="noopener noreferrer"
                                     className="inline-flex items-center rounded-lg bg-green-500 px-4 py-2 text-sm font-semibold text-black hover:bg-green-400 transition"
                                   >
-                                    Ver en {storeLabel}
+                                    {outboundButtonLabel}
                                   </a>
                                   <button
                                     type="button"
