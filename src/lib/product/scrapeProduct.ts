@@ -712,11 +712,14 @@ function pickPrice(
  * Fetches a product page with stealth (Chrome/macOS) headers and extracts name/price
  * via DOM/meta patterns first, then JSON-LD in application/ld+json, then og:price.
  */
-export async function scrapeProduct(url: string): Promise<ScrapedProduct | null> {
+export async function scrapeProduct(
+  url: string,
+  options?: { headers?: HeadersInit }
+): Promise<ScrapedProduct | null> {
   let html: string;
   try {
     const res = await fetch(url, {
-      headers: STEALTH_HEADERS,
+      headers: options?.headers ?? STEALTH_HEADERS,
       cache: "no-store",
       redirect: "follow",
     });

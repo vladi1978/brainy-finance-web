@@ -5,7 +5,12 @@ import {
 } from "../scrapeProduct";
 import { finalizedSlugShoppingLine } from "../urlProductQuery";
 import { fetchAmazonSerpWithDiagnostics } from "../searchParse";
-import { buildNormalizedProduct, normalizeTitle } from "../normalize";
+import {
+  buildNormalizedProduct,
+  extractAmazonAsinFromUrl,
+  normalizeTitle,
+} from "../normalize";
+import { isUsablePdpTitle } from "../usablePdpTitle";
 import { isValidProductDetailUrl } from "../productDetailUrl";
 import type {
   CandidateProduct,
@@ -18,6 +23,58 @@ import type {
 } from "../types";
 
 const STORE: StoreId = "amazon";
+
+/** Second-pass PDP fetch — some bot walls serve a fuller `<title>` to Googlebot-style agents. */
+const GOOGLEBOT_PDP_HEADERS: HeadersInit = {
+  "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1)",
+  "Accept-Language": "en-US,en;q=0.9",
+};
+
+function slugSegmentBeforeAmazonAsinPath(pathname: string): string | null {
+  const m = pathname.match(
+    /\/([^/]+)\/(?:dp|gp\/product|gp\/aw\/d)\/([A-Z0-9]{10})\b/i
+  );
+  if (!m?.[1]) return null;
+  const raw = m[1];
+  if (/^[A-Z0-9]{10}$/i.test(raw)) return null;
+  try {
+    return decodeURIComponent(raw.replace(/\+/g, " "))
+      .replace(/-/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  } catch {
+    return raw.replace(/-/g, " ").replace(/\s+/g, " ").trim();
+  }
+}
+
+/**
+ * When HTML scraping fails, derive a minimal searchable line from the Amazon URL (slug + ASIN).
+ */
+function buildAmazonUrlFallbackTitle(url: string, slugLine: string): string {
+  const asin = extractAmazonAsinFromUrl(url);
+  const slugFromUtil = slugLine.replace(/\s+/g, " ").trim();
+
+  let fromPath = "";
+  try {
+    fromPath = slugSegmentBeforeAmazonAsinPath(new URL(url).pathname) ?? "";
+  } catch {
+    fromPath = "";
+  }
+
+  const candidates = [slugFromUtil, fromPath].filter(
+    (s) => s.length >= 4 && !/^dp$/i.test(s)
+  );
+  candidates.sort((a, b) => b.length - a.length);
+  const headline = candidates[0] ?? "";
+
+  const parts: string[] = [];
+  if (headline) parts.push(headline);
+  if (asin) parts.push(`ASIN ${asin}`);
+  const joined = parts.join(" — ").replace(/\s+/g, " ").trim();
+  if (joined) return joined;
+  if (asin) return `Amazon ${asin}`;
+  return "Amazon product";
+}
 
 /** TEMP: set `PRODUCT_SERP_DEBUG=1` to log provider second-pass PDP filter (remove when done). */
 function providerSerpDebug(payload: Record<string, unknown>): void {
@@ -100,14 +157,34 @@ export const amazonProvider: ProductProvider = {
   },
 
   async extractSourceProduct(url: string): Promise<SourceProduct | null> {
-    const scraped = await scrapeProduct(url);
     const slugLine = finalizedSlugShoppingLine(url);
-    const { primaryTitle, primarySource } = composeRetailShoppingTitleFromPdp({
+    let scraped = await scrapeProduct(url);
+    let { primaryTitle, primarySource } = composeRetailShoppingTitleFromPdp({
       scraped,
       slugDerivedQueryLine: slugLine,
     });
 
-    const title = primaryTitle.trim();
+    let title = primaryTitle.trim();
+
+    if (!isUsablePdpTitle(title)) {
+      const scrapedBot = await scrapeProduct(url, { headers: GOOGLEBOT_PDP_HEADERS });
+      if (scrapedBot) {
+        scraped = scrapedBot;
+        const second = composeRetailShoppingTitleFromPdp({
+          scraped: scrapedBot,
+          slugDerivedQueryLine: slugLine,
+        });
+        primarySource = second.primarySource;
+        title = second.primaryTitle.trim();
+      }
+    }
+
+    let urlFallback = false;
+    if (!isUsablePdpTitle(title)) {
+      title = buildAmazonUrlFallbackTitle(url, slugLine).trim();
+      urlFallback = true;
+    }
+
     if (!title) return null;
 
     const brandLog = scraped?.brand?.trim() || null;
@@ -119,7 +196,7 @@ export const amazonProvider: ProductProvider = {
       title,
       brand: brandLog,
       model: modelLog,
-      fallbackUsed: primarySource === "slug_path",
+      fallbackUsed: primarySource === "slug_path" || urlFallback,
     });
 
     return {

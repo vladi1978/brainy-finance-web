@@ -22,7 +22,11 @@ import {
   buildNormalizedSearchQuery,
   extractSearchQuery,
 } from "./normalize";
-import { isGenericRetailProductQuery, looksLikeAmazonAsinToken } from "./urlProductQuery";
+import {
+  isGenericRetailProductQuery,
+  looksLikeAmazonAsinToken,
+} from "./urlProductQuery";
+import { isUsablePdpTitle } from "./usablePdpTitle";
 import { findProductProviderForUrl } from "./registry";
 import { rankMatchTypes } from "./searchRelevance";
 import { getSimulatedStoreCoupons } from "../premium/couponOffers";
@@ -730,9 +734,11 @@ export async function compareProduct(
   }
 
   let scrapedSource: SourceProduct | null = null;
+  let attemptedPdpExtract = false;
   if (parsed.inputUrl && !demoMode) {
     const urlProvider = findProductProviderForUrl(parsed.inputUrl);
     if (urlProvider) {
+      attemptedPdpExtract = true;
       try {
         scrapedSource = await urlProvider.extractSourceProduct(parsed.inputUrl);
       } catch (err) {
@@ -745,7 +751,10 @@ export async function compareProduct(
     }
   }
 
-  const scrapedOk = Boolean(scrapedSource?.title?.trim());
+  const scrapedOk = Boolean(
+    scrapedSource && isUsablePdpTitle(scrapedSource.title)
+  );
+  const scrapeBotWalled = attemptedPdpExtract && !scrapedOk;
   const referenceProductQuery = scrapedOk
     ? scrapedSource!.title.trim()
     : (
@@ -770,6 +779,7 @@ export async function compareProduct(
       savings: null,
       comparisonMessage:
         "Could not derive a product description from that input.",
+      scrapeBotWalled,
     };
   }
 
@@ -1134,6 +1144,7 @@ export async function compareProduct(
         : shoppingApiMissing
           ? "Shopping API credentials missing."
           : "No priced listings found for that search.",
+      scrapeBotWalled,
       ...(tracePayload() ? { comparisonTrace: tracePayload()! } : {}),
     };
   }
@@ -1230,6 +1241,7 @@ export async function compareProduct(
     alternatives,
     savings,
     comparisonMessage,
+    scrapeBotWalled,
     ...(tracePayload() ? { comparisonTrace: tracePayload()! } : {}),
   };
 }

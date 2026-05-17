@@ -333,6 +333,11 @@ export type CompareProductResponse = {
   confidence: CompareConfidence | null;
   /** User-facing summary when ambiguous or empty */
   message: string | null;
+  /**
+   * True when a pasted store PDP URL was scraped but the listing title looked like a bot wall
+   * or unusable snippet — callers may prompt for a manual product name.
+   */
+  scrapeBotWalled?: boolean;
   sourceProduct: {
     sourceUrl?: string;
     store: string;

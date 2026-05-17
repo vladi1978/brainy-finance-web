@@ -454,6 +454,12 @@ export default function ComparePage() {
 
           {result && (
             <div className="space-y-6">
+              {result.scrapeBotWalled && (
+                <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-amber-100 text-sm">
+                  We couldn&apos;t read this page automatically. Try pasting the product name instead.
+                </div>
+              )}
+
               {result.normalizedQuery && (
                 <p className="text-white/50 text-sm">
                   Search:{" "}
