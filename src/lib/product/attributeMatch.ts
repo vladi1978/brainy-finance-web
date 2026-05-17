@@ -5,25 +5,25 @@ import {
   shouldApplyCriticalKindPhraseSoftPenalty,
   shouldApplyTvSizeIncompleteSoftPenalty,
 } from "./match";
-import type { NormalizedProduct } from "./types";
-import type { SearchMatchType } from "./types";
+import type { CompareConfidence, NormalizedProduct, SearchMatchType } from "./types";
 import { scoreQueryRelevance } from "./searchRelevance";
 
 export type AttributeMatchResult = {
   confidence: number;
   matchType: SearchMatchType;
+  /** Qualitative tier aligned with API `matchConfidenceLabel` */
+  matchConfidenceLabel: CompareConfidence;
   relevanceScore: number;
   reasons: string[];
   rejected: boolean;
   rejectionReason: string | null;
 };
 
-/** Hard gates failed — never surface in UI. */
-const MIN_COMBINED_RELEVANCE = 32;
+/** Below this blended score, reject (cannot confirm a meaningful substitute). */
+const MIN_COMBINED_RELEVANCE = 15;
 
-/** Tier thresholds on blended 0–100 score */
-const TIER_HIGH = 70;
-const TIER_MEDIUM = 46;
+/** At or above: treat as exact / high-confidence same-or-equivalent product for ranking and best-deal logic. */
+const TIER_HIGH_CONFIDENCE = 32;
 
 /** Lower structured-component score when reference critical dims are absent from candidate text. */
 const CRITICAL_DIM_SOFT_PENALTY_EACH = 12;
@@ -49,6 +49,7 @@ export function scoreAttributeMatch(
     return {
       confidence: 0,
       matchType: "low",
+      matchConfidenceLabel: "low",
       relevanceScore: 0,
       reasons: [`hard_gate:${gate.reason}`],
       rejected: true,
@@ -100,6 +101,7 @@ export function scoreAttributeMatch(
     return {
       confidence: blended / 100,
       matchType: "low",
+      matchConfidenceLabel: "low",
       relevanceScore: blended,
       reasons: [...reasons, detail],
       rejected: true,
@@ -108,15 +110,22 @@ export function scoreAttributeMatch(
   }
 
   let matchType: SearchMatchType;
-  if (blended >= TIER_HIGH) matchType = "high";
-  else if (blended >= TIER_MEDIUM) matchType = "medium";
-  else matchType = "low";
+  let matchConfidenceLabel: CompareConfidence;
+  if (blended >= TIER_HIGH_CONFIDENCE) {
+    matchType = "high";
+    matchConfidenceLabel = "high";
+  } else {
+    matchType = "similar_product";
+    matchConfidenceLabel = "medium";
+    reasons.push("tier:similar_product(cross_retailer_naming)");
+  }
 
   const confidence = Math.min(1, blended / 100);
 
   return {
     confidence,
     matchType,
+    matchConfidenceLabel,
     relevanceScore: blended,
     reasons,
     rejected: false,

@@ -22,11 +22,14 @@ function MatchBadge({ type }: { type: CompareApiCandidate["matchType"] }) {
     high: "bg-green-500/20 text-green-300 border-green-500/40",
     medium: "bg-amber-500/20 text-amber-200 border-amber-500/40",
     low: "bg-white/10 text-white/60 border-white/20",
+    similar_product:
+      "bg-sky-500/15 text-sky-200 border-sky-500/35",
   };
   const labels: Record<CompareApiCandidate["matchType"], string> = {
     high: "Strong match",
     medium: "Possible match",
     low: "Broad match",
+    similar_product: "Similar product",
   };
   return (
     <span

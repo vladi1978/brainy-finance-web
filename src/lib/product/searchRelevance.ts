@@ -59,6 +59,11 @@ export function scoreQueryRelevance(
 }
 
 export function rankMatchTypes(a: SearchMatchType, b: SearchMatchType): number {
-  const order: Record<SearchMatchType, number> = { high: 0, medium: 1, low: 2 };
+  const order: Record<SearchMatchType, number> = {
+    high: 0,
+    similar_product: 1,
+    medium: 2,
+    low: 3,
+  };
   return order[a] - order[b];
 }

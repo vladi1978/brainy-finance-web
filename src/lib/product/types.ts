@@ -67,8 +67,17 @@ export type StructuredProduct = {
 /** User-facing match level for MVP comparisons. */
 export type MatchConfidenceLabel = "exact" | "equivalent" | "alternative";
 
-/** Search relevance bucket (query vs listing) — used by the comparison API. */
-export type SearchMatchType = "high" | "medium" | "low";
+/**
+ * Match bucket for comparison API rows.
+ * - `high`: strong attribute + query alignment (blended score ≥ exact tier)
+ * - `similar_product`: passed gates with medium blended score (cross-retailer naming variance)
+ * - `medium` / `low`: keyword-only tiers inside `scoreQueryRelevance` (internal / legacy)
+ */
+export type SearchMatchType =
+  | "high"
+  | "medium"
+  | "low"
+  | "similar_product";
 
 /** Buckets for display-type strict matching (TVs). */
 export type TvDisplayTechBucket =
@@ -274,6 +283,8 @@ export type PremiumCouponOffer = {
   source: "simulated" | "partner_api";
 };
 
+export type CompareConfidence = "high" | "medium" | "low";
+
 export type CompareProductDeal = {
   store: string;
   title: string;
@@ -284,6 +295,8 @@ export type CompareProductDeal = {
   imageUrl: string | null;
   /** 0–1 combined attribute + query relevance */
   confidence: number;
+  /** Qualitative tier (UI / API); pairs with numeric `confidence` */
+  matchConfidenceLabel: CompareConfidence;
   matchType: SearchMatchType;
   /** 0–100 attribute-heavy match score */
   relevanceScore: number;
@@ -304,6 +317,8 @@ export type CompareApiCandidate = {
   normalized: NormalizedProduct;
   /** 0–1 combined attribute + query relevance */
   confidence: number;
+  /** Qualitative tier (UI / API); pairs with numeric `confidence` */
+  matchConfidenceLabel: CompareConfidence;
   matchType: SearchMatchType;
   /** 0–100 attribute-heavy match score */
   relevanceScore: number;
@@ -313,8 +328,6 @@ export type CompareApiCandidate = {
   /** Premium: active-style coupons for this retailer/category (simulated until partner APIs) */
   premiumCoupons?: PremiumCouponOffer[];
 };
-
-export type CompareConfidence = "high" | "medium" | "low";
 
 /** API payload — dashboard reads `bestDeal`, `candidates`, `comparisonMessage`. */
 export type CompareProductResponse = {

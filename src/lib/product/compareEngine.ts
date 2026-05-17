@@ -581,9 +581,11 @@ function relevanceReasonLine(rel: AttributeMatchResult): string {
   const label =
     rel.matchType === "high"
       ? "Strong attribute match"
-      : rel.matchType === "medium"
-        ? "Moderate attribute match"
-        : "Related listing";
+      : rel.matchType === "similar_product"
+        ? "Similar product (possible equivalent)"
+        : rel.matchType === "medium"
+          ? "Moderate attribute match"
+          : "Related listing";
   return `${label}: ${rel.matchType} (${Math.round(rel.confidence * 100)}% confidence, score ${rel.relevanceScore})`;
 }
 
@@ -603,6 +605,7 @@ function toCompareApiCandidate(
     imageUrl: c.imageUrl,
     normalized: c.normalized,
     confidence: rel.confidence,
+    matchConfidenceLabel: rel.matchConfidenceLabel,
     matchType: rel.matchType,
     relevanceScore: rel.relevanceScore,
     score: rel.relevanceScore,
@@ -624,6 +627,7 @@ function toDeal(
     affiliateUrl: row.affiliateUrl,
     imageUrl: row.imageUrl,
     confidence: rel.confidence,
+    matchConfidenceLabel: rel.matchConfidenceLabel,
     matchType: rel.matchType,
     relevanceScore: rel.relevanceScore,
     score: rel.relevanceScore,
@@ -668,7 +672,12 @@ function overallConfidenceFromDeal(
 ): CompareConfidence | null {
   if (!deal) return null;
   if (deal.matchType === "high" && deal.confidence >= 0.6) return "high";
-  if (deal.matchType === "high" || deal.matchType === "medium") return "medium";
+  if (
+    deal.matchType === "high" ||
+    deal.matchType === "medium" ||
+    deal.matchType === "similar_product"
+  )
+    return "medium";
   return "low";
 }
 
