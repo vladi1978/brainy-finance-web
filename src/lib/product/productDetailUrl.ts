@@ -104,8 +104,12 @@ function isRetailerSearchLandingUrl(store: ProductDetailStoreKey, u: URL): boole
       const sk = searchParamValueInsensitive(u.searchParams, "search_key");
       return Boolean(sk?.trim());
     }
-    case "lowes":
-      return false;
+    case "lowes": {
+      const plNorm = pl.replace(/\/+$/, "");
+      if (plNorm !== "/search" && !plNorm.startsWith("/search?")) return false;
+      const term = searchParamValueInsensitive(u.searchParams, "searchterm");
+      return Boolean(term?.trim());
+    }
     default:
       return false;
   }

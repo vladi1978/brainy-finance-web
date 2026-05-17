@@ -318,7 +318,8 @@ export default function ComparePage() {
                 <p className="text-green-400 font-semibold mt-1">{formatPrice(best.price)}</p>
                 {result!.savings != null && result!.savings > 0 && (
                   <p className="text-white/70 text-sm mt-2">
-                    Up to {formatPrice(result!.savings)} spread among strong matches
+                    Hasta {formatPrice(result!.savings)} menos vs tu precio de referencia entre opciones
+                    más baratas
                   </p>
                 )}
               </div>
@@ -480,10 +481,11 @@ export default function ComparePage() {
               {!showBest && result.candidates.length > 0 && (
                 <div>
                   <h3 className="text-xl font-semibold text-white mb-1">
-                    {result.comparisonMessage ?? "Closest matches found"}
+                    {result.comparisonMessage ?? "Coincidencias"}
                   </h3>
                   <p className="text-white/50 text-sm mb-4">
-                    We need at least two strong matches to highlight a single best deal.
+                    Los enlaces abren una búsqueda en cada tienda con el título del listado para que
+                    encuentres la ficha equivalente.
                   </p>
                 </div>
               )}
@@ -500,78 +502,106 @@ export default function ComparePage() {
                     Store results
                   </h4>
                   <ul className="space-y-3">
-                    {result.candidates.map((c) => {
-                      const isWinner =
-                        showBest &&
-                        best &&
-                        c.productUrl === best.productUrl &&
-                        c.store === best.store;
-                      const outbound = c.affiliateUrl || c.productUrl;
-                      return (
-                      <li
-                        key={`${c.store}-${c.productUrl}`}
-                        className={`flex gap-4 rounded-xl border p-4 ${
-                          isWinner
-                            ? "border-green-500/50 bg-green-500/10"
-                            : "border-white/10 bg-black/30"
-                        }`}
-                      >
-                        {c.imageUrl ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={c.imageUrl}
-                            alt=""
-                            className="h-20 w-20 rounded-lg object-contain bg-white/5 shrink-0"
-                          />
-                        ) : (
-                          <div className="h-20 w-20 rounded-lg bg-white/5 shrink-0" />
-                        )}
-                        <div className="flex-1 min-w-0">
-                          <div className="flex flex-wrap items-center gap-2 mb-2">
-                            <StoreLogo store={c.store} />
-                            <div className="flex flex-wrap items-center gap-2">
-                              {isWinner && (
-                                <span className="text-xs font-semibold text-green-400 uppercase">
-                                  Best price
-                                </span>
+                    {(() => {
+                      const firstNotCheap = result.candidates.findIndex(
+                        (c) => c.priceCompareSegment === "not_cheaper"
+                      );
+                      return result.candidates.map((c, idx) => {
+                        const isWinner =
+                          showBest &&
+                          best &&
+                          c.productUrl === best.productUrl &&
+                          c.store === best.store;
+                        const outbound = c.affiliateUrl || c.productUrl;
+                        const storeLabel = storeDisplayLabel(c.store);
+                        const showSimilarBanner =
+                          firstNotCheap >= 0 &&
+                          idx === firstNotCheap &&
+                          firstNotCheap > 0;
+                        const savingsVs = c.savingsVsReference;
+                        return (
+                          <li key={`${c.store}-${c.productUrl}-${idx}`}>
+                            {showSimilarBanner && (
+                              <p className="text-sm text-amber-200/95 mb-3 rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2">
+                                No es más barato, pero es similar
+                              </p>
+                            )}
+                            <div
+                              className={`flex gap-4 rounded-xl border p-4 ${
+                                isWinner
+                                  ? "border-green-500/50 bg-green-500/10"
+                                  : "border-white/10 bg-black/30"
+                              }`}
+                            >
+                              {c.imageUrl ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img
+                                  src={c.imageUrl}
+                                  alt=""
+                                  className="h-20 w-20 rounded-lg object-contain bg-white/5 shrink-0"
+                                />
+                              ) : (
+                                <div className="h-20 w-20 rounded-lg bg-white/5 shrink-0" />
                               )}
-                              <span className="text-white/80 text-sm font-medium">
-                                {storeDisplayLabel(c.store)}
-                              </span>
-                              <MatchBadge type={c.matchType} />
-                              <span className="text-white/40 text-sm">
-                                {Math.round(c.confidence * 100)}%
-                              </span>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex flex-wrap items-center gap-2 mb-2">
+                                  <StoreLogo store={c.store} />
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    {isWinner && (
+                                      <span className="text-xs font-semibold text-green-400 uppercase">
+                                        Best price
+                                      </span>
+                                    )}
+                                    <span className="text-white/80 text-sm font-medium">
+                                      {storeLabel}
+                                    </span>
+                                    <MatchBadge type={c.matchType} />
+                                    <span className="text-white/40 text-sm">
+                                      {Math.round(c.confidence * 100)}%
+                                    </span>
+                                    {savingsVs != null && savingsVs > 0 ? (
+                                      <span className="text-xs font-semibold text-green-400 rounded-md border border-green-500/40 bg-green-500/15 px-2 py-0.5">
+                                        Ahorra {formatPrice(savingsVs)}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                </div>
+                                <p className="font-medium text-white line-clamp-2">
+                                  {c.title}
+                                </p>
+                                <p className="text-green-400 font-semibold mt-1">
+                                  {formatPrice(c.price)}
+                                </p>
+                                {c.outboundIsStoreSearch ? (
+                                  <p className="text-white/45 text-xs mt-2">
+                                    Enlace: búsqueda en {storeLabel} con este título (no es la ficha
+                                    del producto).
+                                  </p>
+                                ) : null}
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  <a
+                                    href={outbound}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center rounded-lg bg-green-500 px-4 py-2 text-sm font-semibold text-black hover:bg-green-400 transition"
+                                  >
+                                    Ver en {storeLabel}
+                                  </a>
+                                  <button
+                                    type="button"
+                                    onClick={() => void trackPrice(c)}
+                                    className="inline-flex items-center rounded-lg border border-white/20 bg-white/5 px-4 py-2 text-sm font-medium text-white/90 hover:bg-white/10"
+                                  >
+                                    Rastrear precio
+                                  </button>
+                                </div>
+                                <CouponsPanel coupons={c.premiumCoupons ?? []} />
+                              </div>
                             </div>
-                          </div>
-                          <p className="font-medium text-white line-clamp-2">
-                            {c.title}
-                          </p>
-                          <p className="text-green-400 font-semibold mt-1">
-                            {formatPrice(c.price)}
-                          </p>
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            <a
-                              href={outbound}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center rounded-lg bg-green-500 px-4 py-2 text-sm font-semibold text-black hover:bg-green-400 transition"
-                            >
-                              Ir a la tienda
-                            </a>
-                            <button
-                              type="button"
-                              onClick={() => void trackPrice(c)}
-                              className="inline-flex items-center rounded-lg border border-white/20 bg-white/5 px-4 py-2 text-sm font-medium text-white/90 hover:bg-white/10"
-                            >
-                              Rastrear precio
-                            </button>
-                          </div>
-                          <CouponsPanel coupons={c.premiumCoupons ?? []} />
-                        </div>
-                      </li>
-                    );
-                    })}
+                          </li>
+                        );
+                      });
+                    })()}
                   </ul>
                 </div>
               )}

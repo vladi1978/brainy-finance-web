@@ -19,7 +19,7 @@ export type AttributeMatchResult = {
   rejectionReason: string | null;
 };
 
-/** Below this blended score, reject (cannot confirm a meaningful substitute). */
+/** Obvious mismatches and noise fall below this; `similar_product` stays from this score up. */
 const MIN_COMBINED_RELEVANCE = 15;
 
 /** At or above: treat as exact / high-confidence same-or-equivalent product for ranking and best-deal logic. */

@@ -303,6 +303,9 @@ export type CompareProductDeal = {
   relevanceReason: string;
   score?: number;
   premiumCoupons?: PremiumCouponOffer[];
+  savingsVsReference?: number | null;
+  priceCompareSegment?: "cheaper" | "not_cheaper" | "unknown";
+  outboundIsStoreSearch?: boolean;
 };
 
 /** Search-first API candidate (shared shape across stores). */
@@ -327,6 +330,18 @@ export type CompareApiCandidate = {
   score?: number;
   /** Premium: active-style coupons for this retailer/category (simulated until partner APIs) */
   premiumCoupons?: PremiumCouponOffer[];
+  /**
+   * When the source listing had a comparable price: USD saved vs that reference
+   * (only set for `priceCompareSegment === "cheaper"`).
+   */
+  savingsVsReference?: number | null;
+  /** Grouping for cheaper-first UI when a reference price exists */
+  priceCompareSegment?: "cheaper" | "not_cheaper" | "unknown";
+  /**
+   * Outbound button opens a store search for the listing title (not a verified PDP).
+   * Kept explicit so the UI does not imply a direct product page.
+   */
+  outboundIsStoreSearch?: boolean;
 };
 
 /** API payload — dashboard reads `bestDeal`, `candidates`, `comparisonMessage`. */
@@ -335,12 +350,12 @@ export type CompareProductResponse = {
   query: string;
   /** Normalized multi-field search string sent to stores */
   normalizedQuery: string;
-  /** All candidates (search relevance scored), sorted by match strength then price */
+  /** All candidates (match-scored), ordered for display (cheaper-first when reference price exists), capped at 10 */
   candidates: CompareApiCandidate[];
   /** Same listings grouped by retailer */
   resultsByStore: { store: StoreId; candidates: CompareApiCandidate[] }[];
   bestDeal: CompareProductDeal | null;
-  /** True only when ≥2 high-confidence matches exist and a cheapest pick is highlighted */
+  /** True when a primary pick (`bestDeal`) is highlighted among returned candidates */
   showBestDeal: boolean;
   /** Overall certainty of the highlighted best deal when present */
   confidence: CompareConfidence | null;
@@ -361,7 +376,7 @@ export type CompareProductResponse = {
   } | null;
   /** Other high-confidence listings when `showBestDeal` (excluding the chosen row) */
   alternatives: CompareProductDeal[];
-  /** Spread among high-tier priced listings when best deal is shown (max − min price) */
+  /** Maximum savings vs reference price among cheaper alternatives (when reference price exists) */
   savings: number | null;
   /** e.g. "Closest matches found" when no best-deal banner */
   comparisonMessage?: string | null;

@@ -33,6 +33,7 @@ import { getSimulatedStoreCoupons } from "../premium/couponOffers";
 import {
   isProductDetailStoreKey,
   isValidProductDetailUrl,
+  type ProductDetailStoreKey,
 } from "./productDetailUrl";
 import type {
   CandidateProduct,
@@ -464,7 +465,34 @@ const DEMO_STORES: StoreId[] = [
   "lowes",
 ];
 
-const MIN_HIGH_CONFIDENCE_FOR_BEST_DEAL = 2;
+/** Max store rows returned in `candidates` / UI lists */
+const DISPLAY_LIMIT = 10;
+
+/**
+ * Retailer search URL using the listing title (honest fallback when PDP/affiliate links are unreliable).
+ */
+export function buildRetailerSearchUrlFromTitle(store: StoreId, title: string): string {
+  const q = title.replace(/\s+/g, " ").trim();
+  const enc = encodeURIComponent(q || " ");
+  switch (store) {
+    case "amazon":
+      return `https://www.amazon.com/s?k=${enc}`;
+    case "walmart":
+      return `https://www.walmart.com/search?q=${enc}`;
+    case "target":
+      return `https://www.target.com/s?searchTerm=${enc}`;
+    case "temu":
+      return `https://www.temu.com/search_result.html?search_key=${enc}`;
+    case "bestbuy":
+      return `https://www.bestbuy.com/site/searchpage.jsp?st=${enc}`;
+    case "homedepot":
+      return `https://www.homedepot.com/s/${enc}`;
+    case "lowes":
+      return `https://www.lowes.com/search?searchTerm=${enc}`;
+    default:
+      return `https://www.google.com/search?q=${enc}`;
+  }
+}
 
 function isValidComparablePrice(price: number | null | undefined): boolean {
   return price != null && Number.isFinite(price) && price > 0;
@@ -611,6 +639,7 @@ function toCompareApiCandidate(
     score: rel.relevanceScore,
     relevanceReason: relevanceReasonLine(rel),
     premiumCoupons,
+    outboundIsStoreSearch: true,
   };
 }
 
@@ -633,6 +662,9 @@ function toDeal(
     score: rel.relevanceScore,
     relevanceReason: relevanceReasonLine(rel),
     premiumCoupons: row.premiumCoupons,
+    savingsVsReference: row.savingsVsReference,
+    priceCompareSegment: row.priceCompareSegment,
+    outboundIsStoreSearch: row.outboundIsStoreSearch,
   };
 }
 
@@ -645,6 +677,69 @@ function sortCandidatesForDisplay(rows: CompareApiCandidate[]): CompareApiCandid
     const pb = b.price ?? Number.POSITIVE_INFINITY;
     return pa - pb;
   });
+}
+
+function annotateAndOrderCandidates(
+  apis: CompareApiCandidate[],
+  referencePrice: number | null
+): CompareApiCandidate[] {
+  const refOk = referencePrice != null && isValidComparablePrice(referencePrice);
+  const annotated = apis.map((api) => {
+    if (!refOk) {
+      return {
+        ...api,
+        priceCompareSegment: "unknown" as const,
+        savingsVsReference: null,
+      };
+    }
+    const p = api.price;
+    if (!isValidComparablePrice(p)) {
+      return {
+        ...api,
+        priceCompareSegment: "unknown" as const,
+        savingsVsReference: null,
+      };
+    }
+    const price = p as number;
+    const cheaper = price < referencePrice!;
+    return {
+      ...api,
+      priceCompareSegment: cheaper ? ("cheaper" as const) : ("not_cheaper" as const),
+      savingsVsReference: cheaper ? referencePrice! - price : null,
+    };
+  });
+
+  if (!refOk) {
+    return sortCandidatesForDisplay(annotated);
+  }
+
+  const cheaper = annotated.filter((c) => c.priceCompareSegment === "cheaper");
+  const notCheaper = annotated.filter((c) => c.priceCompareSegment === "not_cheaper");
+  const unknown = annotated.filter((c) => c.priceCompareSegment === "unknown");
+
+  cheaper.sort((a, b) => {
+    const pa = a.price ?? Number.POSITIVE_INFINITY;
+    const pb = b.price ?? Number.POSITIVE_INFINITY;
+    if (pa !== pb) return pa - pb;
+    return rankMatchTypes(a.matchType, b.matchType);
+  });
+  notCheaper.sort((a, b) => {
+    const t = rankMatchTypes(a.matchType, b.matchType);
+    if (t !== 0) return t;
+    if (b.confidence !== a.confidence) return b.confidence - a.confidence;
+    const pa = a.price ?? Number.POSITIVE_INFINITY;
+    const pb = b.price ?? Number.POSITIVE_INFINITY;
+    return pa - pb;
+  });
+  unknown.sort((a, b) => {
+    const t = rankMatchTypes(a.matchType, b.matchType);
+    if (t !== 0) return t;
+    if (b.confidence !== a.confidence) return b.confidence - a.confidence;
+    const pa = a.price ?? Number.POSITIVE_INFINITY;
+    const pb = b.price ?? Number.POSITIVE_INFINITY;
+    return pa - pb;
+  });
+  return [...cheaper, ...notCheaper, ...unknown];
 }
 
 function groupByStore(rows: CompareApiCandidate[]): {
@@ -943,10 +1038,15 @@ export async function compareProduct(
     }
   }
 
-  const affiliateFor = (c: CandidateProduct) => toAffiliateUrl(c.productUrl, c.store);
-
   const candidateSteps: CandidateStepTrace[] = [];
   const queryForMatch = `${referenceProductQuery} ${normalizedQuery}`.trim();
+
+  const referenceListPrice: number | null =
+    scrapedOk && scrapedSource && isValidComparablePrice(scrapedSource.originalPrice)
+      ? scrapedSource.originalPrice
+      : priceFromManual != null && isValidComparablePrice(priceFromManual)
+        ? priceFromManual
+        : null;
 
   type Row = {
     api: CompareApiCandidate;
@@ -1007,6 +1107,25 @@ export async function compareProduct(
       continue;
     }
 
+    if (!isValidComparablePrice(c.price)) {
+      candidateSteps.push({
+        key: candidateKey(c, candidateSteps.length),
+        store: c.store,
+        title: c.title,
+        price: c.price,
+        productUrl: c.productUrl,
+        outcome: "rejected_hard_gate",
+        rejectionReason: "missing_price",
+        detail: "missing_price",
+      });
+      pipelineLog("candidate_rejected", {
+        store: c.store,
+        title: c.title.slice(0, 80),
+        reason: "missing_price",
+      });
+      continue;
+    }
+
     // Structured gates favor similar cross-retailer substitutes (strict only on gross mismatches).
     const rel = scoreAttributeMatch(
       referenceNormalized,
@@ -1041,7 +1160,13 @@ export async function compareProduct(
     }
 
     const coupons = getSimulatedStoreCoupons(c.store, c.normalized.category);
-    const api = toCompareApiCandidate(c, rel, affiliateFor(c), coupons);
+    const outboundSearch = buildRetailerSearchUrlFromTitle(c.store, c.title);
+    const api = toCompareApiCandidate(
+      c,
+      rel,
+      toAffiliateUrl(outboundSearch, c.store),
+      coupons
+    );
     rows.push({ api, rel });
 
     candidateSteps.push({
@@ -1054,7 +1179,9 @@ export async function compareProduct(
       matchConfidence: undefined,
       matchScore: rel.relevanceScore,
       matchReasons: rel.reasons,
-      eligibleForComparable: rel.matchType === "high",
+      eligibleForComparable:
+        (rel.matchType === "high" || rel.matchType === "similar_product") &&
+        rel.relevanceScore >= 15,
       detail: `attribute_match:${rel.matchType}`,
     });
 
@@ -1066,11 +1193,18 @@ export async function compareProduct(
     });
   }
 
-  const flatSorted = sortCandidatesForDisplay(rows.map((r) => r.api)).filter(
-    (api) =>
-      isProductDetailStoreKey(api.store) &&
-      isValidProductDetailUrl(api.store, api.productUrl)
-  );
+  const baseFiltered = rows
+    .map((r) => r.api)
+    .filter(
+      (api) =>
+        isProductDetailStoreKey(api.store) &&
+        isValidProductDetailUrl(api.store, api.productUrl)
+    );
+
+  const orderedForDisplay = annotateAndOrderCandidates(
+    baseFiltered,
+    referenceListPrice
+  ).slice(0, DISPLAY_LIMIT);
 
   const sourceProduct =
     scrapedOk && scrapedSource
@@ -1082,7 +1216,12 @@ export async function compareProduct(
         );
 
   const selectionBase: SelectionTrace = {
-    trustworthyCount: rows.filter((r) => r.rel.matchType === "high").length,
+    trustworthyCount: rows.filter(
+      (r) =>
+        (r.rel.matchType === "high" ||
+          (r.rel.matchType === "similar_product" && r.rel.relevanceScore >= 15)) &&
+        !r.rel.rejected
+    ).length,
     pickedStore: null,
     reasonNoDeal: null,
   };
@@ -1123,7 +1262,7 @@ export async function compareProduct(
       d.hints.includes("no_shopping_api_key_or_failed")
     );
 
-  if (flatSorted.length === 0) {
+  if (orderedForDisplay.length === 0) {
     const allFilteredByAttributes = deduped.length > 0 && rows.length === 0;
     pipelineLog("selection_final", {
       bestDeal: null,
@@ -1159,13 +1298,10 @@ export async function compareProduct(
     };
   }
 
-  const highPriced = rows.filter(
-    (r) =>
-      r.rel.matchType === "high" &&
-      isValidComparablePrice(r.api.price) &&
-      isProductDetailStoreKey(r.api.store) &&
-      isValidProductDetailUrl(r.api.store, r.api.productUrl)
-  );
+  const rowForApi = (api: CompareApiCandidate): Row | undefined =>
+    rows.find(
+      (r) => r.api.store === api.store && r.api.productUrl === api.productUrl
+    );
 
   let bestDeal: CompareProductDeal | null = null;
   let alternatives: CompareProductDeal[] = [];
@@ -1174,66 +1310,78 @@ export async function compareProduct(
   let message: string | null = null;
   let comparisonMessage: string | null = null;
 
-  if (highPriced.length >= MIN_HIGH_CONFIDENCE_FOR_BEST_DEAL) {
-    highPriced.sort(
-      (a, b) =>
-        (a.api.price ?? Number.POSITIVE_INFINITY) -
-        (b.api.price ?? Number.POSITIVE_INFINITY)
-    );
-    const winner = highPriced[0]!;
-    const rest = highPriced.slice(1);
-    bestDeal = toDeal(winner.api, winner.rel);
-    alternatives = rest
-      .filter(
-        (x) =>
-          isProductDetailStoreKey(x.api.store) &&
-          isValidProductDetailUrl(x.api.store, x.api.productUrl)
-      )
-      .map((x) => toDeal(x.api, x.rel));
-    showBestDeal = true;
-    const prices = highPriced
-      .map((x) => x.api.price)
-      .filter(isValidComparablePrice) as number[];
-    if (prices.length >= 2) {
-      savings = Math.max(...prices) - Math.min(...prices);
+  if (orderedForDisplay.length > 0) {
+    const refOk =
+      referenceListPrice != null && isValidComparablePrice(referenceListPrice);
+    let bestApi: CompareApiCandidate | undefined;
+    if (refOk) {
+      bestApi = orderedForDisplay.find((c) => c.priceCompareSegment === "cheaper");
     }
+    if (!bestApi) {
+      bestApi = orderedForDisplay.find((c) => c.matchType === "high");
+    }
+    bestApi ??= orderedForDisplay[0];
+
+    const bestRow = rowForApi(bestApi);
+    if (bestRow) {
+      bestDeal = toDeal(bestApi, bestRow.rel);
+      showBestDeal = true;
+      alternatives = orderedForDisplay
+        .filter(
+          (c) =>
+            !(c.store === bestApi!.store && c.productUrl === bestApi!.productUrl)
+        )
+        .slice(0, 3)
+        .map((c) => {
+          const r = rowForApi(c);
+          return r ? toDeal(c, r.rel) : null;
+        })
+        .filter((d): d is CompareProductDeal => d != null);
+    }
+
+    const savingVals = orderedForDisplay
+      .map((c) => c.savingsVsReference)
+      .filter((x): x is number => x != null && x > 0);
+    savings = savingVals.length > 0 ? Math.max(...savingVals) : null;
+
     if (
-      !isProductDetailStoreKey(bestDeal.store) ||
-      !isValidProductDetailUrl(bestDeal.store, bestDeal.productUrl)
+      bestDeal &&
+      (!isProductDetailStoreKey(bestDeal.store) ||
+        !isValidProductDetailUrl(
+          bestDeal.store as ProductDetailStoreKey,
+          bestDeal.affiliateUrl
+        ))
     ) {
       pipelineLog("selection_final", {
         bestDeal: null,
-        reason: "invalid_product_url",
+        reason: "invalid_outbound_url",
       });
       bestDeal = null;
       alternatives = [];
       showBestDeal = false;
       savings = null;
-      comparisonMessage = "Closest matches found";
+      comparisonMessage = "Coincidencias cercanas encontradas";
       message = null;
       selectionBase.pickedStore = null;
-      selectionBase.reasonNoDeal = "invalid_product_url";
-    } else {
+      selectionBase.reasonNoDeal = "invalid_outbound_url";
+    } else if (bestDeal) {
       selectionBase.pickedStore = bestDeal.store;
       pipelineLog("selection_final_best_deal", {
         store: bestDeal.store,
         price: bestDeal.price,
-        highTierCount: highPriced.length,
+        displayedCount: orderedForDisplay.length,
       });
+    } else {
+      selectionBase.reasonNoDeal = "no_row_mapping";
+      showBestDeal = false;
     }
-  } else {
-    showBestDeal = false;
-    bestDeal = null;
-    alternatives = [];
-    savings = null;
-    comparisonMessage = "Closest matches found";
-    message = null;
-    selectionBase.reasonNoDeal = `need_at_least_${MIN_HIGH_CONFIDENCE_FOR_BEST_DEAL}_high_relevance_had_${highPriced.length}`;
-    pipelineLog("selection_final", {
-      bestDeal: null,
-      reason: selectionBase.reasonNoDeal,
-      highTierCount: highPriced.length,
-    });
+  }
+
+  if (!comparisonMessage) {
+    comparisonMessage =
+      referenceListPrice != null && isValidComparablePrice(referenceListPrice)
+        ? "Precio de referencia: primero las opciones más baratas."
+        : "Orden: coincidencia, luego precio.";
   }
 
   const confidenceOut = overallConfidenceFromDeal(bestDeal);
@@ -1241,8 +1389,8 @@ export async function compareProduct(
   return {
     query: referenceProductQuery,
     normalizedQuery,
-    candidates: flatSorted,
-    resultsByStore: groupByStore(flatSorted),
+    candidates: orderedForDisplay,
+    resultsByStore: groupByStore(orderedForDisplay),
     bestDeal,
     showBestDeal,
     confidence: confidenceOut,
