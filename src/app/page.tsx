@@ -2,7 +2,7 @@ import Link from "next/link";
 
 export default function Home() {
   return (
-    <main className="min-h-screen bg-black text-white">
+    <main className="flex min-h-screen flex-1 flex-col bg-black text-white">
       <section className="mx-auto flex max-w-6xl flex-col items-center justify-center px-6 py-24 text-center">
         <span className="mb-4 rounded-full border border-white/20 px-4 py-1 text-sm text-white/70">
           AI-Powered Savings Assistant
@@ -19,17 +19,17 @@ export default function Home() {
 
         <div className="flex flex-col gap-4 sm:flex-row">
           <Link
-            href="/dashboard"
+            href="/compare"
             className="rounded-xl bg-green-500 px-6 py-3 font-semibold text-black transition hover:bg-green-400"
           >
-            Open Dashboard
+            Open comparador
           </Link>
 
           <Link
-            href="/upload"
+            href="/statements"
             className="rounded-xl border border-white/20 px-6 py-3 font-semibold text-white transition hover:bg-white/10"
           >
-            Upload Statement
+            Extractos / suscripciones
           </Link>
         </div>
       </section>
