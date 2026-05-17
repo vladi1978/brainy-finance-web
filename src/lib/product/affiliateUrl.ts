@@ -43,7 +43,13 @@ export function toAffiliateUrl(productUrl: string, store: StoreId): string {
     }
   }
 
-  /** Future: WALMART_IMPACT_ID, TARGET_PARTNER params, etc. */
+  /**
+   * Partner shells (add query params when env is set; keep keys out of logs):
+   * Amazon: AMAZON_ASSOCIATE_TAG → `tag`
+   * Walmart / Target / Home Depot / Lowe's: e.g. WALMART_AFFILIATE_SID, TARGET_PARTNER_SUBID
+   */
+  void process.env.WALMART_AFFILIATE_SID;
+  void process.env.TARGET_PARTNER_SUBID;
   void store;
   return out;
 }

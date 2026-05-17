@@ -187,42 +187,43 @@ export function unwrapMerchantUrl(raw: string, depth = 0): string | null {
   }
 }
 
-function resolveShoppingListingUrl(rawLink: string): string | null {
+/**
+ * Resolve any Google Shopping / Serp row link to a **merchant PDP** only.
+ * Never returns google.com shopping or redirect surfaces — those leak users to Google.
+ */
+export function finalizeMerchantProductUrl(rawLink: string): string | null {
   const trimmed = rawLink.trim();
   if (!trimmed.startsWith("http")) return null;
 
-  const unwrapped = unwrapMerchantUrl(trimmed);
-  if (unwrapped) return unwrapped;
+  const resolved = unwrapMerchantUrl(trimmed);
+  if (!resolved) return null;
 
   try {
-    const u = new URL(trimmed);
-    const host = u.hostname.replace(/^www\./i, "").toLowerCase();
-    if (host !== "google.com") return null;
-    if (/^\/shopping\/product\//i.test(u.pathname)) {
-      return u.toString();
-    }
+    const host = new URL(resolved).hostname.replace(/^www\./i, "").toLowerCase();
+    if (host === "google.com" || host.endsWith(".google.com")) return null;
+    return resolved;
   } catch {
-    /* ignore */
+    return null;
   }
-
-  return null;
 }
 
-function pickRawLink(row: Record<string, unknown>): string | null {
+function pickFirstFinalMerchantUrl(row: Record<string, unknown>): string | null {
   const keys = [
-    "link",
-    "product_link",
-    "product_link_cleaned",
-    "tracking_link",
-    "direct_link",
     "merchant_link",
+    "direct_link",
+    "product_link_cleaned",
+    "product_link",
     "offer_url",
     "source_link",
+    "link",
+    "tracking_link",
     "url",
   ];
   for (const k of keys) {
     const v = row[k];
-    if (typeof v === "string" && v.startsWith("http")) return v;
+    if (typeof v !== "string" || !v.startsWith("http")) continue;
+    const u = finalizeMerchantProductUrl(v);
+    if (u) return u;
   }
   return null;
 }
@@ -309,7 +310,14 @@ function parsedItemFromShoppingRow(row: Record<string, unknown>): ParsedSerpShop
       ? row.extracted_price
       : null;
 
-  const link = pickRawLink(row);
+  const link =
+    (typeof row.merchant_link === "string" && row.merchant_link.startsWith("http")
+      ? row.merchant_link
+      : null) ||
+    (typeof row.product_link === "string" && row.product_link.startsWith("http")
+      ? row.product_link
+      : null) ||
+    (typeof row.link === "string" && row.link.startsWith("http") ? row.link : null);
   return {
     title,
     /** Raw display string preferred; fallback to extracted numeric — may be absent for weak rows */
@@ -401,10 +409,7 @@ function rowToCandidate(
         : null;
   if (!title || title.length < 3) return null;
 
-  const rawLink = pickRawLink(row);
-  if (!rawLink) return null;
-
-  const productUrl = resolveShoppingListingUrl(rawLink);
+  const productUrl = pickFirstFinalMerchantUrl(row);
   if (!productUrl) return null;
 
   let store =
@@ -414,10 +419,7 @@ function rowToCandidate(
   if (!store) return null;
   if (!isProductDetailStoreKey(store)) return null;
 
-  const googleShoppingListing = /^https:\/\/(www\.)?google\.com\/shopping\/product\//i.test(
-    productUrl
-  );
-  if (!(googleShoppingListing || isValidProductDetailUrl(store, productUrl))) return null;
+  if (!isValidProductDetailUrl(store, productUrl)) return null;
 
   const priceRaw = pickPriceRawFromRow(row);
   const price = parsePriceLoose(priceRaw ?? undefined);
@@ -439,12 +441,10 @@ function rowToCandidate(
     if (normalized.titleNorm.includes(w)) matchWords += 1;
   }
 
-  /** Google Shopping intermediary listings are weaker than direct merchant PDPs */
   let sourceConfidence =
     qWords.length > 0
       ? Math.min(0.98, 0.45 + (matchWords / qWords.length) * 0.5)
       : 0.72;
-  if (googleShoppingListing) sourceConfidence = Math.min(sourceConfidence, 0.58);
   /** No parseable numeric price — still keep row, softer confidence cap */
   if (price == null) sourceConfidence = Math.min(sourceConfidence, 0.52);
 
@@ -454,6 +454,7 @@ function rowToCandidate(
     price,
     currency: "USD",
     productUrl,
+    /** Raw merchant PDP; affiliate wrapping applied in compare pipeline */
     affiliateUrl: productUrl,
     imageUrl,
     normalized,

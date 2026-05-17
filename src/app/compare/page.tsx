@@ -1,8 +1,16 @@
 "use client";
 
-import { useState } from "react";
-import type { CompareApiCandidate, CompareProductResponse } from "@/lib/product/types";
+import { useCallback, useEffect, useState } from "react";
+import type {
+  CompareApiCandidate,
+  CompareProductResponse,
+  PremiumCouponOffer,
+} from "@/lib/product/types";
 import { manualFormHasSearchableCore } from "@/lib/product/manualProductInput";
+import type { PriceAlertSurfaceNotification } from "@/lib/premium/priceAlerts";
+import { storeDisplayLabel, storeLogoUrl } from "@/lib/premium/storeBranding";
+
+const USER_STORAGE_KEY = "brainy_finance_uid";
 
 function formatPrice(n: number | null): string {
   if (n == null || !Number.isFinite(n)) return "—";
@@ -29,6 +37,64 @@ function MatchBadge({ type }: { type: CompareApiCandidate["matchType"] }) {
   );
 }
 
+function StoreLogo({
+  store,
+  className,
+}: {
+  store: string;
+  className?: string;
+}) {
+  const src = storeLogoUrl(store);
+  const label = storeDisplayLabel(store);
+  const initial = label.slice(0, 1).toUpperCase();
+  const [imgOk, setImgOk] = useState(Boolean(src));
+
+  if (!src || !imgOk) {
+    return (
+      <div
+        className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-white/10 text-sm font-bold text-white ${className ?? ""}`}
+        aria-hidden
+      >
+        {initial}
+      </div>
+    );
+  }
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt=""
+      className={`h-11 w-11 shrink-0 rounded-lg bg-white object-contain p-1 ${className ?? ""}`}
+      onError={() => setImgOk(false)}
+    />
+  );
+}
+
+function CouponsPanel({ coupons }: { coupons: PremiumCouponOffer[] }) {
+  if (!coupons.length) return null;
+  return (
+    <div className="mt-3 rounded-lg border border-violet-500/25 bg-violet-500/10 px-3 py-2">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-violet-200/90">
+        Beneficio Brainy · cupones activos (preview)
+      </p>
+      <ul className="mt-2 space-y-2">
+        {coupons.map((o) => (
+          <li key={o.id} className="text-xs text-white/85">
+            <span className="font-medium text-violet-100">{o.headline}</span>
+            <span className="text-white/50"> — {o.detail}</span>
+            {o.code ? (
+              <span className="ml-1 rounded bg-black/30 px-1.5 py-0.5 font-mono text-violet-200">
+                {o.code}
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 type InputMode = "link" | "manual";
 
 export default function ComparePage() {
@@ -44,6 +110,103 @@ export default function ComparePage() {
   const [result, setResult] = useState<CompareProductResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+  const [userId, setUserId] = useState<string | null>(null);
+  const [priceNotifications, setPriceNotifications] = useState<
+    PriceAlertSurfaceNotification[]
+  >([]);
+  const [trackMessage, setTrackMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      let id = localStorage.getItem(USER_STORAGE_KEY);
+      if (!id) {
+        id = globalThis.crypto?.randomUUID?.() ?? `u_${Date.now()}`;
+        localStorage.setItem(USER_STORAGE_KEY, id);
+      }
+      setUserId(id);
+    } catch {
+      setUserId(`u_${Date.now()}`);
+    }
+  }, []);
+
+  const refreshPriceFeed = useCallback(async () => {
+    if (!userId) return;
+    try {
+      const res = await fetch(
+        `/api/price-alerts?userId=${encodeURIComponent(userId)}`,
+        { cache: "no-store" }
+      );
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        notifications?: PriceAlertSurfaceNotification[];
+      };
+      setPriceNotifications(data.notifications ?? []);
+    } catch {
+      /* ignore */
+    }
+  }, [userId]);
+
+  useEffect(() => {
+    void refreshPriceFeed();
+  }, [refreshPriceFeed]);
+
+  const runSweepAndRefresh = useCallback(async () => {
+    if (!userId) return;
+    try {
+      await fetch("/api/cron/price-alerts", { method: "POST" });
+      await refreshPriceFeed();
+    } catch {
+      /* ignore */
+    }
+  }, [userId, refreshPriceFeed]);
+
+  const dismissNotifications = useCallback(async () => {
+    if (!userId) return;
+    await fetch(
+      `/api/price-alerts?userId=${encodeURIComponent(userId)}&ackNotifications=1`,
+      { cache: "no-store" }
+    );
+    setPriceNotifications([]);
+  }, [userId]);
+
+  const trackPrice = async (c: CompareApiCandidate) => {
+    setTrackMessage(null);
+    if (!userId) {
+      setTrackMessage("No se pudo identificar tu sesión para guardar la alerta.");
+      return;
+    }
+    const suggested =
+      c.price != null && Number.isFinite(c.price)
+        ? String(Math.round(c.price * 0.92 * 100) / 100)
+        : "";
+    const raw = window.prompt("Precio objetivo (USD)", suggested);
+    if (raw == null) return;
+    const targetPrice = Number.parseFloat(raw.trim());
+    if (!Number.isFinite(targetPrice) || targetPrice <= 0) {
+      setTrackMessage("Precio objetivo no válido.");
+      return;
+    }
+    const outbound = c.affiliateUrl || c.productUrl;
+    const res = await fetch("/api/price-alerts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userId,
+        productUrl: outbound,
+        store: c.store,
+        title: c.title,
+        currentPrice: c.price,
+        targetPrice,
+      }),
+    });
+    const payload = (await res.json()) as { error?: string };
+    if (!res.ok) {
+      setTrackMessage(payload.error ?? "No se pudo crear la alerta.");
+      return;
+    }
+    setTrackMessage("Alerta de precio guardada. Te avisaremos cuando baje (simulación).");
+    void refreshPriceFeed();
+  };
 
   const handleCompare = async () => {
     setErrorMessage("");
@@ -93,6 +256,7 @@ export default function ComparePage() {
       }
 
       setResult(data);
+      void runSweepAndRefresh();
     } catch (error) {
       console.error("Compare error:", error);
       setErrorMessage("Something went wrong while comparing this product.");
@@ -109,9 +273,26 @@ export default function ComparePage() {
       <div className="mx-auto max-w-6xl">
         <h1 className="text-4xl font-bold mb-2">Compare Stores</h1>
         <p className="text-white/70 mb-8">
-          Amazon, Walmart, and Target — paste a link or describe the product.
-          Statements and subscriptions live in their own module.
+          Listados directos en comercios — sin pasar por Google Shopping. Pega un enlace o
+          describe el producto.
         </p>
+
+        {priceNotifications.length > 0 && (
+          <div className="mb-6 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm font-medium text-cyan-100">
+                Alerta de precio (demo): {priceNotifications[0]?.message}
+              </p>
+              <button
+                type="button"
+                onClick={() => void dismissNotifications()}
+                className="rounded-lg border border-cyan-400/40 px-3 py-1 text-xs text-cyan-100 hover:bg-white/5"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="grid md:grid-cols-3 gap-6 mb-8">
           <div className="rounded-2xl border border-white/10 p-6 bg-white/5">
@@ -124,10 +305,14 @@ export default function ComparePage() {
             <h2 className="text-xl font-semibold mb-3">Best Product Deal</h2>
             {showBest && best ? (
               <div>
+                <div className="mb-2 flex items-center gap-2">
+                  <StoreLogo store={best.store} />
+                  <p className="text-white/60 text-sm">
+                    {storeDisplayLabel(best.store)}
+                  </p>
+                </div>
                 <p className="text-lg font-bold mb-1 line-clamp-2">{best.title}</p>
-                <p className="text-green-400 font-semibold mt-1">
-                  {formatPrice(best.price)} · {best.store}
-                </p>
+                <p className="text-green-400 font-semibold mt-1">{formatPrice(best.price)}</p>
                 {result!.savings != null && result!.savings > 0 && (
                   <p className="text-white/70 text-sm mt-2">
                     Up to {formatPrice(result!.savings)} spread among strong matches
@@ -261,6 +446,12 @@ export default function ComparePage() {
             </div>
           )}
 
+          {trackMessage && (
+            <div className="mb-4 rounded-xl border border-green-500/25 bg-green-500/10 px-4 py-3 text-green-100 text-sm">
+              {trackMessage}
+            </div>
+          )}
+
           {result && (
             <div className="space-y-6">
               {result.normalizedQuery && (
@@ -273,7 +464,7 @@ export default function ComparePage() {
               {showBest && best && (
                 <p className="text-green-400/95 text-sm font-medium">
                   Best deal (among {result.candidates.filter((x) => x.matchType === "high").length}{" "}
-                  strong matches): {formatPrice(best.price)} at {best.store}
+                  strong matches): {formatPrice(best.price)} at {storeDisplayLabel(best.store)}
                 </p>
               )}
 
@@ -306,6 +497,7 @@ export default function ComparePage() {
                         best &&
                         c.productUrl === best.productUrl &&
                         c.store === best.store;
+                      const outbound = c.affiliateUrl || c.productUrl;
                       return (
                       <li
                         key={`${c.store}-${c.productUrl}`}
@@ -326,19 +518,22 @@ export default function ComparePage() {
                           <div className="h-20 w-20 rounded-lg bg-white/5 shrink-0" />
                         )}
                         <div className="flex-1 min-w-0">
-                          <div className="flex flex-wrap items-center gap-2 mb-1">
-                            {isWinner && (
-                              <span className="text-xs font-semibold text-green-400 uppercase">
-                                Best price
+                          <div className="flex flex-wrap items-center gap-2 mb-2">
+                            <StoreLogo store={c.store} />
+                            <div className="flex flex-wrap items-center gap-2">
+                              {isWinner && (
+                                <span className="text-xs font-semibold text-green-400 uppercase">
+                                  Best price
+                                </span>
+                              )}
+                              <span className="text-white/80 text-sm font-medium">
+                                {storeDisplayLabel(c.store)}
                               </span>
-                            )}
-                            <span className="text-white/50 text-sm uppercase">
-                              {c.store}
-                            </span>
-                            <MatchBadge type={c.matchType} />
-                            <span className="text-white/40 text-sm">
-                              {Math.round(c.confidence * 100)}%
-                            </span>
+                              <MatchBadge type={c.matchType} />
+                              <span className="text-white/40 text-sm">
+                                {Math.round(c.confidence * 100)}%
+                              </span>
+                            </div>
                           </div>
                           <p className="font-medium text-white line-clamp-2">
                             {c.title}
@@ -346,14 +541,24 @@ export default function ComparePage() {
                           <p className="text-green-400 font-semibold mt-1">
                             {formatPrice(c.price)}
                           </p>
-                          <a
-                            href={c.affiliateUrl || c.productUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-sm text-green-400/90 hover:text-green-300 mt-2 inline-block"
-                          >
-                            Open link
-                          </a>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <a
+                              href={outbound}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center rounded-lg bg-green-500 px-4 py-2 text-sm font-semibold text-black hover:bg-green-400 transition"
+                            >
+                              Ir a la tienda
+                            </a>
+                            <button
+                              type="button"
+                              onClick={() => void trackPrice(c)}
+                              className="inline-flex items-center rounded-lg border border-white/20 bg-white/5 px-4 py-2 text-sm font-medium text-white/90 hover:bg-white/10"
+                            >
+                              Rastrear precio
+                            </button>
+                          </div>
+                          <CouponsPanel coupons={c.premiumCoupons ?? []} />
                         </div>
                       </li>
                     );

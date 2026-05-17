@@ -25,6 +25,7 @@ import {
 import { isGenericRetailProductQuery } from "./urlProductQuery";
 import { findProductProviderForUrl } from "./registry";
 import { rankMatchTypes } from "./searchRelevance";
+import { getSimulatedStoreCoupons } from "../premium/couponOffers";
 import {
   isProductDetailStoreKey,
   isValidProductDetailUrl,
@@ -39,6 +40,7 @@ import type {
   CompareProductResponse,
   ComparisonTrace,
   NormalizedProduct,
+  PremiumCouponOffer,
   ProductCategory,
   ProviderSearchDiagnostics,
   SelectionTrace,
@@ -581,7 +583,8 @@ function relevanceReasonLine(rel: AttributeMatchResult): string {
 function toCompareApiCandidate(
   c: CandidateProduct,
   rel: AttributeMatchResult,
-  affiliateUrl: string
+  affiliateUrl: string,
+  premiumCoupons?: PremiumCouponOffer[]
 ): CompareApiCandidate {
   return {
     store: c.store,
@@ -597,6 +600,7 @@ function toCompareApiCandidate(
     relevanceScore: rel.relevanceScore,
     score: rel.relevanceScore,
     relevanceReason: relevanceReasonLine(rel),
+    premiumCoupons,
   };
 }
 
@@ -617,6 +621,7 @@ function toDeal(
     relevanceScore: rel.relevanceScore,
     score: rel.relevanceScore,
     relevanceReason: relevanceReasonLine(rel),
+    premiumCoupons: row.premiumCoupons,
   };
 }
 
@@ -1010,7 +1015,8 @@ export async function compareProduct(
       continue;
     }
 
-    const api = toCompareApiCandidate(c, rel, affiliateFor(c));
+    const coupons = getSimulatedStoreCoupons(c.store, c.normalized.category);
+    const api = toCompareApiCandidate(c, rel, affiliateFor(c), coupons);
     rows.push({ api, rel });
 
     candidateSteps.push({

@@ -260,6 +260,20 @@ export type ComparisonTrace = {
   selection: SelectionTrace;
 };
 
+/**
+ * Simulated or partner-sourced coupon row — replace `source: "simulated"` with API-backed
+ * payloads when coupon network keys are configured.
+ */
+export type PremiumCouponOffer = {
+  id: string;
+  headline: string;
+  detail: string;
+  code: string | null;
+  /** ISO 8601 end date, or null when unspecified */
+  validThrough: string | null;
+  source: "simulated" | "partner_api";
+};
+
 export type CompareProductDeal = {
   store: string;
   title: string;
@@ -275,6 +289,7 @@ export type CompareProductDeal = {
   relevanceScore: number;
   relevanceReason: string;
   score?: number;
+  premiumCoupons?: PremiumCouponOffer[];
 };
 
 /** Search-first API candidate (shared shape across stores). */
@@ -295,6 +310,8 @@ export type CompareApiCandidate = {
   relevanceReason: string;
   /** Optional duplicate of relevanceScore for API clarity (attribute match strength) */
   score?: number;
+  /** Premium: active-style coupons for this retailer/category (simulated until partner APIs) */
+  premiumCoupons?: PremiumCouponOffer[];
 };
 
 export type CompareConfidence = "high" | "medium" | "low";
