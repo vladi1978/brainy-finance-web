@@ -168,6 +168,15 @@ function isOpaquePathSegment(seg: string): boolean {
   return false;
 }
 
+/**
+ * Amazon ASIN-shaped single token (10 chars: letter + digit + 8 alphanumeric).
+ * Used to avoid using opaque IDs as shopping search queries.
+ */
+export function looksLikeAmazonAsinToken(s: string): boolean {
+  const t = s.replace(/\s+/g, "").trim();
+  return /^[A-Z]\d[A-Z0-9]{8}$/i.test(t);
+}
+
 /** True when derived query looks like hostname / site boilerplate rather than item text. */
 export function isGenericRetailProductQuery(candidate: string): boolean {
   const t = slugToSpaces(tryDecode(candidate.trim()));
@@ -235,6 +244,8 @@ export function isGenericRetailProductQuery(candidate: string): boolean {
   if (tokens.length > 0 && tokens.every((w) => stopHost.has(w))) return true;
 
   if (/^\d+$/.test(collapsed)) return true;
+
+  if (tokens.length === 1 && looksLikeAmazonAsinToken(tokens[0]!)) return true;
 
   return false;
 }
@@ -422,7 +433,9 @@ export function pathnameSlugShoppingFallback(httpUrlSansFragment: string): strin
   }
 
   weighted.length = 0;
+  /** Same as weighted path: never promote SKU/ASIN segments to the shopping query. */
   const soft = [...segs]
+    .filter((seg) => !isOpaquePathSegment(seg))
     .slice()
     .reverse()
     .map((seg) => slugToSpaces(seg.replace(/\.(?:html|htm)$/i, "")))

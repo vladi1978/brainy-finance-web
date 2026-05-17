@@ -22,7 +22,7 @@ import {
   buildNormalizedSearchQuery,
   extractSearchQuery,
 } from "./normalize";
-import { isGenericRetailProductQuery } from "./urlProductQuery";
+import { isGenericRetailProductQuery, looksLikeAmazonAsinToken } from "./urlProductQuery";
 import { findProductProviderForUrl } from "./registry";
 import { rankMatchTypes } from "./searchRelevance";
 import { getSimulatedStoreCoupons } from "../premium/couponOffers";
@@ -252,6 +252,7 @@ function pdpCompactExtractFallback(pdpTitle: string): string {
 function isUsableRetailerQuery(q: string): boolean {
   const t = q.replace(/\s+/g, " ").trim();
   if (t.length < 4) return false;
+  if (looksLikeAmazonAsinToken(t)) return false;
   if (isGenericRetailProductQuery(t)) return false;
   if (/^product$/i.test(t)) return false;
   return true;
@@ -348,7 +349,9 @@ export function buildRetailSearchQueryPack(
 
   const ensure = (s: string) => {
     const t = s.replace(/\s+/g, " ").trim();
-    return t.length >= 2 ? t : fallback;
+    if (t.length < 2) return fallback;
+    if (looksLikeAmazonAsinToken(t)) return fallback;
+    return t;
   };
 
   return {
@@ -906,18 +909,20 @@ export async function compareProduct(
   });
 
   const inputUrl = parsed.inputUrl?.trim();
-  const priced = allCandidates.filter((c) => isValidComparablePrice(c.price));
-  for (const c of allCandidates) {
-    if (!isValidComparablePrice(c.price)) {
-      pipelineLog("candidate_rejected", {
-        store: c.store,
-        title: c.title.slice(0, 80),
-        reason: "missing_or_invalid_price",
+  const deduped = dedupeByStoreAndUrl(allCandidates);
+
+  if (debug) {
+    const missingPrice = allCandidates.filter((c) => !isValidComparablePrice(c.price));
+    if (missingPrice.length > 0) {
+      traceLog("candidates_missing_parseable_price", {
+        count: missingPrice.length,
+        sample: missingPrice.slice(0, 5).map((c) => ({
+          store: c.store,
+          title: c.title.slice(0, 80),
+        })),
       });
     }
   }
-
-  const deduped = dedupeByStoreAndUrl(priced);
 
   const affiliateFor = (c: CandidateProduct) => toAffiliateUrl(c.productUrl, c.store);
 
@@ -1102,7 +1107,11 @@ export async function compareProduct(
     const allFilteredByAttributes = deduped.length > 0 && rows.length === 0;
     pipelineLog("selection_final", {
       bestDeal: null,
-      reason: allFilteredByAttributes ? "all_candidates_failed_attribute_gates" : "no_priced_candidates",
+      reason: allFilteredByAttributes
+        ? "all_candidates_failed_attribute_gates"
+        : deduped.length === 0
+          ? "no_shopping_candidates"
+          : "no_results_after_post_processing",
     });
     return {
       query: referenceProductQuery,

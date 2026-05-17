@@ -1,5 +1,8 @@
 import type { StoreId } from "./types";
-import { isGenericRetailProductQuery } from "./urlProductQuery";
+import {
+  isGenericRetailProductQuery,
+  looksLikeAmazonAsinToken,
+} from "./urlProductQuery";
 
 export type ScrapedProduct = {
   /** Listing / PDP-visible product title when parseable — may be empty when only meta/sku cues exist */
@@ -827,7 +830,9 @@ export function composeRetailShoppingTitleFromPdp(opts: {
   const listing = scraped?.productName?.replace(/\s+/g, " ").trim() ?? "";
 
   const slugOk =
-    slug.length >= 5 && !isGenericRetailProductQuery(slug);
+    slug.length >= 5 &&
+    !isGenericRetailProductQuery(slug) &&
+    !looksLikeAmazonAsinToken(slug);
 
   const scrapedListingOk =
     listing.length >= 5 &&
@@ -866,7 +871,7 @@ export function composeRetailShoppingTitleFromPdp(opts: {
   } else if (listing.length >= 1) {
     primaryTitle = listing;
     primarySource = "weak_scraped_listing";
-  } else if (slug.length >= 4) {
+  } else if (slug.length >= 4 && !looksLikeAmazonAsinToken(slug)) {
     primaryTitle = slug;
     primarySource = "slug_path";
   } else {
