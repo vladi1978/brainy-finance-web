@@ -65,6 +65,92 @@ function blobHasSignature(blob: string, sig: string): boolean {
   return blob.includes(sig);
 }
 
+function normalizedCandidateListingBlob(candidate: NormalizedProduct): string {
+  return `${candidate.titleNorm} ${normalizeTitle(candidate.structured.title)}`;
+}
+
+/**
+ * Gross family mismatch beyond Shopping's category labels (generic bucket allows wrong kinds through).
+ */
+export function checkIncompatibleProductFamilyGate(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): HardGateResult {
+  const isScreenCat = (c: ProductCategory) => c === "tv" || c === "monitor";
+  const isWearElectAudio = (c: ProductCategory) =>
+    c === "footwear" || c === "socks" || c === "audio";
+
+  function shoeLikeTitle(norm: NormalizedProduct): boolean {
+    const blob = normalizedCandidateListingBlob(norm);
+    return /\b(shoe|sneaker|boot|sandal|cleat|loafer|yeezy|air max)\b/.test(blob);
+  }
+  function headphoneLikeTitle(norm: NormalizedProduct): boolean {
+    const blob = normalizedCandidateListingBlob(norm);
+    return /\b(headphone|earbud|airpods|ear buds)\b/.test(blob);
+  }
+  function screenLikeTitle(norm: NormalizedProduct): boolean {
+    const blob = normalizedCandidateListingBlob(norm);
+    if (/\b(monitor|\btv\b|television|smart tv|oled|qled|uhd tv|neo[\s-]*qled|mini[\s-]*led)\b/.test(blob)) {
+      return true;
+    }
+    if (
+      /\b\d{2,3}\s*(?:"|-?\s*inch|inches|class\b)\b/.test(blob) &&
+      /\b(led|lcd|hdr|smart|tizen|roku|hdr10)\b/.test(blob)
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  const sScr = isScreenCat(source.category);
+  const cScr = isScreenCat(candidate.category);
+
+  if (sScr && isWearElectAudio(candidate.category)) {
+    return hardGateFail(
+      `incompatible_product_family(source=${source.category},candidate=${candidate.category})`
+    );
+  }
+  if (cScr && isWearElectAudio(source.category)) {
+    return hardGateFail(
+      `incompatible_product_family(source=${source.category},candidate=${candidate.category})`
+    );
+  }
+
+  if (source.category === "tv" || source.category === "monitor") {
+    const ambiguousCand =
+      candidate.category === "general" ||
+      candidate.category === "household" ||
+      candidate.category === "apparel";
+    if (ambiguousCand) {
+      if (shoeLikeTitle(candidate) || headphoneLikeTitle(candidate)) {
+        if (!screenLikeTitle(candidate)) {
+          return hardGateFail(
+            "incompatible_product_family(screen_reference_vs_consumer_wearable_candidate)"
+          );
+        }
+      }
+    }
+  }
+
+  if (candidate.category === "tv" || candidate.category === "monitor") {
+    const ambiguousSrc =
+      source.category === "general" ||
+      source.category === "household" ||
+      source.category === "apparel";
+    if (ambiguousSrc) {
+      if (shoeLikeTitle(source) || headphoneLikeTitle(source)) {
+        if (!screenLikeTitle(source)) {
+          return hardGateFail(
+            "incompatible_product_family(screen_candidate_vs_consumer_wearable_reference)"
+          );
+        }
+      }
+    }
+  }
+
+  return { ok: true };
+}
+
 /**
  * Critical dimensions from the reference listing that do not appear in the candidate title blob.
  * Used for soft scoring only — {@link checkCriticalListingGate} no longer rejects on these.
@@ -109,12 +195,8 @@ export function checkCriticalListingGate(
     }
   }
 
-  if (c.kindPhrases.length > 0) {
-    const hit = c.kindPhrases.some((p) => blob.includes(p));
-    if (!hit) {
-      return hardGateFail("critical_kind_mismatch");
-    }
-  }
+  // Kind cues (e.g. "smart tv" vs plain marketing copy) inform soft scoring —
+  // see {@link shouldApplyCriticalKindPhraseSoftPenalty} and {@link checkIncompatibleProductFamilyGate}.
 
   return { ok: true };
 }
@@ -166,7 +248,8 @@ export function checkGenericModelIdentityGate(
   const b = candidate.modelTokens;
   if (a.length === 0 && b.length === 0) return { ok: true };
   if (a.length === 0 || b.length === 0) {
-    return hardGateFail("model_identity_asymmetric");
+    // Cross-retailer comparisons aim for similar alternatives — model coverage often differs between feeds.
+    return { ok: true };
   }
   if (normalizedModelKey(a) !== normalizedModelKey(b)) {
     return hardGateFail(
@@ -411,13 +494,40 @@ export function checkTvSizeStrictGate(
   }
   const a = source.structured.sizeInches;
   const b = candidate.structured.sizeInches;
+  /** Unknown on one side: scored via soft penalty ({@link shouldApplyTvSizeIncompleteSoftPenalty}). */
   if (a == null || b == null) {
-    return hardGateFail(`tv_size_incomplete(source=${a},candidate=${b})`);
+    return { ok: true };
   }
   if (a !== b) {
     return hardGateFail(`tv_size_mismatch(source=${a},candidate=${b})`);
   }
   return { ok: true };
+}
+
+/** Both TVs; exactly one parsed structured diagonal — lowers confidence (size not confirmed vs peer). */
+export function shouldApplyTvSizeIncompleteSoftPenalty(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): boolean {
+  if (source.category !== "tv" || candidate.category !== "tv") return false;
+  const a = source.structured.sizeInches;
+  const b = candidate.structured.sizeInches;
+  return (
+    (a != null && b == null) ||
+    (a == null && b != null)
+  );
+}
+
+/** Source critical kind stems missing from candidate text — softened from a hard gate (see changelog). */
+export function shouldApplyCriticalKindPhraseSoftPenalty(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): boolean {
+  const c = source.critical;
+  if (!c || c.kindPhrases.length === 0) return false;
+  const blob =
+    candidate.titleNorm + " " + normalizeTitle(candidate.structured.title);
+  return !c.kindPhrases.some((p) => blob.includes(p));
 }
 
 export function checkTvDisplayTechGate(
@@ -812,6 +922,9 @@ export function runHardGates(
 ): HardGateResult {
   const bucket = checkComparisonCategoryGate(source, candidate);
   if (!bucket.ok) return bucket;
+
+  const family = checkIncompatibleProductFamilyGate(source, candidate);
+  if (!family.ok) return family;
 
   const critical = checkCriticalListingGate(source, candidate);
   if (!critical.ok) return critical;

@@ -998,6 +998,7 @@ export async function compareProduct(
       continue;
     }
 
+    // Structured gates favor similar cross-retailer substitutes (strict only on gross mismatches).
     const rel = scoreAttributeMatch(
       referenceNormalized,
       c.normalized,

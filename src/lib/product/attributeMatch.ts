@@ -2,6 +2,8 @@ import {
   attributeScoreForPair,
   missingCriticalDimensionSignatures,
   runHardGates,
+  shouldApplyCriticalKindPhraseSoftPenalty,
+  shouldApplyTvSizeIncompleteSoftPenalty,
 } from "./match";
 import type { NormalizedProduct } from "./types";
 import type { SearchMatchType } from "./types";
@@ -26,6 +28,12 @@ const TIER_MEDIUM = 46;
 /** Lower structured-component score when reference critical dims are absent from candidate text. */
 const CRITICAL_DIM_SOFT_PENALTY_EACH = 12;
 const CRITICAL_DIM_SOFT_PENALTY_CAP = 40;
+
+/** One-sided missing parsed TV diagonal vs peer structured size — soften instead of rejecting. */
+const TV_SIZE_ONE_SIDE_MISSING_FACTOR = 0.8;
+
+/** Reference kind stems (e.g. smart TV) absent from candidate copy — soften vs hard reject. */
+const CRITICAL_KIND_PHRASE_MISS_FACTOR = 0.85;
 
 /**
  * Attribute-first matching: hard filters, structured score, light keyword blend.
@@ -63,6 +71,19 @@ export function scoreAttributeMatch(
         `soft_penalty:critical_dimension_unconfirmed(${dim})`
       );
     }
+  }
+
+  if (shouldApplyTvSizeIncompleteSoftPenalty(source, candidate)) {
+    attrScore *= TV_SIZE_ONE_SIDE_MISSING_FACTOR;
+    dimPenaltyReasons.push(
+      "soft_penalty:tv_size_structured_unknown_one_side(×0.8)"
+    );
+  }
+  if (shouldApplyCriticalKindPhraseSoftPenalty(source, candidate)) {
+    attrScore *= CRITICAL_KIND_PHRASE_MISS_FACTOR;
+    dimPenaltyReasons.push(
+      "soft_penalty:critical_kind_phrases_unconfirmed(×0.85)"
+    );
   }
 
   const kw = scoreQueryRelevance(queryText, candidateTitle);
