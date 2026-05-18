@@ -1,8 +1,8 @@
-import { friendlyMerchantSubscriptionLabel } from "./merchantNormalize";
+import { deriveMerchantPresentation } from "./merchantNormalize";
+import { clusterLooksSubscriptionMerchant } from "./subscriptionSignals";
 import type {
   MerchantCluster,
   StatementPeriod,
-  SubscriptionCategory,
   SubscriptionFlags,
   SubscriptionFrequency,
   SubscriptionInsight,
@@ -27,6 +27,24 @@ function dayDiff(a: string, b: string): number {
     Number(b.slice(8, 10))
   );
   return Math.round((t1 - t0) / 86400000);
+}
+
+/** Two+ charges roughly the same nominal amount (handles small rounding drift). */
+export function debitAmountsSimilar(amounts: number[]): boolean {
+  if (amounts.length < 2) return false;
+  const med = median(amounts);
+  if (!(med > 0)) return false;
+  const tol = Math.max(2, med * 0.14);
+  return amounts.every((a) => Math.abs(a - med) <= tol);
+}
+
+/** Adjacent tiers for telecom/utilities bills that creep month to month */
+export function debitAmountsLooselySimilar(amounts: number[]): boolean {
+  if (amounts.length < 2) return false;
+  const med = median(amounts);
+  if (!(med > 0)) return false;
+  const tol = Math.max(6, med * 0.32);
+  return amounts.every((a) => Math.abs(a - med) <= tol);
 }
 
 export function inferFrequencyFromCharges(
@@ -159,7 +177,7 @@ export function excludeClusterFromSubscriptions(
     /\b(VENMO|ZELLE|PAYPAL|WISE|REVOLUT|CASH\s*APP)\b.*\b(SEND|RECV|TRANSFER|TRANSF|PAGO|SENT)\b/u.test(
       blob
     ) ||
-    /\b(TRANSFER|TRANSF|XFER|TRF|IFT|INT\s+PAY|WIRE|SPEI|IBAN\s+PAY)\b/u.test(
+    /\b(TRANSFER|TRANSF|XFER|TRF|IFT|INT\s+PAY|SPEI|IBAN\s+PAY|\bWIRE\s+TRANS\b|\bOUTGOING\s+WIRE\b|\bINCOMING\s+WIRE\b|\bWIRE\s+XFER\b)\b/u.test(
       blob
     )
   ) {
@@ -205,9 +223,38 @@ export function excludeClusterFromSubscriptions(
     return true;
   }
 
+  /** Summary / balance lines that sometimes leak into parsers */
+  if (
+    /\b(BEGINNING|OPENING|STARTING)\s+BALANCE\b|\b(ENDING|CLOSING|FINAL)\s+BALANCE\b|\bAVAILABLE\s+BALANCE\b|\bMINIMUM\s+PAYMENT\s+DUE\b|\bTOTAL\s+PAYMENTS?\s+THIS\s+(PERIOD|CYCLE)|\bTOTAL\s+PURCHASES\b|\bACCOUNT\s+SUMMARY\b/u.test(
+      blob
+    )
+  ) {
+    return true;
+  }
+
+  /** Deposits, refunds & explicit credits typed as withdrawals in noisy PDFs */
+  if (
+    /\bDEPOSITS?\s+(ATM|BK|DEP|REMOTE|MOBILE|BRANCH)|(DEPOSITO|DEP\s+SUELDO)\b|\bDIRECT\s+DEP\b.*\b(EMPLOY|SALARY|WAGE)|(ACH\s+(CREDIT|DEP|DEPOS)|REVERSAL|REFUND|CHARGEBACK|CRE\s+VCHR|ATM\s+RVRSL|ATM\s+RFD)\b|PAYMENT\s+FROM\s+DDA|\bWIRE\s+(IN(?:COMING)?|DEP|CR|CRE)\b|\bATM\s+RVRSL\b/ui.test(
+      blob
+    )
+  ) {
+    return true;
+  }
+
+  /** Generic card payoff / ACH card payment rails (distinct from SaaS billed to the card). */
+  if (
+    /\b(PMT\s+MADE\s+TO|AUTO\s+PAY\s+MADE\s+PAY|PAYMENTS?\s+TO\s+(YOUR\s+)?CARD|PAYMENTS?\s+TO\s+VISA|MORTG\s+PMT|MORT\s+PMT|CARD\s+PAYMENTS?\s+SERV)\b/ui.test(blob) &&
+    !/\b(DISNEY|NETFLIX|SPOTIFY|APPLE|ADOBE|MICROSOFT|GOOGLE|AMAZON|PRIME\b|CLOUD|SAA|SUBSCR|MUSIC\b|VIDEO\b)/u.test(blob)
+  ) {
+    return true;
+  }
+
   return false;
 }
 
+/**
+ * Offline subscription-ish rows (also used to supplement conservative OpenAI output).
+ */
 export function heuristicSubscriptionsFromClusters(
   clusters: MerchantCluster[],
   statementPeriod: StatementPeriod | null,
@@ -215,20 +262,53 @@ export function heuristicSubscriptionsFromClusters(
   displayRefDate: string
 ): SubscriptionInsight[] {
   const out: SubscriptionInsight[] = [];
+
   for (const cluster of clusters) {
+    if (excludeClusterFromSubscriptions(cluster)) continue;
+
     const debits = cluster.charges.filter((c) => c.type === "debit");
-    if (debits.length < 2) continue;
+    if (debits.length < 1) continue;
 
+    const description = cluster.descriptions[0] ?? cluster.key;
+
+    const subStyle = clusterLooksSubscriptionMerchant(cluster);
     const freq = coerceFrequency(inferFrequencyFromCharges(debits.map((d) => d.date)));
-    if (freq === "unknown" && debits.length < 3) continue;
-
-    if (excludeClusterFromSubscriptions(cluster, freq)) continue;
 
     const amounts = debits.map((d) => d.amount);
+    const similarAmts = debitAmountsSimilar(amounts);
+    const looseAmts = debitAmountsLooselySimilar(amounts);
+
+    const include =
+      (debits.length >= 2 && similarAmts) ||
+      (debits.length >= 2 && subStyle && looseAmts) ||
+      (debits.length === 1 && subStyle);
+
+    if (!include) continue;
+
+    /** Confidence bands: 80–100 strong recurring/service, 55–79 likely one-off-ish */
+    let confidence = 0.62;
+    if (debits.length >= 2 && similarAmts) {
+      confidence = freq === "unknown" ? (subStyle ? 0.86 : 0.82) : 0.92;
+      if (!subStyle && freq === "unknown") confidence = Math.min(confidence, 0.78);
+    } else if (debits.length >= 2 && looseAmts && subStyle) {
+      confidence = 0.73;
+    } else if (debits.length === 1 && subStyle) {
+      confidence = 0.64;
+      if (
+        /APPLE|ADOBE|MICROSOFT|NETFLIX|SPOTIFY|GOOGLE|DISNEY|HULU|AMAZON|PRIME|\bAWS\b/ui.test(
+          `${cluster.descriptions.slice(0, 4).join(" ")} ${cluster.key}`
+        )
+      ) {
+        confidence = 0.71;
+      }
+    }
+
     const lastAmt = amounts[amounts.length - 1];
+    const inferredFreq =
+      freq === "unknown" && similarAmts && debits.length >= 2 ? "monthly" : freq;
     const { monthlyEquivalent, annualEquivalent } = equivalentsForFrequency(
       lastAmt,
-      freq
+      inferredFreq
     );
 
     const flags = computeHeuristicFlags({
@@ -237,43 +317,101 @@ export function heuristicSubscriptionsFromClusters(
       referenceDate: heuristicRefDate,
     });
 
-    const merchant = cluster.descriptions[0] ?? cluster.key;
-    const normalizedName = friendlyMerchantSubscriptionLabel({
-      primaryDescription: merchant,
+    const { merchant, normalizedName, category } = deriveMerchantPresentation({
+      primaryDescription: description,
       clusterKeyUpper: cluster.key,
     });
+
     const totalSpentInPeriod = debits.reduce((s, d) => s + d.amount, 0);
     const lastCharged = debits[debits.length - 1].date;
     const daysSinceLastCharge = lastCharged
       ? dayDiff(lastCharged, displayRefDate)
       : null;
+
     const currency =
-      debits[debits.length - 1]?.currency ||
-      debits[0]?.currency ||
-      "USD";
+      debits[debits.length - 1]?.currency || debits[0]?.currency || "USD";
 
     out.push({
       merchant,
       normalizedName,
-      category: guessCategory(merchant),
+      category,
       amount: lastAmt,
       currency,
-      frequency: freq,
+      frequency: coerceFrequency(inferredFreq),
       lastCharged,
       monthlyEquivalent,
       annualEquivalent,
-      confidence: 0.45,
+      confidence: Math.min(0.96, confidence),
       flags,
       clusterId: cluster.id,
       totalSpentInPeriod,
       daysSinceLastCharge,
     });
   }
+
   return out.sort((a, b) => b.monthlyEquivalent - a.monthlyEquivalent);
 }
 
-function guessCategory(_merchant: string): SubscriptionCategory {
-  return "other";
+
+export type SubscriptionEligibilitySnapshot = {
+  clusterId: string;
+  debitCount: number;
+  excluded: boolean;
+  eligibleCandidate: boolean;
+  reason?: string;
+};
+
+/**
+ * Mirrors `heuristicSubscriptionsFromClusters` gating — used only for telemetry.
+ */
+export function snapshotSubscriptionCandidate(
+  cluster: MerchantCluster
+): SubscriptionEligibilitySnapshot {
+  const debits = cluster.charges.filter((c) => c.type === "debit");
+
+  const base: SubscriptionEligibilitySnapshot = {
+    clusterId: cluster.id,
+    debitCount: debits.length,
+    excluded: false,
+    eligibleCandidate: false,
+  };
+
+  if (debits.length < 1) {
+    return base;
+  }
+
+  if (excludeClusterFromSubscriptions(cluster)) {
+    return { ...base, excluded: true };
+  }
+
+  const subStyle = clusterLooksSubscriptionMerchant(cluster);
+  const amounts = debits.map((d) => d.amount);
+  const similarAmts = debitAmountsSimilar(amounts);
+  const looseAmts = debitAmountsLooselySimilar(amounts);
+
+  const include =
+    (debits.length >= 2 && similarAmts) ||
+    (debits.length >= 2 && subStyle && looseAmts) ||
+    (debits.length === 1 && subStyle);
+
+  let reason = "";
+  if (!include) reason = "Not enough recurrence or SaaS-ish billing signals.";
+  else if (debits.length >= 2 && similarAmts) {
+    const freqLabel = coerceFrequency(inferFrequencyFromCharges(debits.map((d) => d.date)));
+    reason = `${debits.length} similar debits (${freqLabel} cadence hint).`;
+  } else if (debits.length >= 2 && subStyle && looseAmts) {
+    reason = `${debits.length} variable debits paired with SaaS/utility-style keywords.`;
+  } else if (debits.length === 1 && subStyle) {
+    reason = "Single debit keyed to recognizable subscription rails.";
+  }
+
+  return {
+    clusterId: cluster.id,
+    debitCount: debits.length,
+    excluded: false,
+    eligibleCandidate: include,
+    reason,
+  };
 }
 
 export function mergeFlags(

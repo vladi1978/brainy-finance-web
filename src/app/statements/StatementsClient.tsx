@@ -63,7 +63,7 @@ type AnalyzeOk = {
 
 function formatMoney(n: number, currency: string): string {
   try {
-    return new Intl.NumberFormat("es-MX", {
+    return new Intl.NumberFormat("en-US", {
       style: "currency",
       currency: currency.length === 3 ? currency : "USD",
       maximumFractionDigits: 2,
@@ -87,25 +87,25 @@ function merchantInitial(name: string): string {
   const t = name.trim();
   if (!t) return "?";
   const ch = t[0];
-  return /[a-zA-ZáéíóúñÁÉÍÓÚÑ]/.test(ch) ? ch.toUpperCase() : "#";
+  return /[a-zA-Z]/.test(ch) ? ch.toUpperCase() : "#";
 }
 
 const freqLabel: Record<string, string> = {
-  monthly: "Mensual",
-  annual: "Anual",
-  weekly: "Semanal",
-  unknown: "Desconocida",
+  monthly: "Monthly",
+  annual: "Annual",
+  weekly: "Weekly",
+  unknown: "Unknown",
 };
 
 const catLabel: Record<string, string> = {
   streaming: "Streaming",
-  music: "Música",
+  music: "Music",
   fitness: "Fitness",
-  insurance: "Seguros",
-  software: "Software",
-  shopping: "Compras",
-  utilities: "Servicios",
-  other: "Otro",
+  insurance: "Insurance",
+  software: "Software / digital services",
+  shopping: "Shopping",
+  utilities: "Utilities",
+  other: "Other",
 };
 
 export default function StatementsClient() {
@@ -133,12 +133,12 @@ export default function StatementsClient() {
         error?: string;
       };
       if (!res.ok || !json.ok) {
-        setError(json.error ?? "Error al analizar el PDF.");
+        setError(json.error ?? "Could not analyze the PDF.");
         return;
       }
       setData(json as AnalyzeOk);
     } catch {
-      setError("No se pudo subir el archivo. Revisa tu conexión.");
+      setError("Upload failed — check your network and try again.");
     } finally {
       setBusy(false);
     }
@@ -159,21 +159,21 @@ export default function StatementsClient() {
     <main className="flex-1 bg-black px-6 py-10 text-white">
       <div className="mx-auto max-w-4xl">
         <h1 className="mb-2 text-4xl font-bold">
-          Estados de cuenta y suscripciones
+          Statements & Subscriptions
         </h1>
         <p className="mb-8 max-w-2xl text-white/70">
-          Sube un estado de cuenta en PDF de cualquier banco o país. En el
-          servidor extraemos el texto, reconstruimos líneas cortadas, puntuamos
-          candidatos a transacción y usamos IA solo cuando hace falta. El
-          archivo PDF no se envía a OpenAI.
+          Upload a PDF bank statement from any institution. Text is extracted,
+          reconstructed into statement lines, and scored as transaction
+          candidates; AI fills in only disputed rows. Raw PDF bytes are{" "}
+          <span className="text-white">not</span> forwarded to OpenAI.
         </p>
 
         <label className="flex cursor-pointer flex-col gap-3 rounded-2xl border border-dashed border-white/20 bg-white/[0.04] px-6 py-10 transition hover:border-emerald-400/35 hover:bg-white/[0.06]">
           <span className="text-sm font-medium text-white">
-            {busy ? "Procesando PDF…" : "Arrastra o elige un PDF"}
+            {busy ? "Processing PDF…" : "Drag or choose a PDF"}
           </span>
           <span className="text-xs text-white/45">
-            Extracción multipágina con pdf-parse · máx. 12 MB
+            Multi-page extraction with pdf-parse · max 12&nbsp;MB
           </span>
           <input
             type="file"
@@ -186,23 +186,23 @@ export default function StatementsClient() {
 
         {busy ? (
           <div className="mt-6 space-y-2 rounded-xl border border-emerald-400/20 bg-emerald-400/5 px-4 py-4 text-sm text-emerald-100/90">
-            <p className="font-medium text-emerald-200">Procesando…</p>
+            <p className="font-medium text-emerald-200">Working…</p>
             <ul className="list-inside list-disc space-y-1 text-white/60">
-              <li>Leyendo páginas del PDF</li>
-              <li>Normalizando y reuniendo líneas de movimientos</li>
-              <li>Extrayendo y validando transacciones</li>
-              <li>Detectando posibles suscripciones recurrentes</li>
+              <li>Reading PDF pages</li>
+              <li>Normalizing and stitching transaction lines</li>
+              <li>Extracting and validating transactions</li>
+              <li>Detecting subscription-like recurrence</li>
             </ul>
           </div>
         ) : null}
 
         {error ? (
           <div className="mt-6 space-y-2 rounded-xl border border-red-400/25 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-            <p className="font-semibold text-red-100">No se pudo completar el análisis</p>
+            <p className="font-semibold text-red-100">Analysis could not complete</p>
             <p>{error}</p>
             <p className="text-xs text-red-200/70">
-              Si el PDF está escaneado como imagen, prueba otro archivo con
-              texto seleccionable o exporta el estado desde tu banca en línea.
+              If your PDF is a scanned image, try exporting a text-selectable
+              statement from your bank portal.
             </p>
           </div>
         ) : null}
@@ -212,37 +212,37 @@ export default function StatementsClient() {
             <div className="flex flex-wrap items-center gap-3 text-xs text-white/50">
               {periodLabel ? (
                 <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
-                  Periodo detectado: {periodLabel}
+                  Detected window: {periodLabel}
                 </span>
               ) : null}
               <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
-                Páginas: {data.meta.pageCount}
+                Pages: {data.meta.pageCount}
               </span>
               <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
-                Transacciones detectadas: {data.meta.transactionCount}
+                Parsed transactions: {data.meta.transactionCount}
               </span>
               {data.meta.transactionCount === 0 ? (
                 <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-3 py-1 text-amber-100">
-                  No se extrajeron movimientos — prueba otro PDF o uno con texto
-                  seleccionable
+                  No ledger rows parsed — choose a text-based PDF export
                 </span>
               ) : null}
               {data.meta.parseDebug ? (
                 <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
-                  IA en líneas dudosas: {data.meta.parseDebug.aiDisambiguatedCount}
+                  Ambiguous AI assist:{" "}
+                  {data.meta.parseDebug.aiDisambiguatedCount}
                   {data.meta.parseDebug.fullTextAiFallbackUsed
-                    ? " · Rescate IA (texto completo)"
+                    ? " · full-text rescue"
                     : ""}
                 </span>
               ) : null}
               {data.meta.fallbackUsed ? (
                 <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-3 py-1 text-amber-100">
-                  Suscripciones por reglas locales (sin IA o sin clusters)
+                  Heuristic-only clustering (AI silent or unreachable)
                 </span>
               ) : null}
               {data.meta.openAiUsed ? (
                 <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-3 py-1 text-emerald-100">
-                  Análisis OpenAI aplicado
+                  OpenAI analysis applied to clusters
                 </span>
               ) : null}
               {data.meta.openAiError ? (
@@ -255,26 +255,26 @@ export default function StatementsClient() {
             {data.meta.parseDebug ? (
               <details className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-xs text-white/55">
                 <summary className="cursor-pointer select-none text-white/70">
-                  Diagnóstico del extractor de movimientos
+                  Transaction extractor diagnostics
                 </summary>
                 <dl className="mt-3 grid gap-2 sm:grid-cols-2">
                   <div>
-                    <dt className="text-white/40">Caracteres extraídos</dt>
+                    <dt className="text-white/40">Extracted characters</dt>
                     <dd>{data.meta.parseDebug.totalExtractedChars}</dd>
                   </div>
                   <div>
-                    <dt className="text-white/40">Líneas físicas / reconstruidas</dt>
+                    <dt className="text-white/40">Physical vs reconstructed lines</dt>
                     <dd>
                       {data.meta.parseDebug.cleanedLineCount} /{" "}
                       {data.meta.parseDebug.reconstructedLineCount}
                     </dd>
                   </div>
                   <div>
-                    <dt className="text-white/40">Regex alta confianza</dt>
+                    <dt className="text-white/40">High-confidence regex parses</dt>
                     <dd>{data.meta.parseDebug.highConfidenceParsed}</dd>
                   </div>
                   <div>
-                    <dt className="text-white/40">Aceptadas / rechazadas (muestra)</dt>
+                    <dt className="text-white/40">Accepted / rejected samples</dt>
                     <dd>
                       {data.meta.parseDebug.acceptedCount} /{" "}
                       {data.meta.parseDebug.rejectedCount}
@@ -286,40 +286,39 @@ export default function StatementsClient() {
 
             <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <SummaryCard
-                title="Gasto mensual est."
+                title="Estimated monthly spend"
                 value={formatMoney(data.summary.monthlySpend, summaryCurrency)}
                 subtitle={
                   data.subscriptions.length
-                    ? `Suma en ${summaryCurrency} (por categoría del modelo)`
-                    : "Sin suscripciones detectadas"
+                    ? `${summaryCurrency} total from accepted recurring rows`
+                    : "No recurring charges above the confidence cutoff"
                 }
               />
               <SummaryCard
-                title="Gasto anual est."
+                title="Estimated annual spend"
                 value={formatMoney(data.summary.annualSpend, summaryCurrency)}
               />
               <SummaryCard
-                title="Suscripciones"
+                title="Subscriptions"
                 value={String(data.summary.subscriptionCount)}
               />
               <SummaryCard
-                title="Ahorro estimado"
-                subtitle="Suma mensual de cargos marcados"
+                title="Estimated savings"
+                subtitle="Monthly total for flagged recurring rows"
                 value={formatMoney(data.summary.estimatedSavings, summaryCurrency)}
               />
             </section>
 
             <section className="space-y-4">
               <h2 className="text-lg font-semibold text-white">
-                Suscripciones detectadas
+                Detected subscriptions
               </h2>
               {data.subscriptions.length === 0 ? (
                 <p className="rounded-xl border border-white/10 bg-white/5 px-4 py-6 text-sm text-white/60">
-                  No encontramos cargos recurrentes con suficiente evidencia.
-                  Puede deberse a pocas transacciones en el periodo, a que el PDF
-                  no tiene tabla clara de movimientos o a filtros de seguridad
-                  que excluyen nóminas, transferencias y comisiones. Prueba otro
-                  estado o un archivo con texto seleccionable.
+                  Nothing cleared the heuristic + AI confidence thresholds.
+                  Narrow statement windows, missing tables, payroll/transfer-only
+                  activity, or image-only PDFs commonly reduce matches. Upload a
+                  different export if you suspect hidden subscriptions.
                 </p>
               ) : (
                 <ul className="space-y-4">
@@ -372,12 +371,13 @@ function SubscriptionCard(props: {
 }) {
   const { row: s, action, onAction } = props;
   const badges: Array<{ key: string; label: string }> = [];
-  if (s.flags.forgotten) badges.push({ key: "f", label: "OLVIDADA" });
-  if (s.flags.duplicate) badges.push({ key: "d", label: "DUPLICADO" });
-  if (s.flags.priceIncreased) badges.push({ key: "p", label: "SUBIÓ PRECIO" });
-  if (s.flags.suspicious) badges.push({ key: "s", label: "SOSPECHOSA" });
+  if (s.flags.forgotten) badges.push({ key: "f", label: "FORGOTTEN" });
+  if (s.flags.duplicate) badges.push({ key: "d", label: "DUPLICATE" });
+  if (s.flags.priceIncreased)
+    badges.push({ key: "p", label: "PRICE INCREASE" });
+  if (s.flags.suspicious) badges.push({ key: "s", label: "SUSPICIOUS" });
   if (s.flags.trialConverted)
-    badges.push({ key: "t", label: "TRIAL → PAGO" });
+    badges.push({ key: "t", label: "TRIAL → PAYING" });
 
   const compareHref = `/compare?subscriptionMerchant=${encodeURIComponent(s.normalizedName)}`;
 
@@ -393,22 +393,23 @@ function SubscriptionCard(props: {
               {s.merchant}
             </h3>
             <span className="text-sm text-white/50">
-              Confianza {(s.confidence * 100).toFixed(0)}%
+              Confidence {(s.confidence * 100).toFixed(0)}%
             </span>
           </div>
           {s.normalizedName.trim().toUpperCase() !==
           s.merchant.trim().toUpperCase() ? (
             <p className="mt-0.5 text-xs text-white/45">
-              Etiqueta: {s.normalizedName}
+              Label alias: {s.normalizedName}
             </p>
           ) : null}
           <p className="mt-1 text-xs text-white/45">
-            Último cargo: {s.lastCharged}
+            Latest charge {s.lastCharged}
             {s.daysSinceLastCharge != null
-              ? ` · Hace ${s.daysSinceLastCharge} días`
+              ? ` · ${s.daysSinceLastCharge} day(s) ago`
               : ""}
             {" · "}
-            Total en periodo: {formatMoney(s.totalSpentInPeriod, s.currency)}
+            Period debits sum:{" "}
+            {formatMoney(s.totalSpentInPeriod, s.currency)}
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             {badges.map((b) => (
@@ -429,8 +430,8 @@ function SubscriptionCard(props: {
             {freqLabel[s.frequency] ?? s.frequency}
           </p>
           <p className="text-xs text-emerald-200/90">
-            ≈ {formatMoney(s.monthlyEquivalent, s.currency)}/mes ·{" "}
-            {formatMoney(s.annualEquivalent, s.currency)}/año
+            ≈ {formatMoney(s.monthlyEquivalent, s.currency)}/mo ·{" "}
+            {formatMoney(s.annualEquivalent, s.currency)}/yr
           </p>
           <p className="mt-1 text-[11px] text-white/40">
             {catLabel[s.category] ?? s.category}
@@ -440,17 +441,17 @@ function SubscriptionCard(props: {
 
       <div className="mt-5 flex flex-wrap gap-2 border-t border-white/10 pt-4">
         <ActionChip
-          label="Cancelar"
+          label="Cancel"
           pressed={action === "cancel"}
           onClick={() => onAction("cancel")}
         />
         <ActionChip
-          label="Revisar"
+          label="Review"
           pressed={action === "review"}
           onClick={() => onAction("review")}
         />
         <ActionChip
-          label="Mantener"
+          label="Keep"
           pressed={action === "keep"}
           onClick={() => onAction("keep")}
         />
@@ -464,7 +465,7 @@ function SubscriptionCard(props: {
           ].join(" ")}
           onClick={() => onAction("alt")}
         >
-          Buscar alternativa
+          Find alternative
         </Link>
       </div>
     </div>

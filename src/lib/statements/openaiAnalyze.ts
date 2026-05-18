@@ -1,5 +1,7 @@
 import OpenAI from "openai";
 import { chunkClusters } from "./clusters";
+import { excludeClusterFromSubscriptions } from "./heuristics";
+import { clusterLooksSubscriptionMerchant } from "./subscriptionSignals";
 import type { MerchantCluster } from "./types";
 
 const MODEL_DEFAULT = "gpt-4o";
@@ -61,7 +63,7 @@ export async function analyzeClustersWithOpenAI(
 ): Promise<{ items: AiSubscriptionRaw[]; error: string | null }> {
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) {
-    return { items: [], error: "OPENAI_API_KEY no configurada" };
+    return { items: [], error: "OPENAI_API_KEY is not set" };
   }
 
   const model =
@@ -69,10 +71,14 @@ export async function analyzeClustersWithOpenAI(
 
   const client = new OpenAI({ apiKey });
 
-  const parts = chunkClusters(
-    clusters.filter((c) => c.charges.filter((x) => x.type === "debit").length >= 2),
-    CHUNK
-  );
+  const eligible = clusters.filter((c) => {
+    const debits = c.charges.filter((x) => x.type === "debit").length;
+    if (debits < 1) return false;
+    if (excludeClusterFromSubscriptions(c)) return false;
+    return debits >= 2 || clusterLooksSubscriptionMerchant(c);
+  });
+
+  const parts = chunkClusters(eligible, CHUNK);
 
   const merged: AiSubscriptionRaw[] = [];
 
@@ -89,21 +95,20 @@ export async function analyzeClustersWithOpenAI(
           {
             role: "system",
             content:
-              "Eres un analista financiero. Identifica cargos recurrentes tipo suscripción de consumo (software, medios, clubes, servicios). Responde SOLO JSON válido con {\"subscriptions\":[...]} — sin markdown. " +
-              "Excluye: nómina, depósitos de sueldo, transferencias bancarias o P2P genéricas, devolución de cheques, retiros ATM, impuestos o tasas, pago de préstamos (hipoteca, auto, personal), comisiones de cuenta o overdraft/NSF. " +
-              "Si no hay patrón claro de consumo recurrente, omite el grupo. Prefiere falsos negativos antes que etiquetar transferencias o préstamos como suscripción.",
+              "You categorize consumer discretionary recurring spend (streaming, SaaS bundles, gyms, MSP/cloud portals, recognizable insurance ACH strings, telecom add-ons). " +
+              'Return ONLY compact JSON {\"subscriptions\":[...]} with ZERO markdown scaffolding. ' +
+              "Lean inclusive with moderate-confidence rows whenever narration resembles subscription rails—cloud/video/office suites, gyms, MSP—even if cadence rests on roughly two charges or only one unmistakable bill. " +
+              "Strictly omit payroll/direct deposit wording, paycheck deposits, outbound/inbound generic wires framed as TRANSFER/ZELLE/SPEI reimbursements lacking branded merchants, bounced/returned checks, refunds/reversal lines, ATM cash, taxes without recognizable SaaS, amortizing mortgages/auto/student/personal payoff rails absent SaaS narration, NSF/overdraft chatter, nondescriptive MAINT/SERVICE/ACCOUNT fee blobs lacking recognizable merchant banners.",
           },
           {
             role: "user",
             content: [
-              "Analiza estos grupos de transacciones (solo débitos). Para cada suscripción detectada devuelve un objeto con:",
-              "clusterId (string, debe coincidir con el input), merchant, normalizedName, category (streaming|music|fitness|insurance|software|shopping|utilities|other),",
-              "amount (último cargo relevante en número), currency (código ISO tres letras o símbolo normalizado), frequency (monthly|annual|weekly|unknown),",
-              "lastCharged (YYYY-MM-DD), monthlyEquivalent, annualEquivalent (números), confidence (0-1),",
-              "flags: { forgotten, duplicate, priceIncreased, trialConverted, suspicious } todos boolean.",
-              "Si un grupo no es recurrente, omitirlo. merchant y normalizedName deben derivarse del texto real de las transacciones (sin inventar marcas externas).",
-              "No incluir payroll, depósitos automáticos genéricos, transferencias, cheques, ATM, impuestos, préstamos ni comisiones salvo un plan explícito tipo membresía recurrente.",
-              "",
+              "Each chunk cluster lists merchantHints plus debitCharges. Emit one subscription object whenever evidence supports discretionary recurring-ish spend—even if inferred cadence stays unknown.",
+              "Each object needs clusterId verbatim from payload, readable merchant/normalizedName, category ∈ streaming|music|fitness|insurance|software|shopping|utilities|other,",
+              "numeric amount anchored to freshest meaningful debit, ISO currency letters, frequency ∈ monthly|annual|weekly|unknown,",
+              "lastCharged as YYYY-MM-DD, reconcile monthlyEquivalent + annualEquivalent numerically vs frequency guesses, calibrated confidence floats 0-1 aiming ≥0.8 when cadence+narrative lock, roughly 0.55-0.79 for unmistakable storefront tokens with limited history.",
+              "flags booleans forgotten|duplicate|priceIncreased|trialConverted|suspicious inferred strictly from deltas present inside debitCharges.",
+              "Normalize tokens pragmatically—APPLE.COM/BILL style strings may collapse to concise consumer labels without inventing absent brands.",
               JSON.stringify({ clusters: payload }),
             ].join("\n"),
           },

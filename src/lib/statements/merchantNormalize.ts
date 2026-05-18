@@ -1,6 +1,8 @@
 /**
- * Generic merchant display and clustering helpers — no brand-specific rules.
+ * Merchant display tokens and clustering keys — strips statement noise tokens.
  */
+import type { SubscriptionCategory } from "./types";
+import { merchantTextSignals } from "./subscriptionSignals";
 
 function titleCaseTokens(s: string): string {
   return s
@@ -19,33 +21,206 @@ export function normalizeMerchantText(description: string): string {
     .trim();
 }
 
-/** Uppercase keyed fragment for stable clustering (no merchant allowlist). */
+const NOISE_RE = /\b(PURCHASE|CHECKCARD|CHK\s*CARD|POS|DEBIT|CREDIT|AUTHORIZATION|PUR\s+AUTH|MOTO|\bCARD\b|E\s*-?\s*COMMERCE|MERC\s+H|\bATM\b|ELECTRONIC|ACH\s+DEBIT|ACH\s+PAY|ELECT\b|WWW\.?\s*WWW)\b/giu;
+
+/** Narrow rails-only noise for clustering keys (avoid eating "APPLE PAY"). */
+const RAIL_PAY_RE =
+  /\b(VENMO|PAYPAL|MONEY\s+FWD|MERC\s+H|ZELLE\s+(SEND|RECV|PAY))\b/giu;
+
+const SOFT_PAYMENT_NOISE_FOR_LABEL =
+  /\b(PAYMENT\s+AUTHORIZED|AUTHORIZED|PAYPAL)\b/giu;
+
+/** Human-readable names from ubiquitous billing descriptors (pattern-based). */
+function patternBasedMerchant(blob: string): string | null {
+  if (/\bAPPLE\.COM\b|\bAPPLE\b.*\b(BILL|MUSIC|PAY)\b|\bAPP\s+STORE\b|\bITUNES\b|\bICLOUD\b/u.test(blob)) {
+    return "Apple";
+  }
+  if (
+    /\bGOOGLE\b|\bGOOGLE\s*ONE\b|\bGOOGLE\s*PLAY\b|\bYOUTUBE\b|\bGCP\b|\bANDROID\b/ui.test(blob)
+  ) {
+    return "Google";
+  }
+  if (
+    /\bMICROSOFT\b|\bMSFT\b|\bXBOX\b|\bMS\s*BILL\b|\bOFF\s*(ICE)?\s*365\b|\bWINDOWS\b|\bMICRO\s*365\b/ui.test(
+      blob
+    )
+  ) {
+    return "Microsoft";
+  }
+  if (/\bADBE\b|\bADOBE\b|\bADOBE\b.*\bCREATIVE\b/ui.test(blob)) {
+    return "Adobe";
+  }
+  if (/\bCANVA\b/ui.test(blob)) {
+    return "Canva";
+  }
+  if (/\bNETFLIX\b/ui.test(blob)) {
+    return "Netflix";
+  }
+  if (/\bSPOTIFY\b/ui.test(blob)) {
+    return "Spotify";
+  }
+  if (/\bDISNEY\b|\bDISNEY\+\b/ui.test(blob)) {
+    return "Disney";
+  }
+  if (/\bHULU\b/ui.test(blob)) {
+    return "Hulu";
+  }
+  if (/\bDROPBOX\b/ui.test(blob)) {
+    return "Dropbox";
+  }
+  if (
+    /\bAWS\b|P\.?\s*AWS\b|AMAZON\s+WEB|\*\.AWS\b|AWS\.AMAZON|\bamazonaws\b|\.AWS\./iu.test(blob)
+  ) {
+    return "Amazon Web Services";
+  }
+  // Amazon split: Prime / digital subscription vs storefront
+  if (
+    /\bAMAZON\s+(PRIME|VIDEO|DIGITAL|MUSIC|MKTPL|DIGITAL\s*SERV|WEB\s*SERV)\b/ui.test(blob) ||
+    /\bPRIME\s+VIDEO\b|\bAMAZON\s+PR\b/ui.test(blob)
+  ) {
+    return "Amazon Prime";
+  }
+  if (/AMAZON.*\bDIGITAL\b|AMZN\s*BILL|MKTPLC/ui.test(blob)) {
+    return "Amazon Digital";
+  }
+  return null;
+}
+
+/** Category for known patterns (software/digital vs streaming etc.). */
+function patternCategory(blob: string, hint: SubscriptionCategory | null): SubscriptionCategory {
+  if (hint) return hint;
+  const branded = patternBasedMerchant(blob);
+
+  if (branded === "Apple" || branded === "Google" || branded === "Microsoft") {
+    return "software";
+  }
+  if (branded === "Netflix" || branded === "Hulu" || branded === "Disney" || branded === "Amazon Prime") {
+    return "streaming";
+  }
+  if (branded === "Spotify") return "music";
+  if (
+    branded === "Adobe" ||
+    branded === "Canva" ||
+    branded === "Dropbox" ||
+    branded === "Amazon Digital" ||
+    branded === "Amazon Web Services"
+  ) {
+    return "software";
+  }
+
+  const { categoryHint } = merchantTextSignals(blob, "");
+  return categoryHint ?? "other";
+}
+
+/**
+ * Normalize description into a clustering key — removes prefixes, PAN masks,
+ * and long numeric noise so APPLE.COM variants group together.
+ */
+export function clusteringMerchantKey(description: string): string {
+  let s = normalizeMerchantText(description).toUpperCase();
+
+  for (let i = 0; i < 3; i++) {
+    s = s.replace(NOISE_RE, " ");
+    s = s.replace(RAIL_PAY_RE, " ");
+  }
+
+  // Masked PAN / asterisk tails
+  s = s.replace(/\*+\s*\d{2,}\b/gu, " ");
+  // Long reference / phone blobs
+  s = s.replace(/\b\d{9,}\b/gu, " ");
+  // 6+ consecutive digits mid-string (omit short MMDD / rare years in description)
+  s = s.replace(/\b\d{6,}\b/gu, " ");
+  // 4-digit blobs that look like BIN / auth ref (often alone)
+  s = s.replace(/\b\d{4}\s+\d{4}\s+\d{4}\s+\d{4}\b/gu, " ");
+
+  // Trailing USPS-style state abbreviation (drops leading numbers first)
+  s = s.replace(/\s+[A-Z]{2}\s*$/gu, " ");
+
+  s = s
+    .replace(/\*|#/gu, " ")
+    .replace(/\bID\s+|\bSEQ\s+|REF\s+R?O?|\bTRAN\s+I?D\b/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, 64);
+
+  if (s.length < 4) {
+    const fallback = applyInlineMerchantAliases(description)
+      .replace(/\d+/gu, " ")
+      .replace(/\s+/gu, " ")
+      .trim()
+      .slice(0, 64);
+    return fallback.length >= 4 ? fallback : fallback + "UNK";
+  }
+  return s;
+}
+
+/** Uppercase keyed fragment (legacy callers) */
 export function applyInlineMerchantAliases(text: string): string {
   return normalizeMerchantText(text).toUpperCase();
 }
 
-/** Always null — use friendlyMerchantSubscriptionLabel / cluster text instead */
+/** Always null — kept for callers */
 export function canonicalConsumerBrandFromDescription(
   _description?: string
 ): null {
   return null;
 }
 
-/** Friendly label shown for a cluster-backed subscription row */
+export function deriveMerchantPresentation(args: {
+  primaryDescription: string;
+  clusterKeyUpper: string;
+}): {
+  merchant: string;
+  normalizedName: string;
+  category: SubscriptionCategory;
+} {
+  const raw = normalizeMerchantText(args.primaryDescription);
+  const blob = `${raw} ${args.clusterKeyUpper}`;
+
+  const { categoryHint } = merchantTextSignals(raw, args.clusterKeyUpper);
+
+  const branded = patternBasedMerchant(blob);
+  if (branded) {
+    return {
+      merchant: branded,
+      normalizedName: branded,
+      category:
+        branded === "Amazon Prime"
+          ? "streaming"
+          : patternCategory(blob, categoryHint),
+    };
+  }
+
+  let cat = categoryHint ?? patternCategory(blob, null);
+
+  const trimmed =
+    normalizeMerchantText(raw.replace(NOISE_RE, " ").replace(SOFT_PAYMENT_NOISE_FOR_LABEL, " "))
+      .split(/\s+/u)
+      .filter((w) => w.length && !/^\d+$/.test(w))
+      .slice(0, 8)
+      .join(" ");
+
+  const readable = trimmed.length >= 3 ? titleCaseTokens(trimmed).slice(0, 72) : titleCaseTokens(args.clusterKeyUpper.slice(0, 56));
+
+  const displayName = /^[.,\d\s]+$/.test(readable) ? titleCaseTokens(args.clusterKeyUpper.slice(0, 48)) : readable;
+
+  if (cat === "other" && displayName) {
+    const { subscriptionLike } = merchantTextSignals(raw, args.clusterKeyUpper);
+    const { categoryHint: h2 } = merchantTextSignals(displayName + " " + args.clusterKeyUpper, args.clusterKeyUpper);
+    if (subscriptionLike && h2) cat = h2;
+  }
+
+  return {
+    merchant: displayName.slice(0, 80),
+    normalizedName: displayName.slice(0, 80),
+    category: cat,
+  };
+}
+
+/** Friendly subscription label shown in rows */
 export function friendlyMerchantSubscriptionLabel(args: {
   primaryDescription: string;
   clusterKeyUpper: string;
 }): string {
-  const raw = normalizeMerchantText(args.primaryDescription);
-  if (raw.length <= 80 && raw.length >= 2) {
-    const head = raw.split(/\s+/u).slice(0, 8).join(" ");
-    return titleCaseTokens(head).slice(0, 80);
-  }
-
-  const k = args.clusterKeyUpper.trim();
-  const head =
-    k
-      .split(/\s+/u)
-      .find((p) => p.length >= 3 && /[A-Za-z]/u.test(p)) ?? k.slice(0, 48);
-  return titleCaseTokens(head).slice(0, 80);
+  return deriveMerchantPresentation(args).normalizedName;
 }

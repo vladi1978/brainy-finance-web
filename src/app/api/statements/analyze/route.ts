@@ -12,14 +12,14 @@ export async function POST(req: Request) {
 
     if (!(file instanceof File)) {
       return NextResponse.json(
-        { ok: false, error: "Falta el archivo PDF." },
+        { ok: false, error: "PDF file missing from request." },
         { status: 400 }
       );
     }
 
     if (file.type && file.type !== "application/pdf") {
       return NextResponse.json(
-        { ok: false, error: "Solo se admiten archivos PDF." },
+        { ok: false, error: "Only PDF uploads are accepted." },
         { status: 400 }
       );
     }
@@ -28,7 +28,7 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           ok: false,
-          error: "El PDF supera el tamaño máximo permitido (12 MB).",
+          error: "PDF exceeds the maximum upload limit (12 MB).",
         },
         { status: 413 }
       );
@@ -80,7 +80,7 @@ export async function POST(req: Request) {
     return NextResponse.json(
       {
         ok: false,
-        error: "No se pudo procesar el estado de cuenta. Intenta con otro PDF.",
+        error: "Could not read that statement PDF. Try a different export.",
       },
       { status: 500 }
     );

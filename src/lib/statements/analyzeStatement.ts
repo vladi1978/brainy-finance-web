@@ -8,8 +8,11 @@ import {
   heuristicSubscriptionsFromClusters,
   inferFrequencyFromCharges,
   mergeFlags,
+  debitAmountsSimilar,
+  snapshotSubscriptionCandidate,
 } from "./heuristics";
-import { friendlyMerchantSubscriptionLabel } from "./merchantNormalize";
+import { deriveMerchantPresentation } from "./merchantNormalize";
+import { clusterLooksSubscriptionMerchant } from "./subscriptionSignals";
 import { analyzeClustersWithOpenAI } from "./openaiAnalyze";
 import { deriveStatementPeriod, parseTransactionsFromText } from "./parseTransactions";
 import type {
@@ -76,7 +79,8 @@ function enrichAiSubscription(args: {
   if (!cluster) return null;
 
   const sampleMerchant = (cluster.descriptions[0] ?? raw.merchant).trim();
-  const normalizedName = friendlyMerchantSubscriptionLabel({
+
+  const presentation = deriveMerchantPresentation({
     primaryDescription: sampleMerchant || raw.merchant,
     clusterKeyUpper: cluster.key,
   });
@@ -90,6 +94,20 @@ function enrichAiSubscription(args: {
 
   const debits = cluster.charges.filter((c) => c.type === "debit");
   const totalSpentInPeriod = debits.reduce((s, c) => s + c.amount, 0);
+
+  const amtList = debits.map((d) => d.amount);
+
+  let confidence = Math.min(1, Math.max(0, raw.confidence));
+  if (!excludeClusterFromSubscriptions(cluster)) {
+    if (debitAmountsSimilar(amtList) && debits.length >= 2) {
+      confidence = Math.max(confidence, 0.9);
+      if (!clusterLooksSubscriptionMerchant(cluster)) {
+        confidence = Math.min(confidence, 0.88);
+      }
+    } else if (clusterLooksSubscriptionMerchant(cluster)) {
+      confidence = Math.max(confidence, debits.length >= 2 ? 0.78 : 0.62);
+    }
+  }
 
   const freq = coerceFrequency(raw.frequency);
   const eq = equivalentsForFrequency(raw.amount, freq);
@@ -120,10 +138,13 @@ function enrichAiSubscription(args: {
     );
   }
 
+  const aiCat = subscriptionCategory(raw.category);
+  const category = aiCat !== "other" ? aiCat : presentation.category;
+
   return {
-    merchant: raw.merchant,
-    normalizedName,
-    category: subscriptionCategory(raw.category),
+    merchant: presentation.merchant,
+    normalizedName: presentation.normalizedName,
+    category,
     amount: raw.amount,
     currency:
       raw.currency?.trim() ||
@@ -137,7 +158,7 @@ function enrichAiSubscription(args: {
     annualEquivalent: Number.isFinite(raw.annualEquivalent)
       ? raw.annualEquivalent
       : eq.annualEquivalent,
-    confidence: Math.min(1, Math.max(0, raw.confidence)),
+    confidence,
     flags,
     clusterId: raw.clusterId,
     totalSpentInPeriod,
@@ -161,6 +182,58 @@ function buildSummary(subs: SubscriptionInsight[]): AnalyzeStatementResult["summ
     0
   );
   return { monthlySpend, annualSpend, subscriptionCount, estimatedSavings };
+}
+
+function passesSubscriptionConfidence(s: SubscriptionInsight): boolean {
+  return s.confidence >= 0.55 || s.flags.suspicious;
+}
+
+/** Higher confidence wins for overlapping cluster ids coming from LM + offline rules. */
+function mergeByClusterPreferHigherConfidence(
+  lists: SubscriptionInsight[][]
+): SubscriptionInsight[] {
+  const merged = new Map<string, SubscriptionInsight>();
+  for (const list of lists) {
+    for (const row of list) {
+      const prev = merged.get(row.clusterId);
+      if (!prev || prev.confidence < row.confidence) merged.set(row.clusterId, row);
+    }
+  }
+  return [...merged.values()];
+}
+
+function emitSubscriptionInferenceDebug(opts: {
+  transactionCount: number;
+  clusters: MerchantCluster[];
+  heuristicRows: SubscriptionInsight[];
+  gatedSubscriptions: SubscriptionInsight[];
+}) {
+  const snaps = opts.clusters.map(snapshotSubscriptionCandidate);
+  const excludedDebitClustersMarkedNonSubscription = snaps.filter(
+    (s) => s.debitCount > 0 && s.excluded
+  ).length;
+  const candidateMerchantCount = snaps.filter((s) => s.eligibleCandidate).length;
+  const firstTenEligible = snaps
+    .filter((s) => s.eligibleCandidate)
+    .slice(0, 10)
+    .map((snap) => {
+      const lab =
+        opts.heuristicRows.find((h) => h.clusterId === snap.clusterId)
+          ?.normalizedName ??
+        opts.clusters.find((c) => c.id === snap.clusterId)?.key ??
+        "?";
+      return { merchantHint: lab, clusterId: snap.clusterId, reason: snap.reason };
+    });
+
+  console.log("[statements/subscriptions] totals", {
+    transactionsAnalyzed: opts.transactionCount,
+    excludedDebitClustersMarkedNonSubscription,
+    candidateRecurringOrServiceMerchants: candidateMerchantCount,
+    finalSubscriptionsPassedConfidenceGate:
+      opts.gatedSubscriptions.length,
+    firstEligibleCandidatesPreview: firstTenEligible,
+    heuristicRowsBeforeConfidenceGate: opts.heuristicRows.length,
+  });
 }
 
 export async function analyzeStatementPdf(
@@ -205,48 +278,57 @@ export async function analyzeStatementPdf(
   const displayRefDate = isoTodayUtc();
   const clusterById = new Map(clusters.map((c) => [c.id, c]));
 
-  let subscriptions: SubscriptionInsight[] = [];
+  const heuristicRows = heuristicSubscriptionsFromClusters(
+    clusters,
+    statementPeriod,
+    heuristicRefDate,
+    displayRefDate
+  );
+
+  let aiSubscriptions: SubscriptionInsight[] = [];
   let openAiUsed = false;
   let openAiError: string | null = null;
-  let fallbackUsed = false;
+  let fallbackUsed = true;
 
   try {
     const ai = await analyzeClustersWithOpenAI(clusters, aiController.signal);
     openAiError = ai.error;
-    if (ai.items.length > 0) {
-      const filteredItems = ai.items.filter((raw) => {
-        const cluster = clusterById.get(raw.clusterId);
-        if (!cluster) return false;
-        const debitsOnly = cluster.charges.filter((c) => c.type === "debit");
-        const inferredFreq = coerceFrequency(
-          inferFrequencyFromCharges(debitsOnly.map((d) => d.date))
-        );
-        return !excludeClusterFromSubscriptions(cluster, inferredFreq);
-      });
-      const enriched = filteredItems
-        .map((raw) =>
-          enrichAiSubscription({
-            raw,
-            clusterById,
-            statementPeriod,
-            heuristicRefDate,
-            displayRefDate,
-          })
-        )
-        .filter((x): x is SubscriptionInsight => Boolean(x));
-      const dedup = dedupeSubscriptions(enriched);
-      subscriptions = dedup;
-      if (subscriptions.length > 0) {
-        openAiUsed = true;
-      } else {
-        openAiError =
-          openAiError ??
-          "La respuesta de OpenAI no se pudo enlazar con las transacciones.";
-      }
+
+    const filteredItems = ai.items.filter((raw) => {
+      const cluster = clusterById.get(raw.clusterId);
+      if (!cluster) return false;
+      const debitsOnly = cluster.charges.filter((c) => c.type === "debit");
+      const inferredFreq = coerceFrequency(
+        inferFrequencyFromCharges(debitsOnly.map((d) => d.date))
+      );
+      return !excludeClusterFromSubscriptions(cluster, inferredFreq);
+    });
+
+    aiSubscriptions = filteredItems
+      .map((raw) =>
+        enrichAiSubscription({
+          raw,
+          clusterById,
+          statementPeriod,
+          heuristicRefDate,
+          displayRefDate,
+        })
+      )
+      .filter((x): x is SubscriptionInsight => Boolean(x));
+
+    openAiUsed = aiSubscriptions.length > 0;
+    fallbackUsed = !openAiUsed;
+
+    if (filteredItems.length > 0 && aiSubscriptions.length === 0) {
+      openAiError =
+        openAiError ??
+        "Could not correlate OpenAI subscriptions with debit clusters.";
     }
   } catch (e) {
     openAiError =
-      e instanceof Error ? e.message : "Error al llamar a OpenAI";
+      openAiError ??
+      (e instanceof Error ? e.message : "Unexpected OpenAI error");
+    fallbackUsed = true;
   } finally {
     clearTimeout(killTimer);
     if (outerSignal) {
@@ -254,15 +336,27 @@ export async function analyzeStatementPdf(
     }
   }
 
-  if (!subscriptions.length) {
-    fallbackUsed = true;
-    subscriptions = heuristicSubscriptionsFromClusters(
-      clusters,
-      statementPeriod,
-      heuristicRefDate,
-      displayRefDate
-    );
-  }
+  const merged = mergeByClusterPreferHigherConfidence([
+    heuristicRows,
+    aiSubscriptions,
+  ]);
+
+  let subscriptions = merged
+    .filter((row) => {
+      const cluster = clusterById.get(row.clusterId);
+      if (!cluster) return false;
+      return !excludeClusterFromSubscriptions(cluster);
+    })
+    .filter(passesSubscriptionConfidence);
+
+  subscriptions = dedupeSubscriptions(subscriptions);
+
+  emitSubscriptionInferenceDebug({
+    transactionCount: transactions.length,
+    clusters,
+    heuristicRows,
+    gatedSubscriptions: subscriptions,
+  });
 
   const summary = buildSummary(subscriptions);
 
