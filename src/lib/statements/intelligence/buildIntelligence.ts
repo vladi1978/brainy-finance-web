@@ -7,6 +7,7 @@ import { buildRecommendations } from "../recommendations";
 import { buildFinancialSummary } from "./buildFinancialSummary";
 import { buildSavingsOpportunities } from "./savings";
 import { deriveSmartSignal } from "./smartSignals";
+import { buildCopilotAssistantContext } from "../copilot/buildAssistantContext";
 import { buildCopilotTimeline } from "../timeline/buildTimeline";
 import type {
   EnrichedSpendingRow,
@@ -102,14 +103,21 @@ export function buildStatementIntelligence(
   const savings = buildSavingsOpportunities(input);
   const financialSummary = buildFinancialSummary(savings, recommendations);
   const copilot = buildCopilotTimeline(input, { financialSummary });
+  const healthScore = buildHealthScore(input);
+  const copilotAssistant = buildCopilotAssistantContext(input, {
+    copilot,
+    healthScore,
+    financialSummary,
+  });
 
   return {
     insights: buildInsightsFeed(input),
-    healthScore: buildHealthScore(input),
+    healthScore,
     savings,
     financialSummary,
     recommendations,
     copilot,
+    copilotAssistant,
     merchantGroups,
     visibleRecurring: recurringParts.visible.sort(
       (a, b) => b.totalSpentInPeriod - a.totalSpentInPeriod

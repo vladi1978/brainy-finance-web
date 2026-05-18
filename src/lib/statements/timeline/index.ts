@@ -14,6 +14,7 @@ export {
   toCopilotFeedItem,
 } from "./scorePriority";
 export {
+  getSuggestedCopilotPrompts,
   MOCK_SUGGESTED_PROMPTS,
   mockAssistantReply,
 } from "./mockAssistant";

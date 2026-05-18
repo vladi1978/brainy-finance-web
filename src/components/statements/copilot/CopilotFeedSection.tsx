@@ -1,5 +1,6 @@
 "use client";
 
+import type { CopilotAssistantContext } from "@/lib/statements/copilot/types";
 import type { CopilotFeedItem, CopilotTimelineResult } from "@/lib/statements/timeline/types";
 
 export type CopilotSectionData = Omit<CopilotTimelineResult, "feed" | "topPriorities" | "behaviorTrends"> & {
@@ -12,6 +13,7 @@ import { CopilotAssistantPanel } from "./CopilotAssistantPanel";
 
 type Props = {
   copilot: CopilotSectionData | CopilotTimelineResult;
+  assistant?: CopilotAssistantContext;
   formatMoney: (n: number, currency: string) => string;
 };
 
@@ -28,15 +30,15 @@ function SectionIntro(props: { title: string; description: string }) {
   );
 }
 
-export function CopilotFeedSection({ copilot, formatMoney }: Props) {
+export function CopilotFeedSection({ copilot, assistant, formatMoney }: Props) {
   if (copilot.feed.length === 0) return null;
 
   return (
     <section className="space-y-10 border-t border-white/10 pt-10">
       <div className="bf-copilot-enter">
         <SectionIntro
-          title="AI Copilot"
-          description="Timeline signals turned into prioritized insights — urgency, savings impact, and clear next steps."
+          title="Financial Copilot"
+          description="Statement signals ranked by urgency — with an analyst-style assistant that answers from your detected subscriptions, fees, trends, and recurring merchants."
         />
       </div>
 
@@ -95,7 +97,7 @@ export function CopilotFeedSection({ copilot, formatMoney }: Props) {
           </div>
         </div>
 
-        <CopilotAssistantPanel copilot={copilot} />
+        <CopilotAssistantPanel assistant={assistant} />
       </div>
 
       {copilot.behaviorTrends.length > 0 ? (

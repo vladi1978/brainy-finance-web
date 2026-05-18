@@ -6,6 +6,7 @@ import { useCallback, useMemo, useState } from "react";
 import { CopilotFeedSection } from "@/components/statements/copilot/CopilotFeedSection";
 import { FinancialIntelligenceSummaryPanel } from "@/components/statements/FinancialIntelligenceSummary";
 import type { FinancialIntelligenceSummary } from "@/lib/statements/intelligence/financialCategories";
+import type { CopilotAssistantContext } from "@/lib/statements/copilot/types";
 import type { CopilotTimelineResult } from "@/lib/statements/timeline/types";
 import { ProviderComparisonModal } from "@/components/statements/actions/ProviderComparisonModal";
 import { RecommendationActionCard } from "@/components/statements/actions/RecommendationActionCard";
@@ -151,6 +152,7 @@ type StatementIntelligencePayload = {
   visibleInsights: SpendingInsightRow[];
   lowConfidenceRows: SpendingInsightRow[];
   copilot?: CopilotTimelinePayload;
+  copilotAssistant?: CopilotAssistantContext;
 };
 
 type CopilotFeedItemPayload = {
@@ -648,6 +650,7 @@ export default function StatementsClient() {
                 {intelligence.copilot && intelligence.copilot.feed.length > 0 ? (
                   <CopilotFeedSection
                     copilot={intelligence.copilot as CopilotTimelineResult}
+                    assistant={intelligence.copilotAssistant}
                     formatMoney={formatMoney}
                   />
                 ) : null}

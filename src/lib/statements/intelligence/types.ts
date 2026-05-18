@@ -1,3 +1,4 @@
+import type { CopilotAssistantContext } from "../copilot/types";
 import type { CopilotTimelineResult } from "../timeline/types";
 import type { RecommendationsResult } from "../recommendations/types";
 import type { FinancialIntelligenceSummary } from "./financialCategories";
@@ -75,6 +76,7 @@ export type StatementIntelligence = {
   financialSummary: FinancialIntelligenceSummary;
   recommendations: RecommendationsResult;
   copilot: CopilotTimelineResult;
+  copilotAssistant: CopilotAssistantContext;
   merchantGroups: MerchantGroupSummary[];
   visibleRecurring: EnrichedSpendingRow[];
   visibleInsights: EnrichedSpendingRow[];
