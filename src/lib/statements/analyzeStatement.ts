@@ -12,6 +12,7 @@ import {
   deriveStatementPeriod,
   parseTransactionsFromText,
 } from "./parseTransactions";
+import { extractTransactionsViaOpenAI } from "./transactionAiFallback";
 import type {
   AnalyzeStatementResult,
   MerchantCluster,
@@ -164,17 +165,6 @@ export async function analyzeStatementPdf(
   const outerSignal = options?.signal;
 
   const { text, pageCount } = await extractPdfText(buffer);
-  const transactions = parseTransactionsFromText(text);
-  const statementPeriod = deriveStatementPeriod(transactions);
-  const clusters = buildMerchantClusters(transactions);
-  const heuristicRefDate = heuristicReferenceDate(statementPeriod);
-  const displayRefDate = isoTodayUtc();
-
-  const clusterById = new Map(clusters.map((c) => [c.id, c]));
-  let subscriptions: SubscriptionInsight[] = [];
-  let openAiUsed = false;
-  let openAiError: string | null = null;
-  let fallbackUsed = false;
 
   const timeoutMs = Number(process.env.OPENAI_SUBSCRIPTIONS_TIMEOUT_MS?.trim());
   const ms =
@@ -187,6 +177,35 @@ export async function analyzeStatementPdf(
     else outerSignal.addEventListener("abort", onOuterAbort, { once: true });
   }
   const killTimer = setTimeout(() => aiController.abort(), ms);
+
+  let transactions = parseTransactionsFromText(text);
+
+  if (transactions.length === 0) {
+    try {
+      const txnAi = await extractTransactionsViaOpenAI(text, aiController.signal);
+      if (txnAi.transactions.length > 0) {
+        transactions = txnAi.transactions;
+      } else if (txnAi.error) {
+        console.warn("[statements/analyze] OpenAI transaction fallback:", txnAi.error);
+      }
+    } catch (e) {
+      console.warn(
+        "[statements/analyze] OpenAI transaction fallback threw:",
+        e instanceof Error ? e.message : e
+      );
+    }
+  }
+
+  const statementPeriod = deriveStatementPeriod(transactions);
+  const clusters = buildMerchantClusters(transactions);
+  const heuristicRefDate = heuristicReferenceDate(statementPeriod);
+  const displayRefDate = isoTodayUtc();
+  const clusterById = new Map(clusters.map((c) => [c.id, c]));
+
+  let subscriptions: SubscriptionInsight[] = [];
+  let openAiUsed = false;
+  let openAiError: string | null = null;
+  let fallbackUsed = false;
 
   try {
     const ai = await analyzeClustersWithOpenAI(clusters, aiController.signal);
