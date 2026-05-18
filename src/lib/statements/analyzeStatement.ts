@@ -20,6 +20,7 @@ import { deriveMerchantPresentation } from "./merchantNormalize";
 import { clusterLooksSubscriptionMerchant } from "./subscriptionSignals";
 import { analyzeClustersWithOpenAI } from "./openaiAnalyze";
 import { deriveStatementPeriod, parseTransactionsFromText } from "./parseTransactions";
+import { buildStatementIntelligence } from "./intelligence/buildIntelligence";
 import type {
   AnalyzeStatementResult,
   MerchantCluster,
@@ -474,6 +475,15 @@ export async function analyzeStatementPdf(
 
   const summary = buildSummary(subscriptions, spendingInsightsTotal);
 
+  const intelligence = buildStatementIntelligence({
+    statementPeriod,
+    clusters,
+    subscriptions,
+    recurringExpenses,
+    spendingInsights,
+    transfers,
+  });
+
   return {
     textChars: text.length,
     pageCount,
@@ -496,6 +506,7 @@ export async function analyzeStatementPdf(
     openAiError,
     fallbackUsed,
     parseDebug,
+    intelligence,
   };
 }
 

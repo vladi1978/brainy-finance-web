@@ -78,6 +78,7 @@ export async function POST(req: Request) {
       spendingInsights: result.spendingInsights,
       transfers: result.transfers,
       diagnostics: result.diagnostics,
+      intelligence: result.intelligence,
     });
   } catch (error) {
     console.error("STATEMENTS ANALYZE ERROR:", error);

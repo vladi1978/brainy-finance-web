@@ -159,6 +159,8 @@ export type SubscriptionDiagnostics = {
   }>;
 };
 
+export type { StatementIntelligence } from "./intelligence/types";
+
 export type AnalyzeStatementResult = {
   textChars: number;
   pageCount: number;
@@ -189,4 +191,5 @@ export type AnalyzeStatementResult = {
   openAiError: string | null;
   fallbackUsed: boolean;
   parseDebug: ParsePipelineDebug | null;
+  intelligence: import("./intelligence/types").StatementIntelligence;
 };

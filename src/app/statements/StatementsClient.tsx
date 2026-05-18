@@ -68,6 +68,47 @@ type SpendingInsightRow = {
   lastCharged: string;
   recurringExpenseScore: number;
   spendingInsightScore: number;
+  smartSignal?: string;
+  rowConfidence?: number;
+  confidenceTier?: "confirmed" | "recurring_pattern" | "hidden";
+};
+
+type InsightSeverity = "positive" | "moderate" | "important" | "informational";
+
+type FinancialInsightCard = {
+  id: string;
+  title: string;
+  explanation: string;
+  severity: InsightSeverity;
+  annualImpact?: number;
+};
+
+type StatementIntelligencePayload = {
+  insights: FinancialInsightCard[];
+  healthScore: {
+    score: number;
+    label: string;
+    factors: Array<{ id: string; label: string; impact: number }>;
+  };
+  savings: Array<{
+    id: string;
+    title: string;
+    explanation: string;
+    monthlySavings: number;
+    yearlySavings: number;
+    currency: string;
+  }>;
+  merchantGroups: Array<{
+    groupKey: string;
+    displayName: string;
+    transactionCount: number;
+    totalAmount: number;
+    currency: string;
+    recurringPatternScore: number;
+  }>;
+  visibleRecurring: SpendingInsightRow[];
+  visibleInsights: SpendingInsightRow[];
+  lowConfidenceRows: SpendingInsightRow[];
 };
 
 type DiagnosticsMeta = {
@@ -107,6 +148,7 @@ type AnalyzeOk = {
   /** Zelle and peer-transfer flows — excluded from all dashboard totals */
   transfers: SpendingInsightRow[];
   diagnostics: DiagnosticsMeta;
+  intelligence?: StatementIntelligencePayload;
 };
 
 function formatMoney(n: number, currency: string): string {
@@ -165,6 +207,39 @@ const catLabel: Record<string, string> = {
   other: "Other recurring services",
 };
 
+const severityStyles: Record<
+  InsightSeverity,
+  { border: string; bg: string; text: string }
+> = {
+  positive: {
+    border: "border-emerald-400/25",
+    bg: "from-emerald-500/[0.08]",
+    text: "text-emerald-100",
+  },
+  moderate: {
+    border: "border-amber-400/25",
+    bg: "from-amber-500/[0.08]",
+    text: "text-amber-100",
+  },
+  important: {
+    border: "border-red-400/25",
+    bg: "from-red-500/[0.08]",
+    text: "text-red-100",
+  },
+  informational: {
+    border: "border-sky-400/20",
+    bg: "from-sky-500/[0.07]",
+    text: "text-sky-100",
+  },
+};
+
+const healthScoreTone = (score: number): string => {
+  if (score >= 85) return "text-emerald-300";
+  if (score >= 70) return "text-sky-300";
+  if (score >= 55) return "text-amber-300";
+  return "text-red-300";
+};
+
 const insightKindLabel: Record<string, string> = {
   frequent_spending: "Frequent spending",
   one_time_expense: "One-time expense",
@@ -221,9 +296,24 @@ export default function StatementsClient() {
     if (data.subscriptions.length > 0) {
       return dominantSubscriptionCurrency(data.subscriptions);
     }
-    const pool = [...data.spendingInsights, ...data.recurringExpenses];
+    const pool = [
+      ...(data.intelligence?.visibleInsights ?? data.spendingInsights),
+      ...(data.intelligence?.visibleRecurring ?? data.recurringExpenses),
+    ];
     return dominantCurrency(pool, "USD");
   }, [data]);
+
+  const intelligence = data?.intelligence;
+
+  const displayRecurring = useMemo(
+    () => intelligence?.visibleRecurring ?? data?.recurringExpenses ?? [],
+    [data, intelligence]
+  );
+
+  const displayInsights = useMemo(
+    () => intelligence?.visibleInsights ?? data?.spendingInsights ?? [],
+    [data, intelligence]
+  );
 
   return (
     <main className="flex-1 bg-black px-6 py-10 text-white">
@@ -334,7 +424,145 @@ export default function StatementsClient() {
               ) : null}
             </div>
 
-            <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {intelligence ? (
+              <>
+                <section className="grid gap-6 lg:grid-cols-[minmax(0,280px)_1fr]">
+                  <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.06] to-white/[0.02] p-6">
+                    <p className="text-xs font-medium uppercase tracking-widest text-white/45">
+                      Financial health
+                    </p>
+                    <p
+                      className={[
+                        "mt-3 text-5xl font-bold tabular-nums",
+                        healthScoreTone(intelligence.healthScore.score),
+                      ].join(" ")}
+                    >
+                      {intelligence.healthScore.score}
+                    </p>
+                    <p className="mt-1 text-lg font-semibold text-white">
+                      {intelligence.healthScore.label}
+                    </p>
+                    <ul className="mt-4 space-y-1.5 border-t border-white/10 pt-4 text-xs text-white/50">
+                      {intelligence.healthScore.factors.slice(0, 5).map((f) => (
+                        <li key={f.id} className="flex justify-between gap-2">
+                          <span>{f.label}</span>
+                          <span
+                            className={
+                              f.impact >= 0 ? "text-emerald-300/90" : "text-amber-300/90"
+                            }
+                          >
+                            {f.impact >= 0 ? "+" : ""}
+                            {f.impact}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <section className="space-y-4">
+                    <SectionIntro
+                      title="AI Financial Insights"
+                      description="Pattern-based signals from your parsed statement — subscriptions, fees, dining, convenience, and spending trends."
+                    />
+                    {intelligence.insights.length === 0 ? (
+                      <div className="rounded-2xl border border-dashed border-white/15 bg-white/[0.02] px-5 py-6 text-sm text-white/50">
+                        No notable patterns crossed the insight threshold for this upload.
+                      </div>
+                    ) : (
+                      <ul className="grid gap-3 sm:grid-cols-2">
+                        {intelligence.insights.map((card) => {
+                          const tone = severityStyles[card.severity];
+                          return (
+                            <li
+                              key={card.id}
+                              className={[
+                                "rounded-2xl border bg-gradient-to-br to-white/[0.02] p-4",
+                                tone.border,
+                                tone.bg,
+                              ].join(" ")}
+                            >
+                              <p className={["text-sm font-semibold", tone.text].join(" ")}>
+                                {card.title}
+                              </p>
+                              <p className="mt-1.5 text-xs leading-relaxed text-white/55">
+                                {card.explanation}
+                              </p>
+                              {card.annualImpact != null && card.annualImpact > 0 ? (
+                                <p className="mt-2 text-xs text-white/40">
+                                  Est. annual impact{" "}
+                                  <span className="font-medium text-white/75">
+                                    {formatMoney(card.annualImpact, summaryCurrency)}
+                                  </span>
+                                </p>
+                              ) : null}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </section>
+                </section>
+
+                {intelligence.savings.length > 0 ? (
+                  <section className="space-y-4 border-t border-white/10 pt-10">
+                    <SectionIntro
+                      title="Potential savings"
+                      description="Actionable opportunities estimated from fees, subscriptions, and repeat spend in this statement window."
+                    />
+                    <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      {intelligence.savings.map((opp) => (
+                        <li
+                          key={opp.id}
+                          className="rounded-2xl border border-emerald-400/15 bg-gradient-to-br from-emerald-500/[0.06] to-white/[0.02] p-4"
+                        >
+                          <p className="text-sm font-semibold text-emerald-100">
+                            {opp.title}
+                          </p>
+                          <p className="mt-1.5 text-xs leading-relaxed text-white/55">
+                            {opp.explanation}
+                          </p>
+                          <p className="mt-3 text-xs text-white/45">
+                            ≈{" "}
+                            <span className="font-medium text-white/80">
+                              {formatMoney(opp.monthlySavings, opp.currency)}
+                            </span>
+                            /mo ·{" "}
+                            <span className="font-medium text-emerald-200/90">
+                              {formatMoney(opp.yearlySavings, opp.currency)}
+                            </span>
+                            /yr
+                          </p>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                ) : null}
+
+                {intelligence.merchantGroups.length > 0 ? (
+                  <section className="space-y-3 border-t border-white/10 pt-10">
+                    <SectionIntro
+                      title="Grouped merchants"
+                      description="Normalized merchant names — terminal codes and location suffixes collapsed."
+                    />
+                    <ul className="flex flex-wrap gap-2">
+                      {intelligence.merchantGroups.slice(0, 12).map((g) => (
+                        <li
+                          key={g.groupKey}
+                          className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-white/70"
+                        >
+                          <span className="font-medium text-white">{g.displayName}</span>
+                          <span className="text-white/35"> · </span>
+                          {g.transactionCount} txns ·{" "}
+                          {formatMoney(g.totalAmount, g.currency)}
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                ) : null}
+              </>
+            ) : null}
+
+            <section className="grid gap-4 border-t border-white/10 pt-10 sm:grid-cols-2 lg:grid-cols-4">
               <SummaryCard
                 title="Estimated monthly subscriptions"
                 value={formatMoney(data.summary.monthlySpend, summaryCurrency)}
@@ -360,7 +588,7 @@ export default function StatementsClient() {
                   data.summary.spendingInsightsTotal,
                   summaryCurrency
                 )}
-                subtitle={`${data.spendingInsights.length} notable flows · does not include recurring everyday spend`}
+                subtitle={`${displayInsights.length} notable flows · does not include recurring everyday spend`}
               />
             </section>
 
@@ -407,7 +635,7 @@ export default function StatementsClient() {
                 title="Recurring expenses"
                 description="Repeated merchants that are not classified as subscription bills: fuel, groceries, dining, convenience runs, retail, fee patterns, and recurring transfers. These never flow into subscription totals."
               />
-              {data.recurringExpenses.length === 0 ? (
+              {displayRecurring.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-violet-400/20 bg-violet-500/[0.03] px-5 py-8 text-center">
                   <p className="text-sm text-white/60">
                     No recurring non-subscription patterns crossed the reporting
@@ -416,7 +644,7 @@ export default function StatementsClient() {
                 </div>
               ) : (
                 <ul className="space-y-4">
-                  {data.recurringExpenses.map((row) => (
+                  {displayRecurring.map((row) => (
                     <li key={row.clusterId}>
                       <RecurringExpenseCard row={row} />
                     </li>
@@ -430,7 +658,7 @@ export default function StatementsClient() {
                 title="Spending insights"
                 description="One-time debits, large transfers, bank fees, unusual activity, and merchants flagged for review or possible savings—aggregated separately from subscriptions and recurring everyday spend."
               />
-              {data.spendingInsights.length === 0 ? (
+              {displayInsights.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-sky-400/20 bg-sky-500/[0.03] px-5 py-8 text-center">
                   <p className="text-sm text-white/60">
                     No additional insight rows were promoted after routing recurring
@@ -439,7 +667,7 @@ export default function StatementsClient() {
                 </div>
               ) : (
                 <ul className="space-y-4">
-                  {data.spendingInsights.map((row) => (
+                  {displayInsights.map((row) => (
                     <li key={row.clusterId}>
                       <SpendingInsightCard row={row} />
                     </li>
@@ -478,6 +706,26 @@ export default function StatementsClient() {
                 Diagnostics & parsed ledger
               </summary>
               <div className="mt-4 space-y-3 border-t border-white/10 pt-4">
+                {intelligence && intelligence.lowConfidenceRows.length > 0 ? (
+                  <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                    <summary className="cursor-pointer text-white/70">
+                      Low-confidence spend rows ({intelligence.lowConfidenceRows.length})
+                    </summary>
+                    <ul className="mt-2 max-h-48 space-y-2 overflow-y-auto">
+                      {intelligence.lowConfidenceRows.map((r) => (
+                        <li
+                          key={r.clusterId}
+                          className="rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-[11px] text-white/60"
+                        >
+                          {r.normalizedName} · score{" "}
+                          {((r.rowConfidence ?? 0) * 100).toFixed(0)}% ·{" "}
+                          {formatMoney(r.totalSpentInPeriod, r.currency)}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                ) : null}
+
                 {data.meta.parseDebug?.firstTenTransactions?.length ? (
                   <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
                     <summary className="cursor-pointer text-white/70">
@@ -743,8 +991,17 @@ function SpendingInsightCard(props: { row: SpendingInsightRow }) {
           </p>
           <p className="mt-2 rounded-lg border border-white/10 bg-black/25 px-3 py-2 text-xs text-sky-100/95">
             <span className="font-semibold text-sky-200/95">Signal:</span>{" "}
-            {r.recommendation}
+            {r.smartSignal ?? r.recommendation}
           </p>
+          {r.confidenceTier === "confirmed" ? (
+            <span className="mt-2 inline-block rounded-full border border-emerald-400/35 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-100">
+              Confirmed
+            </span>
+          ) : r.confidenceTier === "recurring_pattern" ? (
+            <span className="mt-2 inline-block rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-100">
+              Recurring pattern
+            </span>
+          ) : null}
         </div>
         <div className="text-right">
           <p className="text-lg font-semibold text-white">
@@ -792,6 +1049,19 @@ function RecurringExpenseCard(props: { row: SpendingInsightRow }) {
               {(r.recurringExpenseScore * 100).toFixed(0)}%
             </span>
           </p>
+          <p className="mt-2 rounded-lg border border-white/10 bg-black/25 px-3 py-2 text-xs text-violet-100/95">
+            <span className="font-semibold text-violet-200/95">Signal:</span>{" "}
+            {r.smartSignal ?? r.recommendation}
+          </p>
+          {r.confidenceTier === "confirmed" ? (
+            <span className="mt-2 inline-block rounded-full border border-emerald-400/35 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-100">
+              Confirmed
+            </span>
+          ) : r.confidenceTier === "recurring_pattern" ? (
+            <span className="mt-2 inline-block rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-100">
+              Recurring pattern
+            </span>
+          ) : null}
         </div>
         <div className="text-right">
           <p className="text-lg font-semibold text-white">

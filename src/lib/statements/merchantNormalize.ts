@@ -186,6 +186,10 @@ export function clusteringMerchantKey(description: string): string {
   // Trailing USPS-style state abbreviation (drops leading numbers first)
   s = s.replace(/\s+[A-Z]{2}\s*$/gu, " ");
 
+  // Store / terminal suffixes (e.g. KAFENELEAS D02-0, LOC #123)
+  s = s.replace(/\b(?:STORE|ST|LOC|UNIT)\s*#?\s*\d+\b/giu, " ");
+  s = s.replace(/\b[A-Z]?\d{1,3}[-\s]\d{1,4}\b/gu, " ");
+
   s = s
     .replace(/\*|#/gu, " ")
     .replace(/\bID\s+|\bSEQ\s+|REF\s+R?O?|\bTRAN\s+I?D\b/gu, " ")
