@@ -1,5 +1,7 @@
 import type { CopilotTimelineResult } from "../timeline/types";
 import type { RecommendationsResult } from "../recommendations/types";
+import type { FinancialIntelligenceSummary } from "./financialCategories";
+import type { SavingsCategory } from "./financialCategories";
 import type {
   MerchantCluster,
   SpendingInsight,
@@ -47,7 +49,12 @@ export type SavingsOpportunity = {
   monthlySavings: number;
   yearlySavings: number;
   currency: string;
+  category: SavingsCategory;
+  /** 0–1 confidence in the underlying pattern */
+  confidence: number;
 };
+
+export type { FinancialIntelligenceSummary, SavingsCategory };
 
 export type HealthScoreLabel =
   | "Excellent"
@@ -65,6 +72,7 @@ export type StatementIntelligence = {
   insights: FinancialInsightCard[];
   healthScore: HealthScoreResult;
   savings: SavingsOpportunity[];
+  financialSummary: FinancialIntelligenceSummary;
   recommendations: RecommendationsResult;
   copilot: CopilotTimelineResult;
   merchantGroups: MerchantGroupSummary[];

@@ -4,6 +4,7 @@ import { buildMerchantGroups } from "./merchantGroups";
 import { buildHealthScore } from "./healthScore";
 import { buildInsightsFeed } from "./insightsFeed";
 import { buildRecommendations } from "../recommendations";
+import { buildFinancialSummary } from "./buildFinancialSummary";
 import { buildSavingsOpportunities } from "./savings";
 import { deriveSmartSignal } from "./smartSignals";
 import { buildCopilotTimeline } from "../timeline/buildTimeline";
@@ -99,14 +100,14 @@ export function buildStatementIntelligence(
 
   const recommendations = buildRecommendations({ ...input, merchantGroups });
   const savings = buildSavingsOpportunities(input);
-  const copilot = buildCopilotTimeline(input, {
-    existingYearlySavings: recommendations.totalYearlySavings,
-  });
+  const financialSummary = buildFinancialSummary(savings, recommendations);
+  const copilot = buildCopilotTimeline(input, { financialSummary });
 
   return {
     insights: buildInsightsFeed(input),
     healthScore: buildHealthScore(input),
     savings,
+    financialSummary,
     recommendations,
     copilot,
     merchantGroups,

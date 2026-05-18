@@ -45,11 +45,20 @@ export type CopilotFeedItem = {
   priority: PriorityScores;
 };
 
+export type OptimizationPotentialRange = {
+  yearlyLow: number;
+  yearlyHigh: number;
+  confidence: number;
+};
+
 export type CopilotTimelineResult = {
   feed: CopilotFeedItem[];
   topPriorities: CopilotFeedItem[];
   behaviorTrends: CopilotFeedItem[];
+  /** @deprecated Use optimizationPotential — kept for backward compatibility */
   yearlyOptimizationPotential: number;
+  optimizationPotential: OptimizationPotentialRange;
+  actionableYearlySavings: number;
   currency: string;
   generatedAt: string;
 };

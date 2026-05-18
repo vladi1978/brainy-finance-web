@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useCallback, useMemo, useState } from "react";
 
 import { CopilotFeedSection } from "@/components/statements/copilot/CopilotFeedSection";
+import { FinancialIntelligenceSummaryPanel } from "@/components/statements/FinancialIntelligenceSummary";
+import type { FinancialIntelligenceSummary } from "@/lib/statements/intelligence/financialCategories";
 import type { CopilotTimelineResult } from "@/lib/statements/timeline/types";
 import { ProviderComparisonModal } from "@/components/statements/actions/ProviderComparisonModal";
 import { RecommendationActionCard } from "@/components/statements/actions/RecommendationActionCard";
@@ -119,11 +121,22 @@ type StatementIntelligencePayload = {
     monthlySavings: number;
     yearlySavings: number;
     currency: string;
+    category: "confirmed" | "avoidable_fees" | "optimization";
+    confidence: number;
   }>;
+  financialSummary?: FinancialIntelligenceSummary;
   recommendations: {
     items: ActionRecommendationRow[];
     totalMonthlySavings: number;
     totalYearlySavings: number;
+    actionableMonthlySavings?: number;
+    actionableYearlySavings?: number;
+    optimizationRange?: {
+      monthlyLow: number;
+      monthlyHigh: number;
+      yearlyLow: number;
+      yearlyHigh: number;
+    };
     currency: string;
   };
   merchantGroups: Array<{
@@ -165,6 +178,12 @@ type CopilotTimelinePayload = {
   topPriorities: CopilotFeedItemPayload[];
   behaviorTrends: CopilotFeedItemPayload[];
   yearlyOptimizationPotential: number;
+  optimizationPotential?: {
+    yearlyLow: number;
+    yearlyHigh: number;
+    confidence: number;
+  };
+  actionableYearlySavings?: number;
   currency: string;
   generatedAt: string;
 };
@@ -619,6 +638,13 @@ export default function StatementsClient() {
                   </section>
                 </section>
 
+                {intelligence.financialSummary ? (
+                  <FinancialIntelligenceSummaryPanel
+                    summary={intelligence.financialSummary}
+                    formatMoney={formatMoney}
+                  />
+                ) : null}
+
                 {intelligence.copilot && intelligence.copilot.feed.length > 0 ? (
                   <CopilotFeedSection
                     copilot={intelligence.copilot as CopilotTimelineResult}
@@ -629,8 +655,8 @@ export default function StatementsClient() {
                 {intelligence.savings.length > 0 ? (
                   <section className="space-y-4 border-t border-white/10 pt-10">
                     <SectionIntro
-                      title="Potential savings"
-                      description="Actionable opportunities estimated from fees, subscriptions, and repeat spend in this statement window."
+                      title="Savings opportunities"
+                      description="Grouped by category — optimization items show conservative ranges and are not counted as guaranteed savings."
                     />
                     <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                       {intelligence.savings.map((opp) => (
@@ -644,16 +670,45 @@ export default function StatementsClient() {
                           <p className="mt-1.5 text-xs leading-relaxed text-white/55">
                             {opp.explanation}
                           </p>
-                          <p className="mt-3 text-xs text-white/45">
-                            ≈{" "}
-                            <span className="font-medium text-white/80">
-                              {formatMoney(opp.monthlySavings, opp.currency)}
-                            </span>
-                            /mo ·{" "}
-                            <span className="font-medium text-emerald-200/90">
-                              {formatMoney(opp.yearlySavings, opp.currency)}
-                            </span>
-                            /yr
+                          <p className="mt-2 text-[10px] uppercase tracking-widest text-white/35">
+                            {opp.category === "confirmed"
+                              ? "Confirmed savings"
+                              : opp.category === "avoidable_fees"
+                                ? "Avoidable fees"
+                                : "Optimization"}
+                          </p>
+                          <p className="mt-2 text-xs text-white/45">
+                            {opp.category === "optimization" ? (
+                              <>
+                                Range ≈{" "}
+                                <span className="font-medium text-violet-200/90">
+                                  {formatMoney(
+                                    Math.round(opp.monthlySavings * 0.25 * 100) / 100,
+                                    opp.currency
+                                  )}
+                                </span>
+                                –{" "}
+                                <span className="font-medium text-violet-200/90">
+                                  {formatMoney(
+                                    Math.round(opp.monthlySavings * 0.55 * 100) / 100,
+                                    opp.currency
+                                  )}
+                                </span>
+                                /mo
+                              </>
+                            ) : (
+                              <>
+                                ≈{" "}
+                                <span className="font-medium text-white/80">
+                                  {formatMoney(opp.monthlySavings, opp.currency)}
+                                </span>
+                                /mo ·{" "}
+                                <span className="font-medium text-emerald-200/90">
+                                  {formatMoney(opp.yearlySavings, opp.currency)}
+                                </span>
+                                /yr
+                              </>
+                            )}
                           </p>
                         </li>
                       ))}
@@ -669,11 +724,11 @@ export default function StatementsClient() {
                         description="Deterministic recommendations from subscriptions, fees, recurring spend, and merchant patterns — savings are conservative estimates, not quoted prices."
                       />
                       {intelligence.recommendations.totalMonthlySavings > 0 ? (
-                        <div className="rounded-xl border border-violet-400/20 bg-violet-500/[0.08] px-4 py-2.5 text-sm">
-                          <p className="text-xs uppercase tracking-widest text-violet-200/70">
-                            Potential monthly savings
+                        <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/[0.08] px-4 py-2.5 text-sm">
+                          <p className="text-xs uppercase tracking-widest text-emerald-200/70">
+                            Actionable savings
                           </p>
-                          <p className="mt-0.5 font-semibold tabular-nums text-violet-100">
+                          <p className="mt-0.5 font-semibold tabular-nums text-emerald-100">
                             {formatMoney(
                               intelligence.recommendations.totalMonthlySavings,
                               intelligence.recommendations.currency
@@ -688,6 +743,22 @@ export default function StatementsClient() {
                               /yr
                             </span>
                           </p>
+                          {intelligence.recommendations.optimizationRange &&
+                          intelligence.recommendations.optimizationRange.yearlyHigh > 0 ? (
+                            <p className="mt-1 text-[10px] text-violet-200/60">
+                              Optimization range (not included):{" "}
+                              {formatMoney(
+                                intelligence.recommendations.optimizationRange.yearlyLow,
+                                intelligence.recommendations.currency
+                              )}
+                              –
+                              {formatMoney(
+                                intelligence.recommendations.optimizationRange.yearlyHigh,
+                                intelligence.recommendations.currency
+                              )}
+                              /yr
+                            </p>
+                          ) : null}
                         </div>
                       ) : null}
                     </div>

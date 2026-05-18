@@ -1,7 +1,9 @@
 import type { IntelligenceInput } from "../intelligence/types";
 import { detectTimelineSignals } from "./detectSignals";
 import { narrativeForSignal } from "./narratives";
+import type { FinancialIntelligenceSummary } from "../intelligence/financialCategories";
 import {
+  estimateOptimizationRange,
   estimateYearlyPotential,
   toCopilotFeedItem,
 } from "./scorePriority";
@@ -27,7 +29,7 @@ function dominantCurrency(
 
 export function buildCopilotTimeline(
   input: IntelligenceInput,
-  options?: { existingYearlySavings?: number }
+  options?: { financialSummary?: FinancialIntelligenceSummary }
 ): CopilotTimelineResult {
   const signals = detectTimelineSignals(input);
   const feed = signals
@@ -39,17 +41,33 @@ export function buildCopilotTimeline(
     .sort((a, b) => b.priority.overall - a.priority.overall)
     .slice(0, 5);
 
-  const existingYearly = options?.existingYearlySavings ?? 0;
-  const yearlyOptimizationPotential = estimateYearlyPotential(
-    feed,
-    existingYearly
-  );
+  const feedOptimization = estimateOptimizationRange(feed);
+  const summaryOptimization = options?.financialSummary?.optimization;
+  const optimizationPotential = {
+    yearlyLow: Math.max(
+      feedOptimization.yearlyLow,
+      summaryOptimization?.yearlyLow ?? 0
+    ),
+    yearlyHigh: Math.max(
+      feedOptimization.yearlyHigh,
+      summaryOptimization?.yearlyHigh ?? 0
+    ),
+    confidence: Math.max(
+      feedOptimization.confidence,
+      summaryOptimization?.confidence ?? 0
+    ),
+  };
+  const actionableYearlySavings =
+    options?.financialSummary?.actionableYearly ?? 0;
+  const yearlyOptimizationPotential = estimateYearlyPotential(feed, 0);
 
   return {
     feed,
     topPriorities,
     behaviorTrends,
     yearlyOptimizationPotential,
+    optimizationPotential,
+    actionableYearlySavings,
     currency: dominantCurrency(input),
     generatedAt: new Date().toISOString(),
   };

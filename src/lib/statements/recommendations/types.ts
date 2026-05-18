@@ -28,9 +28,21 @@ export type ActionRecommendation = {
   sourceInsightId?: string;
 };
 
+export type OptimizationRange = {
+  monthlyLow: number;
+  monthlyHigh: number;
+  yearlyLow: number;
+  yearlyHigh: number;
+};
+
 export type RecommendationsResult = {
   items: ActionRecommendation[];
+  /** Confirmed + avoidable fees only — excludes optimization estimates */
   totalMonthlySavings: number;
   totalYearlySavings: number;
+  /** Same as totalMonthlySavings — actionable, not optimization */
+  actionableMonthlySavings: number;
+  actionableYearlySavings: number;
+  optimizationRange: OptimizationRange;
   currency: string;
 };

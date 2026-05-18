@@ -1,6 +1,15 @@
+import {
+  OPTIMIZATION_HIGH_FRACTION,
+  OPTIMIZATION_LOW_FRACTION,
+} from "../intelligence/financialCategories";
 import { annualizePeriodAmount } from "../intelligence/period";
 import type { IntelligenceInput } from "../intelligence/types";
-import type { CopilotFeedItem, PriorityScores, TimelineSignal } from "./types";
+import type {
+  CopilotFeedItem,
+  OptimizationPotentialRange,
+  PriorityScores,
+  TimelineSignal,
+} from "./types";
 import { signalSeverity } from "./detectSignals";
 
 function urgencyForKind(signal: TimelineSignal): number {
@@ -52,13 +61,13 @@ function savingsFromSignal(
   let yearly = annualizePeriodAmount(signal.amount, statementPeriod);
 
   if (signal.kind === "overdraft_pattern" || signal.kind === "fee_escalation") {
-    yearly = Math.max(yearly, signal.amount * 12);
+    yearly = Math.round(yearly * 0.85 * 100) / 100;
   }
   if (signal.kind === "subscription_growth" && signal.categoryKey === "streaming") {
-    yearly = Math.round(yearly * 0.25 * 100) / 100;
+    yearly = Math.round(yearly * 0.15 * 100) / 100;
   }
   if (signal.kind === "spending_increase" && signal.categoryKey === "restaurants") {
-    yearly = Math.round(yearly * 0.15 * 100) / 100;
+    yearly = Math.round(yearly * 0.1 * 100) / 100;
   }
   if (signal.kind === "spending_decrease") {
     yearly = 0;
@@ -116,19 +125,69 @@ export function toCopilotFeedItem(
   };
 }
 
-export function estimateYearlyPotential(
-  items: CopilotFeedItem[],
-  existingYearlySavings: number
-): number {
+const OPTIMIZATION_SIGNAL_PREFIXES = [
+  "subscription",
+  "spending",
+  "telecom",
+  "streaming",
+  "dining",
+  "convenience",
+  "recurring",
+  "insurance",
+];
+
+function isOptimizationFeedItem(item: CopilotFeedItem): boolean {
+  if (item.tags.includes("fee")) return false;
+  if (item.signalId.includes("overdraft") || item.signalId.includes("fee")) {
+    return false;
+  }
+  return (
+    item.tags.includes("trend") ||
+    item.tags.includes("subscription") ||
+    OPTIMIZATION_SIGNAL_PREFIXES.some((p) => item.signalId.includes(p))
+  );
+}
+
+export function estimateOptimizationRange(
+  items: CopilotFeedItem[]
+): OptimizationPotentialRange {
   const seen = new Set<string>();
-  let sum = 0;
+  const yearlyEstimates: number[] = [];
+  const confidences: number[] = [];
+
   for (const item of items) {
+    if (!isOptimizationFeedItem(item)) continue;
     if (!item.estimatedYearlySavings || item.estimatedYearlySavings <= 0) continue;
     const key = item.signalId.split("-")[0] ?? item.id;
     if (seen.has(key)) continue;
     seen.add(key);
-    sum += item.estimatedYearlySavings;
+    yearlyEstimates.push(item.estimatedYearlySavings);
+    confidences.push(item.priority.confidence / 100);
   }
-  const blended = sum * 0.65 + existingYearlySavings * 0.35;
-  return Math.round(Math.max(sum, blended) * 100) / 100;
+
+  if (!yearlyEstimates.length) {
+    return { yearlyLow: 0, yearlyHigh: 0, confidence: 0 };
+  }
+
+  const yearlyLow = Math.round(
+    yearlyEstimates.reduce((s, y) => s + y * OPTIMIZATION_LOW_FRACTION, 0) * 100
+  ) / 100;
+  const yearlyHigh = Math.round(
+    yearlyEstimates.reduce((s, y) => s + y * OPTIMIZATION_HIGH_FRACTION, 0) * 100
+  ) / 100;
+  const confidence =
+    Math.round(
+      (confidences.reduce((s, c) => s + c, 0) / confidences.length) * 100
+    ) / 100;
+
+  return { yearlyLow, yearlyHigh, confidence };
+}
+
+/** @deprecated Inflated single-number estimate — use estimateOptimizationRange */
+export function estimateYearlyPotential(
+  items: CopilotFeedItem[],
+  _existingYearlySavings: number
+): number {
+  const range = estimateOptimizationRange(items);
+  return range.yearlyHigh;
 }

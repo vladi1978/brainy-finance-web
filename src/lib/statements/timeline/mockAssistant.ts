@@ -48,8 +48,14 @@ export function mockAssistantReply(
   }
 
   if (/\b(save|saving|optimize|cut)\b/u.test(p)) {
-    const yr = copilot.yearlyOptimizationPotential;
-    return `${STATIC_REPLIES.savings} Estimated yearly optimization potential on this statement is about ${yr.toFixed(0)} ${copilot.currency}.`;
+    const actionable = copilot.actionableYearlySavings ?? 0;
+    const opt = copilot.optimizationPotential;
+    const low = opt?.yearlyLow ?? 0;
+    const high = opt?.yearlyHigh ?? 0;
+    if (actionable > 0 || high > 0) {
+      return `${STATIC_REPLIES.savings} Actionable savings (confirmed + avoidable fees) are about ${actionable.toFixed(0)} ${copilot.currency}/yr. Optimization opportunities may range ${low.toFixed(0)}–${high.toFixed(0)} ${copilot.currency}/yr — not guaranteed.`;
+    }
+    return STATIC_REPLIES.savings;
   }
 
   if (/\b(trend|pattern|behavior|weekend|dining)\b/u.test(p)) {

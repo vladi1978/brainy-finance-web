@@ -118,17 +118,47 @@ export function CopilotFeedSection({ copilot, formatMoney }: Props) {
         </div>
       ) : null}
 
-      <div className="bf-copilot-enter rounded-2xl border border-emerald-400/20 bg-gradient-to-br from-emerald-500/[0.1] via-violet-500/[0.06] to-white/[0.02] p-6">
-        <p className="text-xs font-medium uppercase tracking-widest text-emerald-200/70">
-          Estimated yearly optimization potential
-        </p>
-        <p className="mt-2 text-4xl font-bold tabular-nums text-emerald-100">
-          {formatMoney(copilot.yearlyOptimizationPotential, copilot.currency)}
-        </p>
-        <p className="mt-2 max-w-xl text-xs leading-relaxed text-white/50">
-          Conservative blend of copilot savings estimates and existing
-          recommendation totals — not a guaranteed quote.
-        </p>
+      <div className="bf-copilot-enter grid gap-4 sm:grid-cols-2">
+        <div className="rounded-2xl border border-emerald-400/20 bg-gradient-to-br from-emerald-500/[0.1] to-white/[0.02] p-6">
+          <p className="text-xs font-medium uppercase tracking-widest text-emerald-200/70">
+            Actionable savings
+          </p>
+          <p className="mt-2 text-3xl font-bold tabular-nums text-emerald-100">
+            {formatMoney(copilot.actionableYearlySavings ?? 0, copilot.currency)}
+            <span className="text-sm font-normal text-white/45"> /yr</span>
+          </p>
+          <p className="mt-2 text-xs leading-relaxed text-white/50">
+            Confirmed recurring cuts and avoidable fees only — excludes
+            optimization estimates.
+          </p>
+        </div>
+        <div className="rounded-2xl border border-violet-400/20 bg-gradient-to-br from-violet-500/[0.08] to-white/[0.02] p-6">
+          <p className="text-xs font-medium uppercase tracking-widest text-violet-200/70">
+            Optimization opportunity range
+          </p>
+          <p className="mt-2 text-3xl font-bold tabular-nums text-violet-100">
+            {formatMoney(
+              copilot.optimizationPotential?.yearlyLow ?? 0,
+              copilot.currency
+            )}
+            <span className="text-lg font-normal text-white/40"> – </span>
+            {formatMoney(
+              copilot.optimizationPotential?.yearlyHigh ?? 0,
+              copilot.currency
+            )}
+            <span className="text-sm font-normal text-white/45"> /yr</span>
+          </p>
+          <p className="mt-2 text-xs leading-relaxed text-white/50">
+            Not guaranteed savings — telecom, insurance, bundles, and spending
+            trends. Never added to actionable totals.
+            {(copilot.optimizationPotential?.confidence ?? 0) > 0 ? (
+              <span className="mt-1 block text-violet-200/50">
+                Confidence{" "}
+                {Math.round((copilot.optimizationPotential?.confidence ?? 0) * 100)}%
+              </span>
+            ) : null}
+          </p>
+        </div>
       </div>
     </section>
   );

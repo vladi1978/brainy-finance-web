@@ -3,7 +3,11 @@ import type { MerchantGroupSummary } from "../intelligence/types";
 import { logRecommendationGeneration } from "./logger";
 import { enrichRecommendationsWording } from "./openaiWording";
 import { applyRecommendationRules } from "./rules";
-import { roundMoney } from "./savingsEstimate";
+import {
+  categoryForActionType,
+  mergeCategoryTotals,
+  roundMoney,
+} from "../intelligence/financialCategories";
 import type { ActionRecommendation, RecommendationsResult } from "./types";
 
 export type { ActionRecommendation, RecommendationsResult } from "./types";
@@ -51,12 +55,22 @@ export function buildRecommendations(
     input.recurringExpenses[0]?.currency ??
     "USD";
 
-  const totalMonthlySavings = roundMoney(
-    items.reduce((s, r) => s + r.estimatedMonthlySavings, 0)
+  const lineItems = items.map((rec) => ({
+    monthly: rec.estimatedMonthlySavings,
+    yearly: rec.estimatedYearlySavings,
+    confidence: rec.confidence,
+    category: categoryForActionType(rec.actionType),
+  }));
+  const { confirmed, avoidableFees, optimization } = mergeCategoryTotals(lineItems);
+
+  const actionableMonthlySavings = roundMoney(
+    confirmed.monthlyHigh + avoidableFees.monthlyHigh
   );
-  const totalYearlySavings = roundMoney(
-    items.reduce((s, r) => s + r.estimatedYearlySavings, 0)
+  const actionableYearlySavings = roundMoney(
+    confirmed.yearlyHigh + avoidableFees.yearlyHigh
   );
+  const totalMonthlySavings = actionableMonthlySavings;
+  const totalYearlySavings = actionableYearlySavings;
 
   logRecommendationGeneration(items, {
     subscriptionCount: input.subscriptions.length,
@@ -70,6 +84,14 @@ export function buildRecommendations(
     items,
     totalMonthlySavings,
     totalYearlySavings,
+    actionableMonthlySavings,
+    actionableYearlySavings,
+    optimizationRange: {
+      monthlyLow: optimization.monthlyLow,
+      monthlyHigh: optimization.monthlyHigh,
+      yearlyLow: optimization.yearlyLow,
+      yearlyHigh: optimization.yearlyHigh,
+    },
     currency,
   };
 }
