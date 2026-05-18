@@ -1,8 +1,8 @@
 import OpenAI from "openai";
-import { sanitizeStatementTransactions } from "./parseTransactions";
+import { sanitizeStatementTransactions } from "./pipeline/validateRow";
 import type { Transaction } from "./types";
 
-const MODEL_DEFAULT = "gpt-4o-mini";
+const MODEL_DEFAULT = "gpt-4o";
 const MAX_CHARS = 14_000;
 
 function coerceTransaction(raw: unknown): Transaction | null {

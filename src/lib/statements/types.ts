@@ -67,6 +67,29 @@ export type StatementPeriod = {
   end: string;
 };
 
+/** Server-side structured diagnostics for the transaction pipeline */
+export type ParsePipelineDebug = {
+  totalExtractedChars: number;
+  physicalLineCount: number;
+  cleanedLineCount: number;
+  reconstructedLineCount: number;
+  candidateCount: number;
+  highConfidenceParsed: number;
+  acceptedCount: number;
+  rejectedCount: number;
+  aiDisambiguatedCount: number;
+  fullTextAiFallbackUsed: boolean;
+  rejected: Array<{ line: string; reasons: string[] }>;
+  firstTenTransactions: Array<{
+    date: string;
+    description: string;
+    amount: number;
+    type: string;
+    currency: string;
+    source: string;
+  }>;
+};
+
 export type AnalyzeStatementResult = {
   textChars: number;
   pageCount: number;
@@ -83,4 +106,5 @@ export type AnalyzeStatementResult = {
   openAiUsed: boolean;
   openAiError: string | null;
   fallbackUsed: boolean;
+  parseDebug: ParsePipelineDebug | null;
 };

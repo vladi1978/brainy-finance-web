@@ -45,6 +45,20 @@ export async function POST(req: Request) {
       "[statements/analyze] first 5 parsed transactions:",
       result.transactions.slice(0, 5)
     );
+    if (result.parseDebug) {
+      console.log(
+        "[statements/analyze] pipeline diagnostics:",
+        JSON.stringify({
+          extractedChars: result.parseDebug.totalExtractedChars,
+          cleanedLines: result.parseDebug.cleanedLineCount,
+          reconstructedLines: result.parseDebug.reconstructedLineCount,
+          accepted: result.parseDebug.acceptedCount,
+          rejected: result.parseDebug.rejectedCount,
+          aiDisambiguated: result.parseDebug.aiDisambiguatedCount,
+          fullTextAiFallback: result.parseDebug.fullTextAiFallbackUsed,
+        })
+      );
+    }
 
     return NextResponse.json({
       ok: true,
@@ -56,6 +70,7 @@ export async function POST(req: Request) {
         openAiUsed: result.openAiUsed,
         openAiError: result.openAiError,
         fallbackUsed: result.fallbackUsed,
+        parseDebug: result.parseDebug,
       },
       summary: result.summary,
       subscriptions: result.subscriptions,

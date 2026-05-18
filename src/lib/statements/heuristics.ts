@@ -131,36 +131,76 @@ export function computeHeuristicFlags(args: {
   };
 }
 
-/** Exclude obvious non-subscription charge clusters before heuristics + AI merges */
+/** Exclude non-subscription clusters (prefer false negatives). */
 export function excludeClusterFromSubscriptions(
   cluster: MerchantCluster,
   recurringFrequency?: SubscriptionFrequency
 ): boolean {
+  void recurringFrequency;
   const blob =
     `${cluster.descriptions.join(" ")} ${cluster.key}`.toUpperCase();
 
-  const payrollReturnedOverdraft =
-    /\b(ADP|PAYCHEX|GUSTO|DAYFORCE|ZENEFITS|TALX|INTUIT\s+PAYROLL|PAYSTUB)\b/u.test(blob) ||
-    /\b(?:DIRECT\s+DEP|AUTO\s+PAY)\b.*?PAYROLL/u.test(blob) ||
-    /\bNET\s+PAY\b/u.test(blob) ||
-    /\b(?:SALARY|WAGE|EARN\s+INC)\s+PAY\b/u.test(blob) ||
-    /\b(RTND\s+CHK|CHK\s+RTND|RETURNED\s+CHK|CHK\s+RET|RD\s+CHK|RETURNED\s+ITEM|RCK\b|ORIG\s+RTRND|CHG\s+RTRND|REVERS(?:AL|ED\s+DEBIT))\b/u.test(blob) ||
-    /\bOVERDRAFT|\bOVERDR\.?\b|\bOD\s+F(?:EE|E)\b|\bOD\s+PAY\b|\bNSF\b|NON\s*SUF|INSUFFICIENT\s+FUNDS/u.test(blob);
-  if (payrollReturnedOverdraft) return true;
-
-  const liquorAndCafe =
-    /\b(?:LIQUOR|SPIRIT|PACKAGE\s+(?:STORE|LIQUORS)|TOTAL\s+WINE|CONVENIEN|\bSTARBU|SAXBY|WINE\s+SHOP|TAPHOUSE|ESPRESSO|DUNKIN|COFFEE\s+(?:HOUSE|SHOP))\b/u.test(blob);
-  const strongRecurrence =
-    recurringFrequency === "monthly" ||
-    recurringFrequency === "weekly" ||
-    recurringFrequency === "annual";
+  if (
+    /\b(PAYROLL|NÓMINA|NOMINA|NET\s+PAY|GROSS\s+PAY|SALARY|HOURLY\s+PAY|WAGE)\b/u.test(
+      blob
+    )
+  ) {
+    return true;
+  }
 
   if (
-    liquorAndCafe &&
-    !(
-      cluster.charges.filter((c) => c.type === "debit").length >= 3 &&
-      strongRecurrence
+    /\b(DIRECT\s+DEP|DIR\s+DEP)\b/u.test(blob) &&
+    !/\b(SUBSCR|MEMBERSHIP|RECURRING\s+PAY)\b/u.test(blob)
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(VENMO|ZELLE|PAYPAL|WISE|REVOLUT|CASH\s*APP)\b.*\b(SEND|RECV|TRANSFER|TRANSF|PAGO|SENT)\b/u.test(
+      blob
+    ) ||
+    /\b(TRANSFER|TRANSF|XFER|TRF|IFT|INT\s+PAY|WIRE|SPEI|IBAN\s+PAY)\b/u.test(
+      blob
     )
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(CHECK|CHK|CHEQUE|CHEQ)\b.*\b(#|NO\.?\s*\d)\b/u.test(blob) ||
+    /\b(RTND|RETURNED|RTRND|DEVUELTO)\b.*\b(CHK|CHEQUE|CHECK|ITEM)\b/u.test(
+      blob
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(OVERDRAFT|OVERDR\.?|OD\s+F(?:EE|E)|OD\s+PAY|Maintenance\s+fee|SERVICE\s+FEE\s+CHARGE|MONTHLY\s+FEE|ACCOUNT\s+FEE)\b/u.test(
+      blob
+    ) ||
+    /\bNSF\b|NON[-\s]*SUF|INSUFFICIENT\s+FUNDS/u.test(blob)
+  ) {
+    return true;
+  }
+
+  if (/\bATM\s+(W\/D|WITHDR|WITHDRAW|RETIRO)|CASH\s+WITHDRAW|\bCAJERO\b/u.test(blob)) {
+    return true;
+  }
+
+  if (
+    /\b(IRS|TAX\s+PAY|TREAS|HMRC|SAT\b|RENTAS|TAX\s+PAYMENT|PROPERTY\s+TAX)\b/u.test(
+      blob
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(MORTGAGE|HOME\s+LOAN|AUTO\s+LOAN|STUDENT\s+LOAN|PERSONAL\s+LOAN|LOAN\s+PAY|PRESTAMO|HIPOTECA)\b/u.test(
+      blob
+    ) &&
+    !/\b(SUBSCR|MEMBERSHIP|SAAS|SOFTWARE\s+SUB)\b/u.test(blob)
   ) {
     return true;
   }
@@ -232,27 +272,7 @@ export function heuristicSubscriptionsFromClusters(
   return out.sort((a, b) => b.monthlyEquivalent - a.monthlyEquivalent);
 }
 
-function guessCategory(merchant: string): SubscriptionCategory {
-  const m = merchant.toUpperCase();
-  if (/\b(NETFLIX|HULU|DISNEY|HBO|MAX|PRIME VIDEO|PEACOCK)\b/u.test(m)) {
-    return "streaming";
-  }
-  if (/\b(SPOTIFY|APPLE MUSIC|TIDAL|YOUTUBE MUSIC|PANDORA)\b/u.test(m)) {
-    return "music";
-  }
-  if (/\b(PELOTON|PLANET FITNESS|GYM|FITNESS)\b/u.test(m)) return "fitness";
-  if (/\b(STATE FARM|GEICO|ALLSTATE|INSURANCE)\b/u.test(m)) {
-    return "insurance";
-  }
-  if (
-    /\b(MICROSOFT|ADOBE|DROPBOX|NOTION|SLACK|ZOOM|OPENAI|GITHUB)\b/u.test(m)
-  ) {
-    return "software";
-  }
-  if (/\b(AMAZON PRIME|WALMART\+|TARGET)\b/u.test(m)) return "shopping";
-  if (/\b(ELECTRIC|WATER|GAS UTIL|INTERNET|COMCAST|ATT|VERIZON)\b/u.test(m)) {
-    return "utilities";
-  }
+function guessCategory(_merchant: string): SubscriptionCategory {
   return "other";
 }
 

@@ -9,16 +9,9 @@ import {
   inferFrequencyFromCharges,
   mergeFlags,
 } from "./heuristics";
-import {
-  canonicalConsumerBrandFromDescription,
-  friendlyMerchantSubscriptionLabel,
-} from "./merchantNormalize";
+import { friendlyMerchantSubscriptionLabel } from "./merchantNormalize";
 import { analyzeClustersWithOpenAI } from "./openaiAnalyze";
-import {
-  deriveStatementPeriod,
-  parseTransactionsFromText,
-} from "./parseTransactions";
-import { extractTransactionsViaOpenAI } from "./transactionAiFallback";
+import { deriveStatementPeriod, parseTransactionsFromText } from "./parseTransactions";
 import type {
   AnalyzeStatementResult,
   MerchantCluster,
@@ -83,13 +76,10 @@ function enrichAiSubscription(args: {
   if (!cluster) return null;
 
   const sampleMerchant = (cluster.descriptions[0] ?? raw.merchant).trim();
-  const canonBrand = canonicalConsumerBrandFromDescription(sampleMerchant);
-  const normalizedName =
-    canonBrand ??
-    friendlyMerchantSubscriptionLabel({
-      primaryDescription: sampleMerchant || raw.merchant,
-      clusterKeyUpper: cluster.key,
-    });
+  const normalizedName = friendlyMerchantSubscriptionLabel({
+    primaryDescription: sampleMerchant || raw.merchant,
+    clusterKeyUpper: cluster.key,
+  });
 
   const heurFlags = computeHeuristicFlags({
     cluster,
@@ -193,22 +183,20 @@ export async function analyzeStatementPdf(
   }
   const killTimer = setTimeout(() => aiController.abort(), ms);
 
-  let transactions = parseTransactionsFromText(text);
+  let parseDebug: AnalyzeStatementResult["parseDebug"] = null;
+  let transactions: AnalyzeStatementResult["transactions"] = [];
 
-  if (transactions.length === 0) {
-    try {
-      const txnAi = await extractTransactionsViaOpenAI(text, aiController.signal);
-      if (txnAi.transactions.length > 0) {
-        transactions = txnAi.transactions;
-      } else if (txnAi.error) {
-        console.warn("[statements/analyze] OpenAI transaction fallback:", txnAi.error);
-      }
-    } catch (e) {
-      console.warn(
-        "[statements/analyze] OpenAI transaction fallback threw:",
-        e instanceof Error ? e.message : e
-      );
-    }
+  try {
+    const parsed = await parseTransactionsFromText(text, aiController.signal);
+    transactions = parsed.transactions;
+    parseDebug = parsed.debug;
+  } catch (e) {
+    console.warn(
+      "[statements/analyze] transaction pipeline:",
+      e instanceof Error ? e.message : e
+    );
+    parseDebug = null;
+    transactions = [];
   }
 
   const statementPeriod = deriveStatementPeriod(transactions);
@@ -289,6 +277,7 @@ export async function analyzeStatementPdf(
     openAiUsed,
     openAiError,
     fallbackUsed,
+    parseDebug,
   };
 }
 

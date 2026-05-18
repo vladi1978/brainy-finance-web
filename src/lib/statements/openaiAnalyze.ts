@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import { chunkClusters } from "./clusters";
 import type { MerchantCluster } from "./types";
 
-const MODEL_DEFAULT = "gpt-4o-mini";
+const MODEL_DEFAULT = "gpt-4o";
 const CHUNK = 45;
 
 type AiSubscriptionRaw = {
@@ -89,9 +89,9 @@ export async function analyzeClustersWithOpenAI(
           {
             role: "system",
             content:
-              "Eres un analista financiero. Identifica suscripciones recurrentes de consumo (streaming, música, SaaS). Responde SOLO JSON válido con {\"subscriptions\":[...]} — sin markdown. " +
-              "Excluye nómina/payroll y depósitos de salario, devoluciones de cheques rechazadas, cargos NSF y overdraft salvo algo claramente un plan recurrente tipo suscripción bancaria. " +
-              "Excluye bares cafeterías vinaterías y liquor stores salvo cargos muy regulares típicos de suscripción estable. Servicios conocidos tipo Netflix o Spotify están bien cuando encajan.",
+              "Eres un analista financiero. Identifica cargos recurrentes tipo suscripción de consumo (software, medios, clubes, servicios). Responde SOLO JSON válido con {\"subscriptions\":[...]} — sin markdown. " +
+              "Excluye: nómina, depósitos de sueldo, transferencias bancarias o P2P genéricas, devolución de cheques, retiros ATM, impuestos o tasas, pago de préstamos (hipoteca, auto, personal), comisiones de cuenta o overdraft/NSF. " +
+              "Si no hay patrón claro de consumo recurrente, omite el grupo. Prefiere falsos negativos antes que etiquetar transferencias o préstamos como suscripción.",
           },
           {
             role: "user",
@@ -101,9 +101,8 @@ export async function analyzeClustersWithOpenAI(
               "amount (último cargo relevante en número), currency (código ISO tres letras o símbolo normalizado), frequency (monthly|annual|weekly|unknown),",
               "lastCharged (YYYY-MM-DD), monthlyEquivalent, annualEquivalent (números), confidence (0-1),",
               "flags: { forgotten, duplicate, priceIncreased, trialConverted, suspicious } todos boolean.",
-              "Si un grupo no es recurrente, omitirlo. merchant debe ser legible para el usuario.",
-              "No incluir: transferencias ACH de sueldo, ADP/Gusto/Paychex típicos como suscripción; chargebacks/check returns; cargos NSF/OD/overdraft;",
-              "licorerías/coffee shops genéricos/micro-bares solo si aparecen cargos repetidos y homogéneos en fecha y monto típicos de suscripción (si no, omitir). normalizedName debe ser una marca conocida cuando aplique (Netflix, Spotify, Apple, Adobe, etc.).",
+              "Si un grupo no es recurrente, omitirlo. merchant y normalizedName deben derivarse del texto real de las transacciones (sin inventar marcas externas).",
+              "No incluir payroll, depósitos automáticos genéricos, transferencias, cheques, ATM, impuestos, préstamos ni comisiones salvo un plan explícito tipo membresía recurrente.",
               "",
               JSON.stringify({ clusters: payload }),
             ].join("\n"),
