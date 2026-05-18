@@ -95,18 +95,18 @@ export async function analyzeClustersWithOpenAI(
           {
             role: "system",
             content:
-              "You categorize consumer discretionary recurring spend (streaming, SaaS bundles, gyms, MSP/cloud portals, recognizable insurance ACH strings, telecom add-ons). " +
+              "You identify TRUE recurring subscriptions and recurring bills only: streaming (Netflix, Peacock, etc.), music, gyms, recognizable SaaS/cloud suites, insurance premiums (State Farm, Geico-style ACH strings), telecom/wireless/ISP utilities, phone bills, software memberships. " +
               'Return ONLY compact JSON {\"subscriptions\":[...]} with ZERO markdown scaffolding. ' +
-              "Lean inclusive with moderate-confidence rows whenever narration resembles subscription rails—cloud/video/office suites, gyms, MSP—even if cadence rests on roughly two charges or only one unmistakable bill. " +
-              "Strictly omit payroll/direct deposit wording, paycheck deposits, outbound/inbound generic wires framed as TRANSFER/ZELLE/SPEI reimbursements lacking branded merchants, bounced/returned checks, refunds/reversal lines, ATM cash, taxes without recognizable SaaS, amortizing mortgages/auto/student/personal payoff rails absent SaaS narration, NSF/overdraft chatter, nondescriptive MAINT/SERVICE/ACCOUNT fee blobs lacking recognizable merchant banners.",
+              "Do NOT label groceries, liquor stores, restaurants, cafés, general retail (Target, Dollar General), gas stations, Venmo/Zelle transfers, payroll, bank fees, or one-off purchases as subscriptions—even when two charges look similar. Those belong elsewhere; omit them entirely from this JSON. " +
+              "Prefer conservative outputs: emit a row only when narration matches subscription/billing rails OR cadence clearly aligns with monthly/annual billing plus merchant hints.",
           },
           {
             role: "user",
             content: [
-              "Each chunk cluster lists merchantHints plus debitCharges. Emit one subscription object whenever evidence supports discretionary recurring-ish spend—even if inferred cadence stays unknown.",
+              "Each chunk cluster lists merchantHints plus debitCharges. Emit one subscription object ONLY for genuine recurring bills/subscriptions supported by merchant text or stable cadence.",
               "Each object needs clusterId verbatim from payload, readable merchant/normalizedName, category ∈ streaming|music|fitness|insurance|software|shopping|utilities|other,",
               "numeric amount anchored to freshest meaningful debit, ISO currency letters, frequency ∈ monthly|annual|weekly|unknown,",
-              "lastCharged as YYYY-MM-DD, reconcile monthlyEquivalent + annualEquivalent numerically vs frequency guesses, calibrated confidence floats 0-1 aiming ≥0.8 when cadence+narrative lock, roughly 0.55-0.79 for unmistakable storefront tokens with limited history.",
+              "lastCharged as YYYY-MM-DD, reconcile monthlyEquivalent + annualEquivalent numerically vs frequency guesses, confidence floats 0-1 with ≥0.75 only when cadence AND merchant clearly indicate recurring billing.",
               "flags booleans forgotten|duplicate|priceIncreased|trialConverted|suspicious inferred strictly from deltas present inside debitCharges.",
               "Normalize tokens pragmatically—APPLE.COM/BILL style strings may collapse to concise consumer labels without inventing absent brands.",
               JSON.stringify({ clusters: payload }),

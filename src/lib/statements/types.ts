@@ -22,6 +22,49 @@ export type SubscriptionFrequency =
   | "weekly"
   | "unknown";
 
+/** UX classification — never presented as “subscription”. */
+export type SpendingInsightKind =
+  | "frequent_spending"
+  | "one_time_expense"
+  | "possible_recurring_expense"
+  | "fee"
+  | "income_transfer"
+  | "needs_review";
+
+export type SpendingInsightRecommendation =
+  | "Review this expense"
+  | "Possible savings opportunity"
+  | "Frequent spending"
+  | "Not a subscription";
+
+export type SpendingInsightCategory =
+  | "groceries"
+  | "liquor"
+  | "restaurants"
+  | "cafes"
+  | "retail"
+  | "gas"
+  | "transfers"
+  | "fees"
+  | "payroll"
+  | "one_time_purchase"
+  | "other";
+
+export type SpendingInsight = {
+  clusterId: string;
+  merchant: string;
+  normalizedName: string;
+  categoryLabel: string;
+  categoryKey: SpendingInsightCategory;
+  kind: SpendingInsightKind;
+  recommendation: SpendingInsightRecommendation;
+  amount: number;
+  currency: string;
+  frequency: SubscriptionFrequency;
+  totalSpentInPeriod: number;
+  lastCharged: string;
+};
+
 export type SubscriptionFlags = {
   forgotten: boolean;
   duplicate: boolean;
@@ -90,6 +133,16 @@ export type ParsePipelineDebug = {
   }>;
 };
 
+export type SubscriptionDiagnostics = {
+  subscriptionCount: number;
+  spendingInsightCount: number;
+  excludedFromSubscriptions: Array<{
+    clusterId: string;
+    merchantLabel: string;
+    reasons: string[];
+  }>;
+};
+
 export type AnalyzeStatementResult = {
   textChars: number;
   pageCount: number;
@@ -97,12 +150,15 @@ export type AnalyzeStatementResult = {
   statementPeriod: StatementPeriod | null;
   clusters: MerchantCluster[];
   subscriptions: SubscriptionInsight[];
+  spendingInsights: SpendingInsight[];
   summary: {
     monthlySpend: number;
     annualSpend: number;
     subscriptionCount: number;
     estimatedSavings: number;
+    spendingInsightsTotal: number;
   };
+  diagnostics: SubscriptionDiagnostics;
   openAiUsed: boolean;
   openAiError: string | null;
   fallbackUsed: boolean;

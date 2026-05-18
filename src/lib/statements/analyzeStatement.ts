@@ -1,6 +1,8 @@
 import { buildMerchantClusters } from "./clusters";
 import { extractPdfText } from "./extractPdfText";
 import {
+  SUBSCRIPTION_CONFIDENCE_MIN,
+  buildSpendingInsightsFromClusters,
   coerceFrequency,
   computeHeuristicFlags,
   equivalentsForFrequency,
@@ -9,6 +11,7 @@ import {
   inferFrequencyFromCharges,
   mergeFlags,
   debitAmountsSimilar,
+  passesTrueSubscriptionGate,
   snapshotSubscriptionCandidate,
 } from "./heuristics";
 import { deriveMerchantPresentation } from "./merchantNormalize";
@@ -102,10 +105,13 @@ function enrichAiSubscription(args: {
     if (debitAmountsSimilar(amtList) && debits.length >= 2) {
       confidence = Math.max(confidence, 0.9);
       if (!clusterLooksSubscriptionMerchant(cluster)) {
-        confidence = Math.min(confidence, 0.88);
+        confidence = Math.min(confidence, SUBSCRIPTION_CONFIDENCE_MIN - 0.05);
       }
     } else if (clusterLooksSubscriptionMerchant(cluster)) {
-      confidence = Math.max(confidence, debits.length >= 2 ? 0.78 : 0.62);
+      confidence = Math.max(
+        confidence,
+        debits.length >= 2 ? 0.82 : SUBSCRIPTION_CONFIDENCE_MIN
+      );
     }
   }
 
@@ -166,7 +172,10 @@ function enrichAiSubscription(args: {
   };
 }
 
-function buildSummary(subs: SubscriptionInsight[]): AnalyzeStatementResult["summary"] {
+function buildSummary(
+  subs: SubscriptionInsight[],
+  spendingInsightsTotal: number
+): AnalyzeStatementResult["summary"] {
   const monthlySpend = subs.reduce((s, x) => s + x.monthlyEquivalent, 0);
   const annualSpend = subs.reduce((s, x) => s + x.annualEquivalent, 0);
   const subscriptionCount = subs.length;
@@ -181,11 +190,17 @@ function buildSummary(subs: SubscriptionInsight[]): AnalyzeStatementResult["summ
     (s, x) => s + x.monthlyEquivalent,
     0
   );
-  return { monthlySpend, annualSpend, subscriptionCount, estimatedSavings };
+  return {
+    monthlySpend,
+    annualSpend,
+    subscriptionCount,
+    estimatedSavings,
+    spendingInsightsTotal,
+  };
 }
 
-function passesSubscriptionConfidence(s: SubscriptionInsight): boolean {
-  return s.confidence >= 0.55 || s.flags.suspicious;
+function passesSubscriptionConfidenceGate(s: SubscriptionInsight): boolean {
+  return s.confidence >= SUBSCRIPTION_CONFIDENCE_MIN;
 }
 
 /** Higher confidence wins for overlapping cluster ids coming from LM + offline rules. */
@@ -207,6 +222,7 @@ function emitSubscriptionInferenceDebug(opts: {
   clusters: MerchantCluster[];
   heuristicRows: SubscriptionInsight[];
   gatedSubscriptions: SubscriptionInsight[];
+  spendingInsightCount: number;
 }) {
   const snaps = opts.clusters.map(snapshotSubscriptionCandidate);
   const excludedDebitClustersMarkedNonSubscription = snaps.filter(
@@ -231,6 +247,7 @@ function emitSubscriptionInferenceDebug(opts: {
     candidateRecurringOrServiceMerchants: candidateMerchantCount,
     finalSubscriptionsPassedConfidenceGate:
       opts.gatedSubscriptions.length,
+    spendingInsightCount: opts.spendingInsightCount,
     firstEligibleCandidatesPreview: firstTenEligible,
     heuristicRowsBeforeConfidenceGate: opts.heuristicRows.length,
   });
@@ -341,24 +358,67 @@ export async function analyzeStatementPdf(
     aiSubscriptions,
   ]);
 
-  let subscriptions = merged
-    .filter((row) => {
-      const cluster = clusterById.get(row.clusterId);
-      if (!cluster) return false;
-      return !excludeClusterFromSubscriptions(cluster);
-    })
-    .filter(passesSubscriptionConfidence);
+  const excludedFromSubscriptions: AnalyzeStatementResult["diagnostics"]["excludedFromSubscriptions"] =
+    [];
+
+  const subscriptionCandidateRows = merged.filter((row) => {
+    const cluster = clusterById.get(row.clusterId);
+    return Boolean(cluster && !excludeClusterFromSubscriptions(cluster));
+  });
+
+  for (const row of subscriptionCandidateRows) {
+    const cluster = clusterById.get(row.clusterId)!;
+    const reasons: string[] = [];
+    if (!passesSubscriptionConfidenceGate(row)) {
+      reasons.push(
+        `Confidence ${row.confidence.toFixed(2)} is below ${SUBSCRIPTION_CONFIDENCE_MIN}`
+      );
+    }
+    if (!passesTrueSubscriptionGate(cluster, row)) {
+      reasons.push(
+        "Excluded from subscriptions: needs recognizable recurring bill or subscription merchant (routine purchases go to Spending Insights)"
+      );
+    }
+    if (reasons.length) {
+      excludedFromSubscriptions.push({
+        clusterId: row.clusterId,
+        merchantLabel: row.normalizedName,
+        reasons,
+      });
+    }
+  }
+
+  let subscriptions = subscriptionCandidateRows.filter((row) => {
+    const cluster = clusterById.get(row.clusterId)!;
+    return (
+      passesSubscriptionConfidenceGate(row) &&
+      passesTrueSubscriptionGate(cluster, row)
+    );
+  });
 
   subscriptions = dedupeSubscriptions(subscriptions);
+
+  const subscriptionClusterIds = new Set(subscriptions.map((s) => s.clusterId));
+
+  const spendingInsights = buildSpendingInsightsFromClusters({
+    clusters,
+    subscriptionClusterIds,
+  });
+
+  const spendingInsightsTotal = spendingInsights.reduce(
+    (s, x) => s + x.totalSpentInPeriod,
+    0
+  );
 
   emitSubscriptionInferenceDebug({
     transactionCount: transactions.length,
     clusters,
     heuristicRows,
     gatedSubscriptions: subscriptions,
+    spendingInsightCount: spendingInsights.length,
   });
 
-  const summary = buildSummary(subscriptions);
+  const summary = buildSummary(subscriptions, spendingInsightsTotal);
 
   return {
     textChars: text.length,
@@ -367,7 +427,13 @@ export async function analyzeStatementPdf(
     statementPeriod,
     clusters,
     subscriptions,
+    spendingInsights,
     summary,
+    diagnostics: {
+      subscriptionCount: subscriptions.length,
+      spendingInsightCount: spendingInsights.length,
+      excludedFromSubscriptions,
+    },
     openAiUsed,
     openAiError,
     fallbackUsed,

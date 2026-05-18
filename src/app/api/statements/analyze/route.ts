@@ -74,6 +74,8 @@ export async function POST(req: Request) {
       },
       summary: result.summary,
       subscriptions: result.subscriptions,
+      spendingInsights: result.spendingInsights,
+      diagnostics: result.diagnostics,
     });
   } catch (error) {
     console.error("STATEMENTS ANALYZE ERROR:", error);

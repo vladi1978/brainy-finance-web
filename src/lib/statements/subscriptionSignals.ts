@@ -74,3 +74,17 @@ export function clusterLooksSubscriptionMerchant(cluster: MerchantCluster): bool
   const { subscriptionLike } = merchantTextSignals(blob, cluster.key);
   return subscriptionLike;
 }
+
+/** Single charge allowed when narration matches unmistakable SaaS / insurer billing rails. */
+export function unmistakableSubscriptionBillingMerchant(
+  cluster: MerchantCluster
+): boolean {
+  const blob =
+    [...cluster.descriptions.slice(0, 6), cluster.key].join(" ").toUpperCase();
+
+  if (INSURANCE_PATTERN.test(blob)) return true;
+
+  return /\b(NETFLIX|PEACOCK|SPOTIFY|HULU|DISNEY\+?|\bHBO\b|APPLE\.COM\/BILL|\bICLOUD\b|\bITUNES\b|GOOGLE\s*ONE|YOUTUBE\s+(PREMIUM|MUSIC)|\bADOBE\b|MICROSOFT\s+365|OFFICE\s+365|MICRO\s*365|AMAZON\s+(PRIME|VIDEO|DIGITAL|MUSIC)|PRIME\s+VIDEO)\b/ui.test(
+    blob
+  );
+}

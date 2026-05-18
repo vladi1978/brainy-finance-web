@@ -1,12 +1,263 @@
 import { deriveMerchantPresentation } from "./merchantNormalize";
-import { clusterLooksSubscriptionMerchant } from "./subscriptionSignals";
+import {
+  inferSpendingInsightCategory,
+  spendingCategoryDisplay,
+} from "./spendingSignals";
+import {
+  clusterLooksSubscriptionMerchant,
+  unmistakableSubscriptionBillingMerchant,
+} from "./subscriptionSignals";
 import type {
   MerchantCluster,
+  SpendingInsight,
+  SpendingInsightCategory,
+  SpendingInsightKind,
+  SpendingInsightRecommendation,
   StatementPeriod,
+  SubscriptionCategory,
   SubscriptionFlags,
   SubscriptionFrequency,
   SubscriptionInsight,
 } from "./types";
+
+/** Strict gate vs legacy permissive subscription classifier */
+export const SUBSCRIPTION_CONFIDENCE_MIN = 0.72;
+
+function clusterBlobUpper(cluster: MerchantCluster): string {
+  return `${cluster.descriptions.join(" ")} ${cluster.key}`.toUpperCase();
+}
+
+function discretionarySpendCategory(cat: SpendingInsightCategory): boolean {
+  return (
+    cat === "groceries" ||
+    cat === "liquor" ||
+    cat === "restaurants" ||
+    cat === "cafes" ||
+    cat === "retail" ||
+    cat === "gas"
+  );
+}
+
+function classifySpendingInsightMeta(args: {
+  categoryKey: SpendingInsightCategory;
+  debitCount: number;
+  similarAmts: boolean;
+  looseAmts: boolean;
+  freq: SubscriptionFrequency;
+}): { kind: SpendingInsightKind; recommendation: SpendingInsightRecommendation } {
+  const { categoryKey, debitCount, similarAmts, looseAmts, freq } = args;
+
+  if (categoryKey === "payroll") {
+    return { kind: "income_transfer", recommendation: "Not a subscription" };
+  }
+  if (categoryKey === "transfers") {
+    return { kind: "income_transfer", recommendation: "Not a subscription" };
+  }
+  if (categoryKey === "fees") {
+    return { kind: "fee", recommendation: "Review this expense" };
+  }
+
+  if (debitCount >= 3 && discretionarySpendCategory(categoryKey)) {
+    return {
+      kind: "frequent_spending",
+      recommendation: "Possible savings opportunity",
+    };
+  }
+  if (debitCount >= 3) {
+    return { kind: "frequent_spending", recommendation: "Frequent spending" };
+  }
+
+  if (
+    debitCount === 2 &&
+    similarAmts &&
+    (freq !== "unknown" || looseAmts)
+  ) {
+    return {
+      kind: "possible_recurring_expense",
+      recommendation: "Possible savings opportunity",
+    };
+  }
+  if (debitCount === 2 && similarAmts) {
+    return {
+      kind: "possible_recurring_expense",
+      recommendation: "Possible savings opportunity",
+    };
+  }
+  if (debitCount === 2) {
+    return { kind: "needs_review", recommendation: "Review this expense" };
+  }
+
+  return { kind: "one_time_expense", recommendation: "Review this expense" };
+}
+
+/** Parsing noise / non-purchase rails — excluded from Spending Insights only */
+export function excludeClusterFromSpendingInsights(
+  cluster: MerchantCluster
+): boolean {
+  const blob = clusterBlobUpper(cluster);
+
+  if (
+    /\b(BEGINNING|OPENING|STARTING)\s+BALANCE\b|\b(ENDING|CLOSING|FINAL)\s+BALANCE\b|\bAVAILABLE\s+BALANCE\b|\bMINIMUM\s+PAYMENT\s+DUE\b|\bTOTAL\s+PAYMENTS?\s+THIS\s+(PERIOD|CYCLE)|\bTOTAL\s+PURCHASES\b|\bACCOUNT\s+SUMMARY\b/u.test(
+      blob
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(CHECK|CHK|CHEQUE|CHEQ)\b.*\b(#|NO\.?\s*\d)\b/u.test(blob) ||
+    /\b(RTND|RETURNED|RTRND|DEVUELTO)\b.*\b(CHK|CHEQUE|CHECK|ITEM)\b/u.test(
+      blob
+    )
+  ) {
+    return true;
+  }
+
+  if (/\bATM\s+(W\/D|WITHDR|WITHDRAW|RETIRO)|CASH\s+WITHDRAW|\bCAJERO\b/u.test(blob)) {
+    return true;
+  }
+
+  if (
+    /\b(IRS|TAX\s+PAY|TREAS|HMRC|SAT\b|RENTAS|TAX\s+PAYMENT|PROPERTY\s+TAX)\b/u.test(
+      blob
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    /\bDEPOSITS?\s+(ATM|BK|DEP|REMOTE|MOBILE|BRANCH)|(DEPOSITO|DEP\s+SUELDO)\b|\bDIRECT\s+DEP\b.*\b(EMPLOY|SALARY|WAGE)|(ACH\s+(CREDIT|DEP|DEPOS)|REVERSAL|REFUND|CHARGEBACK|CRE\s+VCHR|ATM\s+RVRSL|ATM\s+RFD)\b|PAYMENT\s+FROM\s+DDA|\bWIRE\s+(IN(?:COMING)?|DEP|CR|CRE)\b|\bATM\s+RVRSL\b/ui.test(
+      blob
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(PMT\s+MADE\s+TO|AUTO\s+PAY\s+MADE\s+PAY|PAYMENTS?\s+TO\s+(YOUR\s+)?CARD|PAYMENTS?\s+TO\s+VISA|CARD\s+PAYMENTS?\s+SERV)\b/ui.test(blob) &&
+    !/\b(DISNEY|NETFLIX|SPOTIFY|APPLE|ADOBE|MICROSOFT|GOOGLE|AMAZON|PRIME\b|CLOUD|SAA|SUBSCR|MUSIC\b|VIDEO\b)/u.test(blob)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+export function passesTrueSubscriptionGate(
+  cluster: MerchantCluster,
+  row: SubscriptionInsight
+): boolean {
+  const debits = cluster.charges.filter((c) => c.type === "debit");
+  if (debits.length < 1) return false;
+
+  const amounts = debits.map((d) => d.amount);
+  const similar = debitAmountsSimilar(amounts);
+  const loose = debitAmountsLooselySimilar(amounts);
+  const freq = coerceFrequency(
+    inferFrequencyFromCharges(debits.map((d) => d.date))
+  );
+  const knownBill = clusterLooksSubscriptionMerchant(cluster);
+
+  const unmistakableSingle =
+    debits.length === 1 && unmistakableSubscriptionBillingMerchant(cluster);
+
+  const strongRecurrence =
+    debits.length >= 2 && (similar || (freq !== "unknown" && loose));
+
+  if (unmistakableSingle) return true;
+
+  /** Single unmistakable utility/SaaS/gym rails (handled by subscriptionSignals). */
+  if (debits.length === 1 && knownBill) return true;
+
+  if (!strongRecurrence) return false;
+
+  const subscriptionCategories: SubscriptionCategory[] = [
+    "streaming",
+    "music",
+    "software",
+    "utilities",
+    "insurance",
+    "fitness",
+  ];
+
+  if (knownBill) return true;
+
+  if (subscriptionCategories.includes(row.category)) return true;
+
+  return false;
+}
+
+export function buildSpendingInsightsFromClusters(args: {
+  clusters: MerchantCluster[];
+  subscriptionClusterIds: Set<string>;
+  /** Prefer excluding clusters already surfaced as subscriptions */
+  maxInsights?: number;
+}): SpendingInsight[] {
+  const max = args.maxInsights ?? 60;
+  const out: SpendingInsight[] = [];
+
+  for (const cluster of args.clusters) {
+    if (args.subscriptionClusterIds.has(cluster.id)) continue;
+    if (excludeClusterFromSpendingInsights(cluster)) continue;
+
+    const debits = cluster.charges.filter((c) => c.type === "debit");
+    if (debits.length < 1) continue;
+
+    const description = cluster.descriptions[0] ?? cluster.key;
+    const presentation = deriveMerchantPresentation({
+      primaryDescription: description,
+      clusterKeyUpper: cluster.key,
+    });
+
+    let categoryKey = inferSpendingInsightCategory(cluster);
+
+    const amounts = debits.map((d) => d.amount);
+    const similarAmts = debitAmountsSimilar(amounts);
+    const looseAmts = debitAmountsLooselySimilar(amounts);
+    const freq = coerceFrequency(
+      inferFrequencyFromCharges(debits.map((d) => d.date))
+    );
+
+    let { kind, recommendation } = classifySpendingInsightMeta({
+      categoryKey,
+      debitCount: debits.length,
+      similarAmts,
+      looseAmts,
+      freq,
+    });
+
+    const blob = clusterBlobUpper(cluster);
+    if (
+      /\b(MORTGAGE|HOME\s+LOAN|MORT\s+PMT|MORTG\s+PMT)\b/ui.test(blob) &&
+      debits.length >= 2
+    ) {
+      kind = "possible_recurring_expense";
+      recommendation = "Possible savings opportunity";
+    }
+
+    const last = debits[debits.length - 1];
+    const totalSpentInPeriod = debits.reduce((s, d) => s + d.amount, 0);
+
+    out.push({
+      clusterId: cluster.id,
+      merchant: presentation.merchant,
+      normalizedName: presentation.normalizedName,
+      categoryLabel: spendingCategoryDisplay(categoryKey),
+      categoryKey,
+      kind,
+      recommendation,
+      amount: last.amount,
+      currency: last.currency || "USD",
+      frequency: freq,
+      totalSpentInPeriod,
+      lastCharged: last.date,
+    });
+  }
+
+  return out
+    .sort((a, b) => b.totalSpentInPeriod - a.totalSpentInPeriod)
+    .slice(0, max);
+}
 
 function median(nums: number[]): number {
   if (!nums.length) return 0;
@@ -279,28 +530,22 @@ export function heuristicSubscriptionsFromClusters(
     const looseAmts = debitAmountsLooselySimilar(amounts);
 
     const include =
-      (debits.length >= 2 && similarAmts) ||
+      (debits.length >= 2 && similarAmts && subStyle) ||
       (debits.length >= 2 && subStyle && looseAmts) ||
       (debits.length === 1 && subStyle);
 
     if (!include) continue;
 
-    /** Confidence bands: 80–100 strong recurring/service, 55–79 likely one-off-ish */
+    /** Confidence tuned for downstream SUBSCRIPTION_CONFIDENCE_MIN gate */
     let confidence = 0.62;
-    if (debits.length >= 2 && similarAmts) {
-      confidence = freq === "unknown" ? (subStyle ? 0.86 : 0.82) : 0.92;
-      if (!subStyle && freq === "unknown") confidence = Math.min(confidence, 0.78);
+    if (debits.length >= 2 && similarAmts && subStyle) {
+      confidence = freq === "unknown" ? 0.85 : 0.93;
     } else if (debits.length >= 2 && looseAmts && subStyle) {
-      confidence = 0.73;
+      confidence = 0.78;
     } else if (debits.length === 1 && subStyle) {
-      confidence = 0.64;
-      if (
-        /APPLE|ADOBE|MICROSOFT|NETFLIX|SPOTIFY|GOOGLE|DISNEY|HULU|AMAZON|PRIME|\bAWS\b/ui.test(
-          `${cluster.descriptions.slice(0, 4).join(" ")} ${cluster.key}`
-        )
-      ) {
-        confidence = 0.71;
-      }
+      confidence = unmistakableSubscriptionBillingMerchant(cluster)
+        ? 0.84
+        : 0.74;
     }
 
     const lastAmt = amounts[amounts.length - 1];
@@ -390,13 +635,15 @@ export function snapshotSubscriptionCandidate(
   const looseAmts = debitAmountsLooselySimilar(amounts);
 
   const include =
-    (debits.length >= 2 && similarAmts) ||
+    (debits.length >= 2 && similarAmts && subStyle) ||
     (debits.length >= 2 && subStyle && looseAmts) ||
     (debits.length === 1 && subStyle);
 
   let reason = "";
-  if (!include) reason = "Not enough recurrence or SaaS-ish billing signals.";
-  else if (debits.length >= 2 && similarAmts) {
+  if (!include) {
+    reason =
+      "Needs recognizable subscription/billing merchant plus recurrence (or unmistakable single bill).";
+  } else if (debits.length >= 2 && similarAmts && subStyle) {
     const freqLabel = coerceFrequency(inferFrequencyFromCharges(debits.map((d) => d.date)));
     reason = `${debits.length} similar debits (${freqLabel} cadence hint).`;
   } else if (debits.length >= 2 && subStyle && looseAmts) {

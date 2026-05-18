@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useCallback, useMemo, useState } from "react";
 
+import { SUBSCRIPTION_CONFIDENCE_MIN } from "@/lib/statements/heuristics";
+
 type SubscriptionFlags = {
   forgotten: boolean;
   duplicate: boolean;
@@ -40,6 +42,31 @@ type ParseDebugMeta = {
   fullTextAiFallbackUsed: boolean;
 };
 
+type SpendingInsightRow = {
+  clusterId: string;
+  merchant: string;
+  normalizedName: string;
+  categoryLabel: string;
+  categoryKey: string;
+  kind: string;
+  recommendation: string;
+  amount: number;
+  currency: string;
+  frequency: string;
+  totalSpentInPeriod: number;
+  lastCharged: string;
+};
+
+type DiagnosticsMeta = {
+  subscriptionCount: number;
+  spendingInsightCount: number;
+  excludedFromSubscriptions: Array<{
+    clusterId: string;
+    merchantLabel: string;
+    reasons: string[];
+  }>;
+};
+
 type AnalyzeOk = {
   ok: true;
   meta: {
@@ -57,8 +84,11 @@ type AnalyzeOk = {
     annualSpend: number;
     subscriptionCount: number;
     estimatedSavings: number;
+    spendingInsightsTotal: number;
   };
   subscriptions: SubscriptionRow[];
+  spendingInsights: SpendingInsightRow[];
+  diagnostics: DiagnosticsMeta;
 };
 
 function formatMoney(n: number, currency: string): string {
@@ -106,6 +136,15 @@ const catLabel: Record<string, string> = {
   shopping: "Shopping",
   utilities: "Utilities",
   other: "Other",
+};
+
+const insightKindLabel: Record<string, string> = {
+  frequent_spending: "Frequent spending",
+  one_time_expense: "One-time expense",
+  possible_recurring_expense: "Possible recurring expense",
+  fee: "Fee",
+  income_transfer: "Income / transfer",
+  needs_review: "Needs review",
 };
 
 export default function StatementsClient() {
@@ -191,7 +230,7 @@ export default function StatementsClient() {
               <li>Reading PDF pages</li>
               <li>Normalizing and stitching transaction lines</li>
               <li>Extracting and validating transactions</li>
-              <li>Detecting subscription-like recurrence</li>
+              <li>Separating subscriptions from everyday spending patterns</li>
             </ul>
           </div>
         ) : null}
@@ -286,26 +325,30 @@ export default function StatementsClient() {
 
             <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <SummaryCard
-                title="Estimated monthly spend"
+                title="Estimated monthly subscriptions"
                 value={formatMoney(data.summary.monthlySpend, summaryCurrency)}
                 subtitle={
                   data.subscriptions.length
-                    ? `${summaryCurrency} total from accepted recurring rows`
-                    : "No recurring charges above the confidence cutoff"
+                    ? `${summaryCurrency} · excludes Spending Insights totals`
+                    : "No recurring subscriptions or bills cleared the stronger cutoff"
                 }
               />
               <SummaryCard
-                title="Estimated annual spend"
+                title="Estimated annual subscriptions"
                 value={formatMoney(data.summary.annualSpend, summaryCurrency)}
+                subtitle="Based on detected recurring subscriptions only"
               />
               <SummaryCard
-                title="Subscriptions"
+                title="Number of subscriptions"
                 value={String(data.summary.subscriptionCount)}
               />
               <SummaryCard
-                title="Estimated savings"
-                subtitle="Monthly total for flagged recurring rows"
-                value={formatMoney(data.summary.estimatedSavings, summaryCurrency)}
+                title="Spending insights total"
+                value={formatMoney(
+                  data.summary.spendingInsightsTotal,
+                  summaryCurrency
+                )}
+                subtitle={`${data.spendingInsights.length} merchants categorized`}
               />
             </section>
 
@@ -315,10 +358,11 @@ export default function StatementsClient() {
               </h2>
               {data.subscriptions.length === 0 ? (
                 <p className="rounded-xl border border-white/10 bg-white/5 px-4 py-6 text-sm text-white/60">
-                  Nothing cleared the heuristic + AI confidence thresholds.
-                  Narrow statement windows, missing tables, payroll/transfer-only
-                  activity, or image-only PDFs commonly reduce matches. Upload a
-                  different export if you suspect hidden subscriptions.
+                  Nothing cleared the stronger subscription-only cutoff (confidence ≥{" "}
+                  {SUBSCRIPTION_CONFIDENCE_MIN}
+                  {" "}
+                  plus recurring bill / billing-merchant checks). Routine stores now surface under Spending Insights.
+                  Narrow windows, payroll-only exports, or image-only PDFs also reduce matches.
                 </p>
               ) : (
                 <ul className="space-y-4">
@@ -339,6 +383,77 @@ export default function StatementsClient() {
                 </ul>
               )}
             </section>
+
+            <section className="space-y-4">
+              <h2 className="text-lg font-semibold text-white">
+                Spending insights
+              </h2>
+              <p className="text-sm text-white/50">
+                Everyday purchases and cash-flow items are surfaced here—not mixed into subscription totals.
+              </p>
+              {data.spendingInsights.length === 0 ? (
+                <p className="rounded-xl border border-white/10 bg-white/5 px-4 py-6 text-sm text-white/60">
+                  No additional spending clusters matched insight patterns after removing subscriptions and statement noise.
+                </p>
+              ) : (
+                <ul className="space-y-4">
+                  {data.spendingInsights.map((row) => (
+                    <li key={row.clusterId}>
+                      <SpendingInsightCard row={row} />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <details className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-xs text-white/55">
+              <summary className="cursor-pointer select-none text-white/70">
+                Subscription analysis diagnostics
+              </summary>
+              <dl className="mt-3 grid gap-3 sm:grid-cols-2">
+                <div>
+                  <dt className="text-white/40">subscriptionCount</dt>
+                  <dd className="text-white/80">{data.diagnostics.subscriptionCount}</dd>
+                </div>
+                <div>
+                  <dt className="text-white/40">spendingInsightCount</dt>
+                  <dd className="text-white/80">{data.diagnostics.spendingInsightCount}</dd>
+                </div>
+              </dl>
+              {data.diagnostics.excludedFromSubscriptions.length ? (
+                <div className="mt-4 border-t border-white/10 pt-3">
+                  <p className="mb-2 font-medium text-white/60">
+                    excludedFromSubscriptions ({data.diagnostics.excludedFromSubscriptions.length})
+                  </p>
+                  <ul className="max-h-52 space-y-2 overflow-y-auto text-[11px]">
+                    {data.diagnostics.excludedFromSubscriptions
+                      .slice(0, 40)
+                      .map((row) => (
+                        <li
+                          key={row.clusterId}
+                          className="rounded-lg border border-white/10 bg-black/30 px-2 py-2"
+                        >
+                          <span className="font-medium text-white/75">
+                            {row.merchantLabel}
+                          </span>
+                          <span className="text-white/35"> · </span>
+                          <span className="text-white/50">{row.reasons.join(" · ")}</span>
+                        </li>
+                      ))}
+                  </ul>
+                  {data.diagnostics.excludedFromSubscriptions.length > 40 ? (
+                    <p className="mt-2 text-white/35">
+                      Showing first 40 of{" "}
+                      {data.diagnostics.excludedFromSubscriptions.length} excluded candidates.
+                    </p>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="mt-3 text-white/45">
+                  No merged subscription candidates were excluded (or analysis produced none).
+                </p>
+              )}
+            </details>
           </div>
         ) : null}
       </div>
@@ -360,6 +475,54 @@ function SummaryCard(props: {
       {props.subtitle ? (
         <p className="mt-1 text-xs text-white/45">{props.subtitle}</p>
       ) : null}
+    </div>
+  );
+}
+
+function SpendingInsightCard(props: { row: SpendingInsightRow }) {
+  const { row: r } = props;
+  const kind =
+    insightKindLabel[r.kind] ?? r.kind.replaceAll("_", " ");
+
+  return (
+    <div className="rounded-2xl border border-sky-400/15 bg-gradient-to-br from-sky-400/[0.07] to-white/[0.02] p-5">
+      <div className="flex flex-wrap gap-4">
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-black/40 text-lg font-bold text-sky-200">
+          {merchantInitial(r.merchant)}
+        </div>
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate text-base font-semibold text-white">
+            {r.merchant}
+          </h3>
+          <p className="mt-1 text-xs text-white/45">
+            Category ·{" "}
+            <span className="text-white/70">{r.categoryLabel}</span>
+            {" · "}
+            <span className="text-white/55">{kind}</span>
+          </p>
+          <p className="mt-1 text-xs text-white/45">
+            Latest charge {r.lastCharged}
+            {" · "}
+            Frequency {freqLabel[r.frequency] ?? r.frequency}
+          </p>
+          <p className="mt-2 rounded-lg border border-white/10 bg-black/25 px-3 py-2 text-xs text-sky-100/95">
+            <span className="font-semibold text-sky-200/95">Recommendation:</span>{" "}
+            {r.recommendation}
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="text-lg font-semibold text-white">
+            {formatMoney(r.amount, r.currency)}
+          </p>
+          <p className="text-xs text-white/45">Latest debit</p>
+          <p className="mt-2 text-xs font-medium text-white/65">
+            Period total{" "}
+            <span className="text-white">
+              {formatMoney(r.totalSpentInPeriod, r.currency)}
+            </span>
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
