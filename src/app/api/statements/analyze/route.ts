@@ -74,6 +74,7 @@ export async function POST(req: Request) {
       },
       summary: result.summary,
       subscriptions: result.subscriptions,
+      recurringExpenses: result.recurringExpenses,
       spendingInsights: result.spendingInsights,
       diagnostics: result.diagnostics,
     });

@@ -12,6 +12,8 @@ export type SubscriptionCategory =
   | "fitness"
   | "insurance"
   | "software"
+  | "cloud_storage"
+  | "ai_tools"
   | "shopping"
   | "utilities"
   | "other";
@@ -44,6 +46,7 @@ export type SpendingInsightCategory =
   | "cafes"
   | "retail"
   | "gas"
+  | "convenience"
   | "transfers"
   | "fees"
   | "payroll"
@@ -63,6 +66,10 @@ export type SpendingInsight = {
   frequency: SubscriptionFrequency;
   totalSpentInPeriod: number;
   lastCharged: string;
+  /** Weighted repeat-pattern + category fit (non-subscription recurring spend) */
+  recurringExpenseScore: number;
+  /** Notability for one-off / transfer / fee / review signals */
+  spendingInsightScore: number;
 };
 
 export type SubscriptionFlags = {
@@ -71,6 +78,10 @@ export type SubscriptionFlags = {
   priceIncreased: boolean;
   trialConverted: boolean;
   suspicious: boolean;
+  /** Ambiguous cadence, weak merchant match, or borderline confidence */
+  reviewSuggested: boolean;
+  /** Strong recurring-bill signals with healthy confidence */
+  confirmed: boolean;
 };
 
 /** Normalized AI + merged heuristic shape */
@@ -85,6 +96,8 @@ export type SubscriptionInsight = {
   monthlyEquivalent: number;
   annualEquivalent: number;
   confidence: number;
+  /** 0–1 composite: merchant fit, cadence, category, model confidence */
+  trueSubscriptionScore: number;
   flags: SubscriptionFlags;
   clusterId: string;
   /** Sum of matching debit amounts within parsed statement window */
@@ -136,6 +149,9 @@ export type ParsePipelineDebug = {
 export type SubscriptionDiagnostics = {
   subscriptionCount: number;
   spendingInsightCount: number;
+  recurringExpenseCount: number;
+  /** Cluster IDs whose subscription rows were produced or reinforced by OpenAI */
+  aiAssistedSubscriptionClusterIds: string[];
   excludedFromSubscriptions: Array<{
     clusterId: string;
     merchantLabel: string;
@@ -150,12 +166,16 @@ export type AnalyzeStatementResult = {
   statementPeriod: StatementPeriod | null;
   clusters: MerchantCluster[];
   subscriptions: SubscriptionInsight[];
+  /** Repeated everyday / transfer / fee patterns — excluded from subscription totals */
+  recurringExpenses: SpendingInsight[];
+  /** One-off or notable flows — excluded from subscription totals */
   spendingInsights: SpendingInsight[];
   summary: {
     monthlySpend: number;
     annualSpend: number;
     subscriptionCount: number;
     estimatedSavings: number;
+    /** Sum of `spendingInsights` period totals only */
     spendingInsightsTotal: number;
   };
   diagnostics: SubscriptionDiagnostics;

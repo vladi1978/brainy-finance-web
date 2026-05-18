@@ -52,6 +52,14 @@ export function inferSpendingInsightCategory(
   }
 
   if (
+    /\b(7[\-\s]*ELEVEN|7\s*11|SEVEN\s+ELEVEN|CIRCLE\s*K|CIRCLEK|KWIK\s+TRIP|KUM\s+GO|CASEY'?S|ROYAL\s+FARMS|SHEETZ|RACETRAC|SPEEDWAY\s+CONV)\b/ui.test(
+      blob
+    )
+  ) {
+    return "convenience";
+  }
+
+  if (
     /\b(STARBUCKS|DUNKIN|CARIBOU\s+COFFEE|PEETS|\bCAFE\b|\bCOFFEE\b|ESPRESSO|\bKAFE\b)\b/ui.test(
       blob
     )
@@ -116,6 +124,8 @@ export function spendingCategoryDisplay(cat: SpendingInsightCategory): string {
       return "Food / dining";
     case "cafes":
       return "Food / cafe";
+    case "convenience":
+      return "Convenience stores";
     case "retail":
       return "Retail";
     case "gas":

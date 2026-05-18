@@ -23,6 +23,9 @@ import type {
 /** Strict gate vs legacy permissive subscription classifier */
 export const SUBSCRIPTION_CONFIDENCE_MIN = 0.72;
 
+/** Composite subscription fit — only high scores appear under Detected Subscriptions */
+export const TRUE_SUBSCRIPTION_SCORE_MIN = 0.7;
+
 function clusterBlobUpper(cluster: MerchantCluster): string {
   return `${cluster.descriptions.join(" ")} ${cluster.key}`.toUpperCase();
 }
@@ -34,7 +37,8 @@ function discretionarySpendCategory(cat: SpendingInsightCategory): boolean {
     cat === "restaurants" ||
     cat === "cafes" ||
     cat === "retail" ||
-    cat === "gas"
+    cat === "gas" ||
+    cat === "convenience"
   );
 }
 
@@ -175,6 +179,8 @@ export function passesTrueSubscriptionGate(
     "streaming",
     "music",
     "software",
+    "cloud_storage",
+    "ai_tools",
     "utilities",
     "insurance",
     "fitness",
@@ -187,14 +193,19 @@ export function passesTrueSubscriptionGate(
   return false;
 }
 
+/**
+ * Recurring everyday spend vs one-off / notable flows for dashboard sections.
+ */
 export function buildSpendingInsightsFromClusters(args: {
   clusters: MerchantCluster[];
   subscriptionClusterIds: Set<string>;
-  /** Prefer excluding clusters already surfaced as subscriptions */
+  maxRecurring?: number;
   maxInsights?: number;
-}): SpendingInsight[] {
-  const max = args.maxInsights ?? 60;
-  const out: SpendingInsight[] = [];
+}): { recurringExpenses: SpendingInsight[]; spendingInsights: SpendingInsight[] } {
+  const maxRecurring = args.maxRecurring ?? 48;
+  const maxInsights = args.maxInsights ?? 48;
+  const recurringDraft: SpendingInsight[] = [];
+  const insightDraft: SpendingInsight[] = [];
 
   for (const cluster of args.clusters) {
     if (args.subscriptionClusterIds.has(cluster.id)) continue;
@@ -238,7 +249,10 @@ export function buildSpendingInsightsFromClusters(args: {
     const last = debits[debits.length - 1];
     const totalSpentInPeriod = debits.reduce((s, d) => s + d.amount, 0);
 
-    out.push({
+    const base: Omit<
+      SpendingInsight,
+      "recurringExpenseScore" | "spendingInsightScore"
+    > = {
       clusterId: cluster.id,
       merchant: presentation.merchant,
       normalizedName: presentation.normalizedName,
@@ -251,12 +265,236 @@ export function buildSpendingInsightsFromClusters(args: {
       frequency: freq,
       totalSpentInPeriod,
       lastCharged: last.date,
-    });
+    };
+
+    const recurringExpenseScore = computeRecurringExpenseScore(cluster, base);
+    const spendingInsightScore = computeSpendingInsightScore(cluster, base);
+
+    const row: SpendingInsight = {
+      ...base,
+      recurringExpenseScore,
+      spendingInsightScore,
+    };
+
+    if (assignSpendingSection(cluster, row) === "recurring") {
+      recurringDraft.push(row);
+    } else {
+      insightDraft.push(row);
+    }
   }
 
-  return out
+  const recurringExpenses = recurringDraft
     .sort((a, b) => b.totalSpentInPeriod - a.totalSpentInPeriod)
-    .slice(0, max);
+    .slice(0, maxRecurring);
+
+  const spendingInsights = insightDraft
+    .sort((a, b) => b.spendingInsightScore - a.spendingInsightScore)
+    .slice(0, maxInsights);
+
+  return { recurringExpenses, spendingInsights };
+}
+
+/** 0–1: strength of repeat-pattern everyday / transfer / fee spend (not a subscription bill). */
+export function computeRecurringExpenseScore(
+  cluster: MerchantCluster,
+  row: Pick<
+    SpendingInsight,
+    "categoryKey" | "kind" | "totalSpentInPeriod" | "frequency"
+  >
+): number {
+  const debits = cluster.charges.filter((c) => c.type === "debit");
+  const n = debits.length;
+  let score = 0.08;
+  if (n >= 4) score += 0.28;
+  else if (n === 3) score += 0.22;
+  else if (n === 2) score += 0.16;
+
+  const recurringCats: SpendingInsightCategory[] = [
+    "gas",
+    "groceries",
+    "restaurants",
+    "cafes",
+    "retail",
+    "liquor",
+    "convenience",
+    "transfers",
+  ];
+  if (recurringCats.includes(row.categoryKey)) score += 0.28;
+
+  if (row.categoryKey === "fees" && n >= 2) score += 0.26;
+  else if (row.categoryKey === "fees") score += 0.1;
+
+  if (row.kind === "frequent_spending" || row.kind === "possible_recurring_expense") {
+    score += 0.22;
+  }
+
+  const amounts = debits.map((d) => d.amount);
+  if (debitAmountsSimilar(amounts)) score += 0.14;
+  else if (debitAmountsLooselySimilar(amounts)) score += 0.08;
+
+  if (row.frequency === "monthly" || row.frequency === "weekly") score += 0.06;
+
+  if (row.totalSpentInPeriod > 750) score += 0.05;
+
+  return Math.min(1, Math.round(score * 1000) / 1000);
+}
+
+/** 0–1: notability for the Spending Insights panel (one-off, fees, transfers, review). */
+export function computeSpendingInsightScore(
+  cluster: MerchantCluster,
+  row: Pick<
+    SpendingInsight,
+    | "categoryKey"
+    | "kind"
+    | "totalSpentInPeriod"
+    | "amount"
+    | "frequency"
+  >
+): number {
+  const debits = cluster.charges.filter((c) => c.type === "debit");
+  const n = debits.length;
+  let score = 0.12;
+
+  switch (row.kind) {
+    case "fee":
+      score += 0.32;
+      break;
+    case "income_transfer":
+      score += 0.24;
+      break;
+    case "needs_review":
+      score += 0.26;
+      break;
+    case "one_time_expense":
+      score += 0.2;
+      break;
+    case "possible_recurring_expense":
+      score += 0.08;
+      break;
+    case "frequent_spending":
+      score += 0.06;
+      break;
+    default:
+      break;
+  }
+
+  if (row.categoryKey === "fees") score += 0.12;
+  if (row.categoryKey === "transfers" && n === 1) score += 0.14;
+  if (row.categoryKey === "payroll") score += 0.1;
+
+  if (row.amount >= 400 || row.totalSpentInPeriod >= 1200) score += 0.18;
+  else if (row.amount >= 200 || row.totalSpentInPeriod >= 600) score += 0.1;
+
+  if (n === 1 && row.kind !== "frequent_spending") score += 0.06;
+
+  if (row.frequency === "unknown" && row.kind === "one_time_expense") score += 0.04;
+
+  return Math.min(1, Math.round(score * 1000) / 1000);
+}
+
+export function assignSpendingSection(
+  cluster: MerchantCluster,
+  row: SpendingInsight
+): "recurring" | "insight" {
+  const debits = cluster.charges.filter((c) => c.type === "debit");
+  const debitCount = debits.length;
+
+  if (row.categoryKey === "payroll") return "insight";
+
+  if (row.categoryKey === "transfers") {
+    return debitCount >= 2 ? "recurring" : "insight";
+  }
+
+  if (row.categoryKey === "fees") {
+    return debitCount >= 2 ? "recurring" : "insight";
+  }
+
+  const recurringCats: SpendingInsightCategory[] = [
+    "gas",
+    "groceries",
+    "restaurants",
+    "cafes",
+    "retail",
+    "liquor",
+    "convenience",
+  ];
+
+  const repeatRetailPattern =
+    debitCount >= 2 &&
+    (recurringCats.includes(row.categoryKey) ||
+      row.kind === "frequent_spending" ||
+      row.kind === "possible_recurring_expense");
+
+  if (repeatRetailPattern && row.recurringExpenseScore >= 0.45) {
+    return "recurring";
+  }
+
+  if (
+    row.kind === "one_time_expense" ||
+    row.kind === "needs_review" ||
+    row.kind === "fee"
+  ) {
+    return "insight";
+  }
+
+  if (repeatRetailPattern) return "recurring";
+
+  if (row.spendingInsightScore >= row.recurringExpenseScore + 0.12) {
+    return "insight";
+  }
+
+  return debitCount >= 2 ? "recurring" : "insight";
+}
+
+/**
+ * Composite fit for true subscription / recurring bill classification.
+ */
+export function computeTrueSubscriptionScore(
+  cluster: MerchantCluster,
+  row: SubscriptionInsight
+): number {
+  const debits = cluster.charges.filter((c) => c.type === "debit");
+  const amounts = debits.map((d) => d.amount);
+  const similar = debitAmountsSimilar(amounts);
+  const loose = debitAmountsLooselySimilar(amounts);
+  const freq = coerceFrequency(
+    inferFrequencyFromCharges(debits.map((d) => d.date))
+  );
+  const strongRecurrence =
+    debits.length >= 2 && (similar || (freq !== "unknown" && loose));
+  const knownBill = clusterLooksSubscriptionMerchant(cluster);
+  const unmistakableSingle =
+    debits.length === 1 && unmistakableSubscriptionBillingMerchant(cluster);
+
+  let recurrence = 0.42;
+  if (unmistakableSingle) recurrence = 0.96;
+  else if (debits.length >= 2 && similar && freq === "monthly") recurrence = 0.94;
+  else if (debits.length >= 2 && similar) recurrence = 0.86;
+  else if (strongRecurrence) recurrence = 0.78;
+  else if (debits.length === 1 && knownBill) recurrence = 0.74;
+
+  const merchantFit = knownBill ? 0.92 : 0.38;
+
+  const subCats: SubscriptionCategory[] = [
+    "streaming",
+    "music",
+    "software",
+    "cloud_storage",
+    "ai_tools",
+    "utilities",
+    "insurance",
+    "fitness",
+  ];
+  const catFit = subCats.includes(row.category)
+    ? 0.9
+    : row.category === "other"
+      ? 0.52
+      : 0.36;
+
+  const raw =
+    0.34 * row.confidence + 0.28 * recurrence + 0.22 * merchantFit + 0.16 * catFit;
+
+  return Math.min(1, Math.round(raw * 1000) / 1000);
 }
 
 function median(nums: number[]): number {
@@ -397,6 +635,8 @@ export function computeHeuristicFlags(args: {
     priceIncreased: priceSpread > 0.15 && charges.length >= 2,
     trialConverted: trialHints,
     suspicious,
+    reviewSuggested: false,
+    confirmed: false,
   };
 }
 
@@ -587,6 +827,7 @@ export function heuristicSubscriptionsFromClusters(
       monthlyEquivalent,
       annualEquivalent,
       confidence: Math.min(0.96, confidence),
+      trueSubscriptionScore: 0,
       flags,
       clusterId: cluster.id,
       totalSpentInPeriod,
@@ -671,5 +912,7 @@ export function mergeFlags(
     priceIncreased: ai.priceIncreased || heur.priceIncreased,
     trialConverted: ai.trialConverted || heur.trialConverted,
     suspicious: ai.suspicious || heur.suspicious,
+    reviewSuggested: ai.reviewSuggested || heur.reviewSuggested,
+    confirmed: ai.confirmed || heur.confirmed,
   };
 }

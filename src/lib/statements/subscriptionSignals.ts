@@ -17,10 +17,11 @@ const SUBSCRIPTION_LIKE_PATTERN = new RegExp(
     String.raw`\bSPOTIFY\b|\bAPPLE\s+MUSIC\b`,
     String.raw`\bAMAZON\s+(PRIME|VIDEO|DIGITAL|WEB\s*SERV|DIGITAL\s*SERV|AWD|MUSIC)\b|\bPRIME\s+VIDEO\b`,
     String.raw`\b(DROPBOX|DIGITAL\s*OCEAN|HEROKU|VERCEL|SALESFORCE|P\.?\s?AWS\b)\b|\b/AWS\b|\bAWS\.`,
+    String.raw`\b(OPEN\s*AI|OPENAI|CHATGPT|CHAT\s*GPT|ANTHROPIC|CLAUDE\.?AI|\bCLAUDE\b|MIDJOURNEY)\b`,
     String.raw`\b(SOFTWARE|SUBSCR(IP)?|SUBSCRIPTION|MEMBERSHIP|RECURRING)\b`,
-    String.raw`\b(STORAGE\b|CLOUD\b|FILE\s+HOST\b)`,
+    String.raw`\b(STORAGE\b|CLOUD\b|FILE\s+HOST\b|GOOGLE\s*DRIVE|ONEDRIVE|BOX\.COM|NOTION\s+AI)\b`,
     String.raw`\b(GYM\b|\bFITNESS\b|PLANET\s+FIT|PRIVATE\s+EQUINO?X|PEL(OT)?ON\b|WHOOP)\b`,
-    String.raw`\b(VERIZON|AT\s*&\s*T|SPRINT|T[-\s]*MOBILE|COMCAST|XFINITY|SPECTRUM|COX\s+CABLE|CENTURY\s*LINK|FRONTIER)\b`,
+    String.raw`\b(VERIZON|AT\s*&\s*T|\bATT\b|SPRINT|T[-\s]*MOBILE|COMCAST|XFINITY|SPECTRUM|COX\s+CABLE|CENTURY\s*LINK|FRONTIER)\b`,
     String.raw`\b(INTERNET|WIFI|DSL\b|\bISP\b|\bFIBER\b|\bHIGH\s+SPEED\s+CONN)\b`,
     String.raw`\bPHONE\b|\bMOBILE\s+BILL\b|\bWIRELESS\s+SERV(IC)?(ICES)?\b`,
     String.raw`\b(DUOLINGO|HEADSPACE|\bCALM\b|NORDVPN|PASSWORD\s*MANAGER)\b`,
@@ -51,6 +52,15 @@ export function merchantTextSignals(description: string, keyUpper: string): {
     categoryHint = "fitness";
   } else if (INSURANCE_PATTERN.test(blob) || /\bHEALTH\s+INS\b|\bDENTAL\s+PREM\b/ui.test(blob)) {
     categoryHint = "insurance";
+  } else if (
+    /\b(ANTHROPIC|CLAUDE\.?AI|\bCLAUDE\b|OPEN\s*AI|OPENAI|CHATGPT|CHAT\s*GPT|MIDJOURNEY)\b/ui.test(blob)
+  ) {
+    categoryHint = "ai_tools";
+  } else if (
+    /\b(ICLOUD|GOOGLE\s*DRIVE|ONEDRIVE|BOX\.COM|DROPBOX\b).*\b(PLUS|PRO|STORAGE|CLOUD)\b/ui.test(blob) ||
+    /\b(DROPBOX|GOOGLE\s*WORKSPACE|ONEDRIVE|MICROSOFT\s*365\s*BACKUP)\b/ui.test(blob)
+  ) {
+    categoryHint = "cloud_storage";
   } else if (
     /\b(COMCAST|XFINITY|SPECTRUM|ELECTRIC\b|POWER\b|WATER\b|NATURAL\s+GAS)\b/ui.test(blob)
   ) {
@@ -84,7 +94,7 @@ export function unmistakableSubscriptionBillingMerchant(
 
   if (INSURANCE_PATTERN.test(blob)) return true;
 
-  return /\b(NETFLIX|PEACOCK|SPOTIFY|HULU|DISNEY\+?|\bHBO\b|APPLE\.COM\/BILL|\bICLOUD\b|\bITUNES\b|GOOGLE\s*ONE|YOUTUBE\s+(PREMIUM|MUSIC)|\bADOBE\b|MICROSOFT\s+365|OFFICE\s+365|MICRO\s*365|AMAZON\s+(PRIME|VIDEO|DIGITAL|MUSIC)|PRIME\s+VIDEO)\b/ui.test(
+  return /\b(NETFLIX|PEACOCK|SPOTIFY|HULU|DISNEY\+?|\bHBO\b|APPLE\.COM\/BILL|\bICLOUD\b|\bITUNES\b|GOOGLE\s*ONE|YOUTUBE\s+(PREMIUM|MUSIC)|\bADOBE\b|MICROSOFT\s+365|OFFICE\s+365|MICRO\s*365|AMAZON\s+(PRIME|VIDEO|DIGITAL|MUSIC)|PRIME\s+VIDEO|OPEN\s*AI|OPENAI|CHATGPT|CHAT\s*GPT)\b/ui.test(
     blob
   );
 }

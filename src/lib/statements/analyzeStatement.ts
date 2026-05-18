@@ -2,9 +2,11 @@ import { buildMerchantClusters } from "./clusters";
 import { extractPdfText } from "./extractPdfText";
 import {
   SUBSCRIPTION_CONFIDENCE_MIN,
+  TRUE_SUBSCRIPTION_SCORE_MIN,
   buildSpendingInsightsFromClusters,
   coerceFrequency,
   computeHeuristicFlags,
+  computeTrueSubscriptionScore,
   equivalentsForFrequency,
   excludeClusterFromSubscriptions,
   heuristicSubscriptionsFromClusters,
@@ -22,6 +24,7 @@ import type {
   AnalyzeStatementResult,
   MerchantCluster,
   SubscriptionCategory,
+  SubscriptionFlags,
   SubscriptionInsight,
 } from "./types";
 
@@ -32,6 +35,8 @@ function subscriptionCategory(raw: string): SubscriptionCategory {
     "fitness",
     "insurance",
     "software",
+    "cloud_storage",
+    "ai_tools",
     "shopping",
     "utilities",
     "other",
@@ -64,7 +69,7 @@ function enrichAiSubscription(args: {
     monthlyEquivalent: number;
     annualEquivalent: number;
     confidence: number;
-    flags: SubscriptionInsight["flags"];
+    flags: Partial<SubscriptionInsight["flags"]>;
   };
   clusterById: Map<string, MerchantCluster>;
   statementPeriod: AnalyzeStatementResult["statementPeriod"];
@@ -93,7 +98,16 @@ function enrichAiSubscription(args: {
     statementPeriod,
     referenceDate: heuristicRefDate,
   });
-  const flags = mergeFlags(raw.flags, heurFlags);
+  const aiNorm: SubscriptionFlags = {
+    forgotten: Boolean(raw.flags?.forgotten),
+    duplicate: Boolean(raw.flags?.duplicate),
+    priceIncreased: Boolean(raw.flags?.priceIncreased),
+    trialConverted: Boolean(raw.flags?.trialConverted),
+    suspicious: Boolean(raw.flags?.suspicious),
+    reviewSuggested: Boolean(raw.flags?.reviewSuggested),
+    confirmed: Boolean(raw.flags?.confirmed),
+  };
+  const flags = mergeFlags(aiNorm, heurFlags);
 
   const debits = cluster.charges.filter((c) => c.type === "debit");
   const totalSpentInPeriod = debits.reduce((s, c) => s + c.amount, 0);
@@ -165,6 +179,7 @@ function enrichAiSubscription(args: {
       ? raw.annualEquivalent
       : eq.annualEquivalent,
     confidence,
+    trueSubscriptionScore: 0,
     flags,
     clusterId: raw.clusterId,
     totalSpentInPeriod,
@@ -223,6 +238,7 @@ function emitSubscriptionInferenceDebug(opts: {
   heuristicRows: SubscriptionInsight[];
   gatedSubscriptions: SubscriptionInsight[];
   spendingInsightCount: number;
+  recurringExpenseCount: number;
 }) {
   const snaps = opts.clusters.map(snapshotSubscriptionCandidate);
   const excludedDebitClustersMarkedNonSubscription = snaps.filter(
@@ -248,6 +264,7 @@ function emitSubscriptionInferenceDebug(opts: {
     finalSubscriptionsPassedConfidenceGate:
       opts.gatedSubscriptions.length,
     spendingInsightCount: opts.spendingInsightCount,
+    recurringExpenseCount: opts.recurringExpenseCount,
     firstEligibleCandidatesPreview: firstTenEligible,
     heuristicRowsBeforeConfidenceGate: opts.heuristicRows.length,
   });
@@ -303,6 +320,7 @@ export async function analyzeStatementPdf(
   );
 
   let aiSubscriptions: SubscriptionInsight[] = [];
+  const aiSourceClusterIds = new Set<string>();
   let openAiUsed = false;
   let openAiError: string | null = null;
   let fallbackUsed = true;
@@ -332,6 +350,10 @@ export async function analyzeStatementPdf(
         })
       )
       .filter((x): x is SubscriptionInsight => Boolean(x));
+
+    for (const item of aiSubscriptions) {
+      aiSourceClusterIds.add(item.clusterId);
+    }
 
     openAiUsed = aiSubscriptions.length > 0;
     fallbackUsed = !openAiUsed;
@@ -396,19 +418,50 @@ export async function analyzeStatementPdf(
     );
   });
 
-  subscriptions = dedupeSubscriptions(subscriptions);
+  subscriptions = dedupeSubscriptions(subscriptions).map((row) => {
+    const cluster = clusterById.get(row.clusterId)!;
+    const trueSubscriptionScore = computeTrueSubscriptionScore(cluster, row);
+    const confirmed =
+      trueSubscriptionScore >= 0.78 &&
+      row.confidence >= SUBSCRIPTION_CONFIDENCE_MIN &&
+      !row.flags.suspicious &&
+      !row.flags.duplicate;
+    const reviewSuggested =
+      !confirmed &&
+      (row.flags.suspicious ||
+        row.confidence < 0.78 ||
+        row.flags.trialConverted);
+    return {
+      ...row,
+      trueSubscriptionScore,
+      flags: {
+        ...row.flags,
+        confirmed,
+        reviewSuggested,
+      },
+    };
+  });
+
+  subscriptions = subscriptions.filter(
+    (row) => row.trueSubscriptionScore >= TRUE_SUBSCRIPTION_SCORE_MIN
+  );
 
   const subscriptionClusterIds = new Set(subscriptions.map((s) => s.clusterId));
 
-  const spendingInsights = buildSpendingInsightsFromClusters({
-    clusters,
-    subscriptionClusterIds,
-  });
+  const { recurringExpenses, spendingInsights } =
+    buildSpendingInsightsFromClusters({
+      clusters,
+      subscriptionClusterIds,
+    });
 
   const spendingInsightsTotal = spendingInsights.reduce(
     (s, x) => s + x.totalSpentInPeriod,
     0
   );
+
+  const aiAssistedSubscriptionClusterIds = subscriptions
+    .filter((s) => aiSourceClusterIds.has(s.clusterId))
+    .map((s) => s.clusterId);
 
   emitSubscriptionInferenceDebug({
     transactionCount: transactions.length,
@@ -416,6 +469,7 @@ export async function analyzeStatementPdf(
     heuristicRows,
     gatedSubscriptions: subscriptions,
     spendingInsightCount: spendingInsights.length,
+    recurringExpenseCount: recurringExpenses.length,
   });
 
   const summary = buildSummary(subscriptions, spendingInsightsTotal);
@@ -427,11 +481,14 @@ export async function analyzeStatementPdf(
     statementPeriod,
     clusters,
     subscriptions,
+    recurringExpenses,
     spendingInsights,
     summary,
     diagnostics: {
       subscriptionCount: subscriptions.length,
       spendingInsightCount: spendingInsights.length,
+      recurringExpenseCount: recurringExpenses.length,
+      aiAssistedSubscriptionClusterIds,
       excludedFromSubscriptions,
     },
     openAiUsed,

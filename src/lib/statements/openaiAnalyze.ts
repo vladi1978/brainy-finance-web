@@ -20,11 +20,13 @@ type AiSubscriptionRaw = {
   annualEquivalent: number;
   confidence: number;
   flags: {
-    forgotten: boolean;
-    duplicate: boolean;
-    priceIncreased: boolean;
-    trialConverted: boolean;
-    suspicious: boolean;
+    forgotten?: boolean;
+    duplicate?: boolean;
+    priceIncreased?: boolean;
+    trialConverted?: boolean;
+    suspicious?: boolean;
+    reviewSuggested?: boolean;
+    confirmed?: boolean;
   };
 };
 
@@ -104,7 +106,7 @@ export async function analyzeClustersWithOpenAI(
             role: "user",
             content: [
               "Each chunk cluster lists merchantHints plus debitCharges. Emit one subscription object ONLY for genuine recurring bills/subscriptions supported by merchant text or stable cadence.",
-              "Each object needs clusterId verbatim from payload, readable merchant/normalizedName, category ∈ streaming|music|fitness|insurance|software|shopping|utilities|other,",
+              "Each object needs clusterId verbatim from payload, readable merchant/normalizedName, category ∈ streaming|music|fitness|insurance|software|cloud_storage|ai_tools|shopping|utilities|other,",
               "numeric amount anchored to freshest meaningful debit, ISO currency letters, frequency ∈ monthly|annual|weekly|unknown,",
               "lastCharged as YYYY-MM-DD, reconcile monthlyEquivalent + annualEquivalent numerically vs frequency guesses, confidence floats 0-1 with ≥0.75 only when cadence AND merchant clearly indicate recurring billing.",
               "flags booleans forgotten|duplicate|priceIncreased|trialConverted|suspicious inferred strictly from deltas present inside debitCharges.",

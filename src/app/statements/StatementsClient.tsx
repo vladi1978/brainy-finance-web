@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useMemo, useState } from "react";
 
-import { SUBSCRIPTION_CONFIDENCE_MIN } from "@/lib/statements/heuristics";
+import { SUBSCRIPTION_CONFIDENCE_MIN, TRUE_SUBSCRIPTION_SCORE_MIN } from "@/lib/statements/heuristics";
 
 type SubscriptionFlags = {
   forgotten: boolean;
@@ -11,6 +11,8 @@ type SubscriptionFlags = {
   priceIncreased: boolean;
   trialConverted: boolean;
   suspicious: boolean;
+  reviewSuggested: boolean;
+  confirmed: boolean;
 };
 
 type SubscriptionRow = {
@@ -25,6 +27,7 @@ type SubscriptionRow = {
   monthlyEquivalent: number;
   annualEquivalent: number;
   confidence: number;
+  trueSubscriptionScore: number;
   flags: SubscriptionFlags;
   totalSpentInPeriod: number;
   daysSinceLastCharge: number | null;
@@ -40,6 +43,14 @@ type ParseDebugMeta = {
   rejectedCount: number;
   aiDisambiguatedCount: number;
   fullTextAiFallbackUsed: boolean;
+  firstTenTransactions?: Array<{
+    date: string;
+    description: string;
+    amount: number;
+    type: string;
+    currency: string;
+    source: string;
+  }>;
 };
 
 type SpendingInsightRow = {
@@ -55,11 +66,15 @@ type SpendingInsightRow = {
   frequency: string;
   totalSpentInPeriod: number;
   lastCharged: string;
+  recurringExpenseScore: number;
+  spendingInsightScore: number;
 };
 
 type DiagnosticsMeta = {
   subscriptionCount: number;
   spendingInsightCount: number;
+  recurringExpenseCount: number;
+  aiAssistedSubscriptionClusterIds: string[];
   excludedFromSubscriptions: Array<{
     clusterId: string;
     merchantLabel: string;
@@ -87,6 +102,7 @@ type AnalyzeOk = {
     spendingInsightsTotal: number;
   };
   subscriptions: SubscriptionRow[];
+  recurringExpenses: SpendingInsightRow[];
   spendingInsights: SpendingInsightRow[];
   diagnostics: DiagnosticsMeta;
 };
@@ -103,14 +119,21 @@ function formatMoney(n: number, currency: string): string {
   }
 }
 
-function dominantSubscriptionCurrency(rows: SubscriptionRow[]): string {
-  if (!rows.length) return "USD";
+function dominantCurrency(
+  rows: { currency: string }[],
+  fallback: string
+): string {
+  if (!rows.length) return fallback;
   const counts = new Map<string, number>();
   for (const s of rows) {
     const c = s.currency?.length === 3 ? s.currency : "USD";
     counts.set(c, (counts.get(c) ?? 0) + 1);
   }
   return [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+}
+
+function dominantSubscriptionCurrency(rows: SubscriptionRow[]): string {
+  return dominantCurrency(rows, "USD");
 }
 
 function merchantInitial(name: string): string {
@@ -130,12 +153,14 @@ const freqLabel: Record<string, string> = {
 const catLabel: Record<string, string> = {
   streaming: "Streaming",
   music: "Music",
-  fitness: "Fitness",
+  fitness: "Gym / fitness",
   insurance: "Insurance",
-  software: "Software / digital services",
+  software: "Software",
+  cloud_storage: "Cloud / storage",
+  ai_tools: "AI tools",
   shopping: "Shopping",
-  utilities: "Utilities",
-  other: "Other",
+  utilities: "Phone / internet / utilities",
+  other: "Other recurring services",
 };
 
 const insightKindLabel: Record<string, string> = {
@@ -189,14 +214,18 @@ export default function StatementsClient() {
     return `${start} → ${end}`;
   }, [data]);
 
-  const summaryCurrency = useMemo(
-    () => (data ? dominantSubscriptionCurrency(data.subscriptions) : "USD"),
-    [data]
-  );
+  const summaryCurrency = useMemo(() => {
+    if (!data) return "USD";
+    if (data.subscriptions.length > 0) {
+      return dominantSubscriptionCurrency(data.subscriptions);
+    }
+    const pool = [...data.spendingInsights, ...data.recurringExpenses];
+    return dominantCurrency(pool, "USD");
+  }, [data]);
 
   return (
     <main className="flex-1 bg-black px-6 py-10 text-white">
-      <div className="mx-auto max-w-4xl">
+      <div className="mx-auto max-w-6xl">
         <h1 className="mb-2 text-4xl font-bold">
           Statements & Subscriptions
         </h1>
@@ -247,7 +276,19 @@ export default function StatementsClient() {
         ) : null}
 
         {data ? (
-          <div className="mt-10 space-y-10">
+          <div className="mt-10 space-y-12">
+            <div className="space-y-2">
+              <p className="text-sm font-medium uppercase tracking-widest text-emerald-400/80">
+                Financial intelligence
+              </p>
+              <p className="max-w-3xl text-sm text-white/55">
+                Subscriptions are separated from everyday spend using scoring: only
+                high-confidence recurring bills and services count toward subscription
+                totals. Transfers, dining, fuel, retail patterns, and fees are routed
+                to the sections below.
+              </p>
+            </div>
+
             <div className="flex flex-wrap items-center gap-3 text-xs text-white/50">
               {periodLabel ? (
                 <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
@@ -291,56 +332,25 @@ export default function StatementsClient() {
               ) : null}
             </div>
 
-            {data.meta.parseDebug ? (
-              <details className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-xs text-white/55">
-                <summary className="cursor-pointer select-none text-white/70">
-                  Transaction extractor diagnostics
-                </summary>
-                <dl className="mt-3 grid gap-2 sm:grid-cols-2">
-                  <div>
-                    <dt className="text-white/40">Extracted characters</dt>
-                    <dd>{data.meta.parseDebug.totalExtractedChars}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-white/40">Physical vs reconstructed lines</dt>
-                    <dd>
-                      {data.meta.parseDebug.cleanedLineCount} /{" "}
-                      {data.meta.parseDebug.reconstructedLineCount}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-white/40">High-confidence regex parses</dt>
-                    <dd>{data.meta.parseDebug.highConfidenceParsed}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-white/40">Accepted / rejected samples</dt>
-                    <dd>
-                      {data.meta.parseDebug.acceptedCount} /{" "}
-                      {data.meta.parseDebug.rejectedCount}
-                    </dd>
-                  </div>
-                </dl>
-              </details>
-            ) : null}
-
             <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <SummaryCard
                 title="Estimated monthly subscriptions"
                 value={formatMoney(data.summary.monthlySpend, summaryCurrency)}
                 subtitle={
                   data.subscriptions.length
-                    ? `${summaryCurrency} · excludes Spending Insights totals`
-                    : "No recurring subscriptions or bills cleared the stronger cutoff"
+                    ? `True subscriptions only · ${summaryCurrency}`
+                    : "No qualifying recurring bills in this statement window"
                 }
               />
               <SummaryCard
                 title="Estimated annual subscriptions"
                 value={formatMoney(data.summary.annualSpend, summaryCurrency)}
-                subtitle="Based on detected recurring subscriptions only"
+                subtitle="Excludes transfers, dining, fuel, fees, and retail patterns"
               />
               <SummaryCard
-                title="Number of subscriptions"
+                title="True subscriptions detected"
                 value={String(data.summary.subscriptionCount)}
+                subtitle={`Model confidence gate ≥ ${(SUBSCRIPTION_CONFIDENCE_MIN * 100).toFixed(0)}% · fit score ≥ ${(TRUE_SUBSCRIPTION_SCORE_MIN * 100).toFixed(0)}%`}
               />
               <SummaryCard
                 title="Spending insights total"
@@ -348,22 +358,28 @@ export default function StatementsClient() {
                   data.summary.spendingInsightsTotal,
                   summaryCurrency
                 )}
-                subtitle={`${data.spendingInsights.length} merchants categorized`}
+                subtitle={`${data.spendingInsights.length} notable flows · does not include recurring everyday spend`}
               />
             </section>
 
             <section className="space-y-4">
-              <h2 className="text-lg font-semibold text-white">
-                Detected subscriptions
-              </h2>
+              <SectionIntro
+                title="Detected subscriptions"
+                description="Streaming, software, insurance, phone and internet, fitness, music, cloud storage, AI tools, and similar recurring services. Each row includes a subscription fit score so only strong matches appear here."
+              />
               {data.subscriptions.length === 0 ? (
-                <p className="rounded-xl border border-white/10 bg-white/5 px-4 py-6 text-sm text-white/60">
-                  Nothing cleared the stronger subscription-only cutoff (confidence ≥{" "}
-                  {SUBSCRIPTION_CONFIDENCE_MIN}
-                  {" "}
-                  plus recurring bill / billing-merchant checks). Routine stores now surface under Spending Insights.
-                  Narrow windows, payroll-only exports, or image-only PDFs also reduce matches.
-                </p>
+                <div className="rounded-2xl border border-dashed border-white/15 bg-white/[0.02] px-5 py-8 text-center">
+                  <p className="text-sm font-medium text-white/75">
+                    No subscriptions matched this statement
+                  </p>
+                  <p className="mx-auto mt-2 max-w-lg text-sm text-white/45">
+                    Items need both a healthy model confidence (≥{" "}
+                    {SUBSCRIPTION_CONFIDENCE_MIN}) and a high subscription fit
+                    score (≥ {TRUE_SUBSCRIPTION_SCORE_MIN}). Gas, groceries,
+                    transfers, and similar spend never count toward subscription
+                    totals. Try a longer PDF export if your window is very short.
+                  </p>
+                </div>
               ) : (
                 <ul className="space-y-4">
                   {data.subscriptions.map((s) => (
@@ -385,16 +401,40 @@ export default function StatementsClient() {
             </section>
 
             <section className="space-y-4">
-              <h2 className="text-lg font-semibold text-white">
-                Spending insights
-              </h2>
-              <p className="text-sm text-white/50">
-                Everyday purchases and cash-flow items are surfaced here—not mixed into subscription totals.
-              </p>
+              <SectionIntro
+                title="Recurring expenses"
+                description="Repeated merchants that are not classified as subscription bills: fuel, groceries, dining, convenience runs, retail, fee patterns, and recurring transfers. These never flow into subscription totals."
+              />
+              {data.recurringExpenses.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-violet-400/20 bg-violet-500/[0.03] px-5 py-8 text-center">
+                  <p className="text-sm text-white/60">
+                    No recurring non-subscription patterns crossed the reporting
+                    threshold for this upload.
+                  </p>
+                </div>
+              ) : (
+                <ul className="space-y-4">
+                  {data.recurringExpenses.map((row) => (
+                    <li key={row.clusterId}>
+                      <RecurringExpenseCard row={row} />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <section className="space-y-4">
+              <SectionIntro
+                title="Spending insights"
+                description="One-time debits, large transfers, bank fees, unusual activity, and merchants flagged for review or possible savings—aggregated separately from subscriptions and recurring everyday spend."
+              />
               {data.spendingInsights.length === 0 ? (
-                <p className="rounded-xl border border-white/10 bg-white/5 px-4 py-6 text-sm text-white/60">
-                  No additional spending clusters matched insight patterns after removing subscriptions and statement noise.
-                </p>
+                <div className="rounded-2xl border border-dashed border-sky-400/20 bg-sky-500/[0.03] px-5 py-8 text-center">
+                  <p className="text-sm text-white/60">
+                    No additional insight rows were promoted after routing recurring
+                    patterns elsewhere.
+                  </p>
+                </div>
               ) : (
                 <ul className="space-y-4">
                   {data.spendingInsights.map((row) => (
@@ -406,58 +446,218 @@ export default function StatementsClient() {
               )}
             </section>
 
-            <details className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-xs text-white/55">
-              <summary className="cursor-pointer select-none text-white/70">
-                Subscription analysis diagnostics
+            <details className="group rounded-2xl border border-white/10 bg-white/[0.02] px-4 py-3 text-sm text-white/55">
+              <summary className="cursor-pointer select-none text-sm font-medium text-white/80">
+                Diagnostics & parsed ledger
               </summary>
-              <dl className="mt-3 grid gap-3 sm:grid-cols-2">
-                <div>
-                  <dt className="text-white/40">subscriptionCount</dt>
-                  <dd className="text-white/80">{data.diagnostics.subscriptionCount}</dd>
-                </div>
-                <div>
-                  <dt className="text-white/40">spendingInsightCount</dt>
-                  <dd className="text-white/80">{data.diagnostics.spendingInsightCount}</dd>
-                </div>
-              </dl>
-              {data.diagnostics.excludedFromSubscriptions.length ? (
-                <div className="mt-4 border-t border-white/10 pt-3">
-                  <p className="mb-2 font-medium text-white/60">
-                    excludedFromSubscriptions ({data.diagnostics.excludedFromSubscriptions.length})
-                  </p>
-                  <ul className="max-h-52 space-y-2 overflow-y-auto text-[11px]">
-                    {data.diagnostics.excludedFromSubscriptions
-                      .slice(0, 40)
-                      .map((row) => (
-                        <li
-                          key={row.clusterId}
-                          className="rounded-lg border border-white/10 bg-black/30 px-2 py-2"
-                        >
-                          <span className="font-medium text-white/75">
-                            {row.merchantLabel}
-                          </span>
-                          <span className="text-white/35"> · </span>
-                          <span className="text-white/50">{row.reasons.join(" · ")}</span>
+              <div className="mt-4 space-y-3 border-t border-white/10 pt-4">
+                {data.meta.parseDebug?.firstTenTransactions?.length ? (
+                  <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                    <summary className="cursor-pointer text-white/70">
+                      Parsed transactions (sample)
+                    </summary>
+                    <ul className="mt-2 max-h-56 space-y-1.5 overflow-y-auto font-mono text-[11px] text-white/60">
+                      {data.meta.parseDebug.firstTenTransactions.map((t, i) => (
+                        <li key={i}>
+                          {t.date} · {t.description.slice(0, 72)}
+                          {t.description.length > 72 ? "…" : ""} · {t.amount} ·{" "}
+                          {t.type}
                         </li>
                       ))}
+                    </ul>
+                  </details>
+                ) : null}
+
+                {data.meta.parseDebug ? (
+                  <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                    <summary className="cursor-pointer text-white/70">
+                      Transaction extractor metrics
+                    </summary>
+                    <dl className="mt-2 grid gap-2 sm:grid-cols-2">
+                      <div>
+                        <dt className="text-white/40">Extracted characters</dt>
+                        <dd className="text-white/70">{data.meta.parseDebug.totalExtractedChars}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-white/40">Physical vs reconstructed lines</dt>
+                        <dd className="text-white/70">
+                          {data.meta.parseDebug.cleanedLineCount} /{" "}
+                          {data.meta.parseDebug.reconstructedLineCount}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-white/40">High-confidence parses</dt>
+                        <dd className="text-white/70">{data.meta.parseDebug.highConfidenceParsed}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-white/40">Accepted / rejected</dt>
+                        <dd className="text-white/70">
+                          {data.meta.parseDebug.acceptedCount} /{" "}
+                          {data.meta.parseDebug.rejectedCount}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-white/40">AI-disambiguated rows</dt>
+                        <dd className="text-white/70">
+                          {data.meta.parseDebug.aiDisambiguatedCount}
+                          {data.meta.parseDebug.fullTextAiFallbackUsed
+                            ? " · full-text fallback"
+                            : ""}
+                        </dd>
+                      </div>
+                    </dl>
+                  </details>
+                ) : null}
+
+                <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                  <summary className="cursor-pointer text-white/70">
+                    AI-assisted subscription clusters (
+                    {data.diagnostics.aiAssistedSubscriptionClusterIds.length})
+                  </summary>
+                  {data.diagnostics.aiAssistedSubscriptionClusterIds.length ? (
+                    <ul className="mt-2 max-h-40 overflow-y-auto text-white/60">
+                      {data.diagnostics.aiAssistedSubscriptionClusterIds.map((id) => (
+                        <li key={id} className="font-mono text-[11px]">
+                          {id}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-2 text-white/45">
+                      No subscription rows were attributed to OpenAI for this run
+                      (heuristic-only or API unavailable).
+                    </p>
+                  )}
+                </details>
+
+                <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                  <summary className="cursor-pointer text-white/70">
+                    Detected subscriptions ({data.subscriptions.length})
+                  </summary>
+                  <ul className="mt-2 max-h-48 space-y-2 overflow-y-auto">
+                    {data.subscriptions.map((s) => (
+                      <li
+                        key={s.clusterId}
+                        className="rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-[11px]"
+                      >
+                        <span className="text-white/75">{s.normalizedName}</span>
+                        <span className="text-white/35"> · </span>
+                        <span className="text-white/50">{s.clusterId}</span>
+                        <span className="text-white/35"> · </span>
+                        <span className="text-emerald-200/90">
+                          fit {(s.trueSubscriptionScore * 100).toFixed(0)}%
+                        </span>
+                      </li>
+                    ))}
                   </ul>
+                </details>
+
+                <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                  <summary className="cursor-pointer text-white/70">
+                    Recurring expenses ({data.recurringExpenses.length})
+                  </summary>
+                  <ul className="mt-2 max-h-48 space-y-2 overflow-y-auto">
+                    {data.recurringExpenses.map((r) => (
+                      <li
+                        key={r.clusterId}
+                        className="rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-[11px] text-white/60"
+                      >
+                        {r.normalizedName} · score{" "}
+                        {(r.recurringExpenseScore * 100).toFixed(0)}% ·{" "}
+                        {r.categoryLabel}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+
+                <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                  <summary className="cursor-pointer text-white/70">
+                    Spending insights ({data.spendingInsights.length})
+                  </summary>
+                  <ul className="mt-2 max-h-48 space-y-2 overflow-y-auto">
+                    {data.spendingInsights.map((r) => (
+                      <li
+                        key={r.clusterId}
+                        className="rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-[11px] text-white/60"
+                      >
+                        {r.normalizedName} · insight score{" "}
+                        {(r.spendingInsightScore * 100).toFixed(0)}% ·{" "}
+                        {r.categoryLabel}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+
+                <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                  <summary className="cursor-pointer text-white/70">
+                    Subscription gate exclusions (
+                    {data.diagnostics.excludedFromSubscriptions.length})
+                  </summary>
+                  {data.diagnostics.excludedFromSubscriptions.length ? (
+                    <ul className="mt-2 max-h-52 space-y-2 overflow-y-auto">
+                      {data.diagnostics.excludedFromSubscriptions
+                        .slice(0, 40)
+                        .map((row) => (
+                          <li
+                            key={row.clusterId}
+                            className="rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-[11px]"
+                          >
+                            <span className="font-medium text-white/75">
+                              {row.merchantLabel}
+                            </span>
+                            <span className="text-white/35"> · </span>
+                            <span className="text-white/50">
+                              {row.reasons.join(" · ")}
+                            </span>
+                          </li>
+                        ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-2 text-white/45">
+                      No merged candidates were blocked at the subscription gates.
+                    </p>
+                  )}
                   {data.diagnostics.excludedFromSubscriptions.length > 40 ? (
                     <p className="mt-2 text-white/35">
                       Showing first 40 of{" "}
-                      {data.diagnostics.excludedFromSubscriptions.length} excluded candidates.
+                      {data.diagnostics.excludedFromSubscriptions.length}.
                     </p>
                   ) : null}
-                </div>
-              ) : (
-                <p className="mt-3 text-white/45">
-                  No merged subscription candidates were excluded (or analysis produced none).
-                </p>
-              )}
+                </details>
+
+                <dl className="grid gap-2 text-xs sm:grid-cols-2">
+                  <div>
+                    <dt className="text-white/40">subscriptionCount</dt>
+                    <dd className="text-white/75">{data.diagnostics.subscriptionCount}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-white/40">spendingInsightCount</dt>
+                    <dd className="text-white/75">{data.diagnostics.spendingInsightCount}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-white/40">recurringExpenseCount</dt>
+                    <dd className="text-white/75">{data.diagnostics.recurringExpenseCount}</dd>
+                  </div>
+                </dl>
+              </div>
             </details>
           </div>
         ) : null}
       </div>
     </main>
+  );
+}
+
+function SectionIntro(props: { title: string; description: string }) {
+  return (
+    <div className="space-y-2 border-b border-white/10 pb-3">
+      <h2 className="text-xl font-semibold tracking-tight text-white">
+        {props.title}
+      </h2>
+      <p className="max-w-3xl text-sm leading-relaxed text-white/50">
+        {props.description}
+      </p>
+    </div>
   );
 }
 
@@ -488,12 +688,16 @@ function SpendingInsightCard(props: { row: SpendingInsightRow }) {
     <div className="rounded-2xl border border-sky-400/15 bg-gradient-to-br from-sky-400/[0.07] to-white/[0.02] p-5">
       <div className="flex flex-wrap gap-4">
         <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-black/40 text-lg font-bold text-sky-200">
-          {merchantInitial(r.merchant)}
+          {merchantInitial(r.normalizedName)}
         </div>
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-base font-semibold text-white">
-            {r.merchant}
+            {r.normalizedName}
           </h3>
+          {r.normalizedName.trim().toUpperCase() !==
+          r.merchant.trim().toUpperCase() ? (
+            <p className="text-xs text-white/40">Descriptor: {r.merchant}</p>
+          ) : null}
           <p className="mt-1 text-xs text-white/45">
             Category ·{" "}
             <span className="text-white/70">{r.categoryLabel}</span>
@@ -504,10 +708,62 @@ function SpendingInsightCard(props: { row: SpendingInsightRow }) {
             Latest charge {r.lastCharged}
             {" · "}
             Frequency {freqLabel[r.frequency] ?? r.frequency}
+            {" · "}
+            Insight score{" "}
+            <span className="text-sky-200/90">
+              {(r.spendingInsightScore * 100).toFixed(0)}%
+            </span>
           </p>
           <p className="mt-2 rounded-lg border border-white/10 bg-black/25 px-3 py-2 text-xs text-sky-100/95">
-            <span className="font-semibold text-sky-200/95">Recommendation:</span>{" "}
+            <span className="font-semibold text-sky-200/95">Signal:</span>{" "}
             {r.recommendation}
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="text-lg font-semibold text-white">
+            {formatMoney(r.amount, r.currency)}
+          </p>
+          <p className="text-xs text-white/45">Latest debit</p>
+          <p className="mt-2 text-xs font-medium text-white/65">
+            Period total{" "}
+            <span className="text-white">
+              {formatMoney(r.totalSpentInPeriod, r.currency)}
+            </span>
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RecurringExpenseCard(props: { row: SpendingInsightRow }) {
+  const { row: r } = props;
+  const kind =
+    insightKindLabel[r.kind] ?? r.kind.replaceAll("_", " ");
+
+  return (
+    <div className="rounded-2xl border border-violet-400/20 bg-gradient-to-br from-violet-500/[0.08] to-white/[0.02] p-5">
+      <div className="flex flex-wrap gap-4">
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-black/40 text-lg font-bold text-violet-200">
+          {merchantInitial(r.normalizedName)}
+        </div>
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate text-base font-semibold text-white">
+            {r.normalizedName}
+          </h3>
+          <p className="mt-1 text-xs text-white/45">
+            <span className="rounded-md bg-white/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-100/95">
+              {r.categoryLabel}
+            </span>
+            <span className="mx-2 text-white/30">·</span>
+            <span className="text-white/55">{kind}</span>
+          </p>
+          <p className="mt-1 text-xs text-white/45">
+            Latest {r.lastCharged} · {freqLabel[r.frequency] ?? r.frequency}{" "}
+            · Recurring pattern score{" "}
+            <span className="text-violet-200/90">
+              {(r.recurringExpenseScore * 100).toFixed(0)}%
+            </span>
           </p>
         </div>
         <div className="text-right">
@@ -533,38 +789,79 @@ function SubscriptionCard(props: {
   onAction: (key: "cancel" | "review" | "keep" | "alt") => void;
 }) {
   const { row: s, action, onAction } = props;
-  const badges: Array<{ key: string; label: string }> = [];
-  if (s.flags.forgotten) badges.push({ key: "f", label: "FORGOTTEN" });
-  if (s.flags.duplicate) badges.push({ key: "d", label: "DUPLICATE" });
+  const badges: Array<{ key: string; label: string; tone: string }> = [];
+  if (s.flags.confirmed)
+    badges.push({
+      key: "ok",
+      label: "CONFIRMED",
+      tone: "border-emerald-400/50 bg-emerald-500/15 text-emerald-100",
+    });
+  if (s.flags.reviewSuggested)
+    badges.push({
+      key: "rv",
+      label: "REVIEW",
+      tone: "border-sky-400/45 bg-sky-500/15 text-sky-100",
+    });
   if (s.flags.priceIncreased)
-    badges.push({ key: "p", label: "PRICE INCREASE" });
-  if (s.flags.suspicious) badges.push({ key: "s", label: "SUSPICIOUS" });
+    badges.push({
+      key: "p",
+      label: "PRICE INCREASE",
+      tone: "border-amber-400/40 bg-amber-500/15 text-amber-100",
+    });
+  if (s.flags.duplicate)
+    badges.push({
+      key: "d",
+      label: "DUPLICATE",
+      tone: "border-amber-400/40 bg-amber-500/15 text-amber-100",
+    });
+  if (s.flags.forgotten)
+    badges.push({
+      key: "f",
+      label: "FORGOTTEN",
+      tone: "border-orange-400/40 bg-orange-500/15 text-orange-100",
+    });
   if (s.flags.trialConverted)
-    badges.push({ key: "t", label: "TRIAL → PAYING" });
+    badges.push({
+      key: "t",
+      label: "TRIAL → PAYING",
+      tone: "border-fuchsia-400/35 bg-fuchsia-500/15 text-fuchsia-100",
+    });
+  if (s.flags.suspicious)
+    badges.push({
+      key: "s",
+      label: "SUSPICIOUS",
+      tone: "border-red-400/40 bg-red-500/15 text-red-100",
+    });
 
   const compareHref = `/compare?subscriptionMerchant=${encodeURIComponent(s.normalizedName)}`;
 
   return (
-    <div className="rounded-2xl border border-white/[0.09] bg-gradient-to-br from-white/[0.06] to-white/[0.02] p-5">
+    <div className="rounded-2xl border border-emerald-400/15 bg-gradient-to-br from-emerald-500/[0.06] to-white/[0.02] p-5">
       <div className="flex flex-wrap gap-4">
         <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-black/40 text-lg font-bold text-emerald-200">
-          {merchantInitial(s.merchant)}
+          {merchantInitial(s.normalizedName)}
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-2">
             <h3 className="truncate text-base font-semibold text-white">
-              {s.merchant}
+              {s.normalizedName}
             </h3>
-            <span className="text-sm text-white/50">
-              Confidence {(s.confidence * 100).toFixed(0)}%
-            </span>
           </div>
           {s.normalizedName.trim().toUpperCase() !==
           s.merchant.trim().toUpperCase() ? (
-            <p className="mt-0.5 text-xs text-white/45">
-              Label alias: {s.normalizedName}
+            <p className="mt-0.5 text-xs text-white/40">
+              Statement text: {s.merchant}
             </p>
           ) : null}
+          <p className="mt-1 text-xs text-white/45">
+            <span className="rounded-md bg-white/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white/80">
+              {catLabel[s.category] ?? s.category}
+            </span>
+            <span className="mx-2 text-white/30">·</span>
+            Confidence {(s.confidence * 100).toFixed(0)}%
+            <span className="text-white/30"> · </span>
+            Subscription fit {(s.trueSubscriptionScore * 100).toFixed(0)}%
+          </p>
           <p className="mt-1 text-xs text-white/45">
             Latest charge {s.lastCharged}
             {s.daysSinceLastCharge != null
@@ -578,7 +875,10 @@ function SubscriptionCard(props: {
             {badges.map((b) => (
               <span
                 key={b.key}
-                className="rounded-full border border-amber-400/35 bg-amber-400/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-100"
+                className={[
+                  "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                  b.tone,
+                ].join(" ")}
               >
                 {b.label.trim()}
               </span>
@@ -595,9 +895,6 @@ function SubscriptionCard(props: {
           <p className="text-xs text-emerald-200/90">
             ≈ {formatMoney(s.monthlyEquivalent, s.currency)}/mo ·{" "}
             {formatMoney(s.annualEquivalent, s.currency)}/yr
-          </p>
-          <p className="mt-1 text-[11px] text-white/40">
-            {catLabel[s.category] ?? s.category}
           </p>
         </div>
       </div>

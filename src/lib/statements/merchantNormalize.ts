@@ -30,8 +30,48 @@ const RAIL_PAY_RE =
 const SOFT_PAYMENT_NOISE_FOR_LABEL =
   /\b(PAYMENT\s+AUTHORIZED|AUTHORIZED|PAYPAL)\b/giu;
 
+/** Collapse URL-style noise: slashes, trailing .COM tokens — still pattern-driven, not a fixed roster. */
+function normalizeDescriptorTokens(desc: string): string {
+  let s = normalizeMerchantText(desc);
+  s = s.replace(/[/\\]+/gu, " ");
+  s = s.replace(/\b([A-Za-z][A-Za-z0-9+&]*)\s*\.\s*(COM|NET|ORG)\b/gu, "$1");
+  s = s.replace(/\s+/gu, " ").trim();
+  return s;
+}
+
 /** Human-readable names from ubiquitous billing descriptors (pattern-based). */
 function patternBasedMerchant(blob: string): string | null {
+  const upper = blob.toUpperCase();
+  if (
+    /\bZELLE\b/u.test(upper) &&
+    /\b(PAYMENT|PAY|P2P|SEND|RECV|RECVD|TRANSFER|TRANSF)\b/u.test(upper)
+  ) {
+    return "Zelle Transfer";
+  }
+  if (/\b(AT\s*&\s*T|A\s*T\s*T)\b/u.test(blob) || /\bATT\b/u.test(upper)) {
+    return "AT&T";
+  }
+  if (/\bOPEN\s*AI\b|\bOPENAI\b|\bCHAT\s*GPT\b|\bCHATGPT\b/ui.test(blob)) {
+    return "OpenAI ChatGPT";
+  }
+  if (/\bSTATE\s+FARM\b/ui.test(blob)) {
+    return "State Farm";
+  }
+  if (/\bPEACOCK\b/ui.test(blob)) {
+    return "Peacock";
+  }
+  if (/\bDOOR\s*DASH\b|\bDOORDASH\b/ui.test(blob)) {
+    return "DoorDash";
+  }
+  if (/\bCIRCLE\s*K\b|\bCIRCLEK\b/ui.test(blob)) {
+    return "Circle K";
+  }
+  if (/\bDOLLAR\s+GENERAL\b|\bDOLLAR\s*GEN\b/ui.test(blob)) {
+    return "Dollar General";
+  }
+  if (/\bSHELL\b/.test(upper) || /\bSHELL\s+(GAS|OIL|MOTOR)/ui.test(blob)) {
+    return "Shell";
+  }
   if (/\bAPPLE\.COM\b|\bAPPLE\b.*\b(BILL|MUSIC|PAY)\b|\bAPP\s+STORE\b|\bITUNES\b|\bICLOUD\b/u.test(blob)) {
     return "Apple";
   }
@@ -88,10 +128,15 @@ function patternBasedMerchant(blob: string): string | null {
 
 /** Category for known patterns (software/digital vs streaming etc.). */
 function patternCategory(blob: string, hint: SubscriptionCategory | null): SubscriptionCategory {
-  if (hint) return hint;
   const branded = patternBasedMerchant(blob);
+  if (branded === "OpenAI ChatGPT") {
+    return "ai_tools";
+  }
+  if (hint) return hint;
 
-  if (branded === "Apple" || branded === "Google" || branded === "Microsoft") {
+  if (
+    branded === "Apple" || branded === "Google" || branded === "Microsoft"
+  ) {
     return "software";
   }
   if (branded === "Netflix" || branded === "Hulu" || branded === "Disney" || branded === "Amazon Prime") {
@@ -99,11 +144,16 @@ function patternCategory(blob: string, hint: SubscriptionCategory | null): Subsc
   }
   if (branded === "Spotify") return "music";
   if (
+    branded === "Dropbox" ||
+    branded === "Amazon Web Services"
+  ) {
+    return "cloud_storage";
+  }
+  if (
     branded === "Adobe" ||
     branded === "Canva" ||
-    branded === "Dropbox" ||
-    branded === "Amazon Digital" ||
-    branded === "Amazon Web Services"
+    /** "Amazon Digital" remains software-ish storefront billing */
+    branded === "Amazon Digital"
   ) {
     return "software";
   }
@@ -174,7 +224,7 @@ export function deriveMerchantPresentation(args: {
   normalizedName: string;
   category: SubscriptionCategory;
 } {
-  const raw = normalizeMerchantText(args.primaryDescription);
+  const raw = normalizeDescriptorTokens(args.primaryDescription);
   const blob = `${raw} ${args.clusterKeyUpper}`;
 
   const { categoryHint } = merchantTextSignals(raw, args.clusterKeyUpper);
