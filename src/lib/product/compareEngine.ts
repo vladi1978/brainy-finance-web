@@ -524,6 +524,22 @@ function normalizeUrlKey(url: string): string {
   }
 }
 
+function dedupeByStoreAndUrl(items: CandidateProduct[]): CandidateProduct[] {
+  const map = new Map<string, CandidateProduct>();
+  for (const item of items) {
+    const key = `${item.store}|${normalizeUrlKey(item.productUrl)}`;
+    const prev = map.get(key);
+    if (
+      !prev ||
+      (item.price ?? Number.POSITIVE_INFINITY) <
+        (prev.price ?? Number.POSITIVE_INFINITY)
+    ) {
+      map.set(key, item);
+    }
+  }
+  return [...map.values()];
+}
+
 function queryDerivedSourceSummary(
   productQuery: string,
   detectedStore: StoreId | null,
@@ -585,22 +601,6 @@ function buildDemoCandidates(
     normalized: { ...sharedNorm },
     sourceConfidence: 0.94,
   }));
-}
-
-function dedupeByStoreAndUrl(items: CandidateProduct[]): CandidateProduct[] {
-  const map = new Map<string, CandidateProduct>();
-  for (const item of items) {
-    const key = `${item.store}|${normalizeUrlKey(item.productUrl)}`;
-    const prev = map.get(key);
-    if (
-      !prev ||
-      (item.price ?? Number.POSITIVE_INFINITY) <
-        (prev.price ?? Number.POSITIVE_INFINITY)
-    ) {
-      map.set(key, item);
-    }
-  }
-  return [...map.values()];
 }
 
 function candidateKey(c: CandidateProduct, index: number): string {
@@ -1100,6 +1100,12 @@ export async function compareProduct(
 
   const inputUrl = parsed.inputUrl?.trim();
   const deduped = dedupeByStoreAndUrl(allCandidates);
+
+  console.log("[DEDUPE_SUMMARY]", {
+    before: allCandidates.length,
+    after: deduped.length,
+    removed: allCandidates.length - deduped.length,
+  });
 
   if (debug) {
     const missingPrice = allCandidates.filter((c) => !isValidComparablePrice(c.price));

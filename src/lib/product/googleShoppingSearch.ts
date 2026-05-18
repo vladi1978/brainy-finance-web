@@ -1,6 +1,7 @@
 import { buildNormalizedProduct, detectStoreFromProductUrl } from "./normalize";
 import { buildRetailerSearchUrlFromTitle } from "./productUrlResolver";
 import { isProductDetailStoreKey, isValidStoreOutboundUrl } from "./productDetailUrl";
+import { dedupeIdenticalListingUrls } from "./candidateDedupe";
 import type {
   CandidateProduct,
   ProviderSearchContext,
@@ -612,41 +613,6 @@ function rowToCandidate(
   return out;
 }
 
-/** Preserve distinct search fallbacks that only differ by query or /s/ segment. */
-function candidateDedupeKey(productUrl: string): string {
-  try {
-    const u = new URL(productUrl);
-    const path = u.pathname.toLowerCase();
-    if (
-      path === "/search" ||
-      path === "/s" ||
-      path.startsWith("/s/") ||
-      path.includes("searchpage.jsp") ||
-      path.includes("search_result.html")
-    ) {
-      return productUrl.toLowerCase();
-    }
-  } catch {
-    /* ignore */
-  }
-  return productUrl.split("?")[0].toLowerCase();
-}
-
-function dedupeCandidates(items: CandidateProduct[]): CandidateProduct[] {
-  const map = new Map<string, CandidateProduct>();
-  for (const item of items) {
-    const key = candidateDedupeKey(item.productUrl);
-    const prev = map.get(key);
-    if (
-      !prev ||
-      (item.price ?? Number.POSITIVE_INFINITY) < (prev.price ?? Number.POSITIVE_INFINITY)
-    ) {
-      map.set(key, item);
-    }
-  }
-  return [...map.values()];
-}
-
 type FetchOutcome = {
   candidates: CandidateProduct[];
   diagnostics: ProviderSearchDiagnostics;
@@ -710,7 +676,7 @@ async function fetchShoppingForQuery(
     if (out.length >= limit) break;
   }
 
-  const deduped = dedupeCandidates(out);
+  const deduped = dedupeIdenticalListingUrls(out);
 
   return {
     candidates: deduped.slice(0, limit),
@@ -755,7 +721,7 @@ export async function fetchGoogleShoppingCandidatesWithDiagnostics(
     const { candidates, diagnostics: d } = await fetchShoppingForQuery(qq, perQueryLimit);
     diagnostics.push(d);
     merged.push(...candidates);
-    const deduped = dedupeCandidates(merged);
+    const deduped = dedupeIdenticalListingUrls(merged);
     merged.length = 0;
     merged.push(...deduped);
     if (merged.length >= totalLimit) break;
