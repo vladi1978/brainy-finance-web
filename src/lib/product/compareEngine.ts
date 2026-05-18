@@ -1284,7 +1284,7 @@ export async function compareProduct(
       titlePreview: c.title.slice(0, 120),
     });
 
-    if (!isProductDetailStoreKey(c.store) && c.store !== "other") {
+    if (!isProductDetailStoreKey(c.store)) {
       candidateSteps.push({
         key: candidateKey(c, candidateSteps.length),
         store: c.store,
@@ -1449,7 +1449,7 @@ export async function compareProduct(
     .filter(
       (api) =>
         (api.urlType === "product" || api.urlType === "search") &&
-        (isProductDetailStoreKey(api.store) || api.store === "other") &&
+        isProductDetailStoreKey(api.store) &&
         Boolean(api.outboundUrl?.trim())
     );
 
@@ -1638,7 +1638,7 @@ export async function compareProduct(
 
     if (
       bestDeal &&
-      ((!isProductDetailStoreKey(bestDeal.store) && bestDeal.store !== "other") ||
+      (!isProductDetailStoreKey(bestDeal.store) ||
         bestDeal.urlType === "unknown" ||
         !bestDeal.outboundUrl?.trim())
     ) {
