@@ -175,6 +175,9 @@ function universalBadRetailUrl(u: URL): boolean {
     return true;
   }
 
+  if (path.includes("/account") || path.includes("/login")) return true;
+  if (path.includes("/category")) return true;
+
   return false;
 }
 
@@ -300,6 +303,107 @@ export function isRetailerSearchUrl(store: ProductDetailStoreKey, url: string): 
   return isRetailerSearchLandingUrl(store, u);
 }
 
+const PRODUCT_LIKE_PATH_FRAGMENTS = [
+  "/product/",
+  "/products/",
+  "/p/",
+  "/pd/",
+  "/item/",
+  "/items/",
+  "/sku/",
+  "/dp/",
+  "/ip/",
+  "/site/",
+  "/itm/",
+] as const;
+
+const PRODUCT_LIKE_QUERY_KEYS = new Set([
+  "productid",
+  "itemid",
+  "sku",
+  "offerid",
+  "model",
+  "upc",
+  "gtin",
+]);
+
+function pathHasProductLikeSignals(pathLower: string): boolean {
+  for (const frag of PRODUCT_LIKE_PATH_FRAGMENTS) {
+    if (pathLower.includes(frag)) return true;
+  }
+  return false;
+}
+
+function queryHasProductLikeSignals(sp: URLSearchParams): boolean {
+  for (const k of sp.keys()) {
+    if (PRODUCT_LIKE_QUERY_KEYS.has(k.toLowerCase())) return true;
+  }
+  return false;
+}
+
+/**
+ * Product-like URL shape: more than a bare landing page (path depth / slug) plus at least one
+ * PDP-ish path fragment or product id query key.
+ */
+function hasMeaningfulProductPathDepth(pathname: string): boolean {
+  const trimmed = pathname.replace(/\/+$/, "");
+  const segs = trimmed.split("/").filter(Boolean);
+  if (segs.length >= 2) return true;
+  if (segs.length === 1) {
+    const leaf = segs[0];
+    if (/\.html?$/i.test(leaf) && leaf.length >= 8) return true;
+    return leaf.length >= 12;
+  }
+  return false;
+}
+
+/**
+ * Safe blocklist + product-like heuristics for merchant URLs that are not strict PDP patterns.
+ * Excludes retailer search/category/cart/account and Google hops — see {@link universalBadRetailUrl}.
+ */
+export function isProductLikeRetailerUrl(
+  store: ProductDetailStoreKey,
+  url: string
+): boolean {
+  let u: URL;
+  try {
+    u = new URL(url.trim());
+  } catch {
+    return false;
+  }
+
+  if (!/^https?:$/i.test(u.protocol)) return false;
+
+  const host = normHost(u.hostname);
+
+  if (universalBadRetailUrl(u)) return false;
+
+  const path = u.pathname;
+
+  if (isDemoPdpPlaceholder(host, path)) {
+    if (!demoHostMatchesStore(store, host)) return false;
+    if (isHomepageOnlyRetailPath(u)) return false;
+    return (
+      hasMeaningfulProductPathDepth(path) &&
+      (pathHasProductLikeSignals(path.toLowerCase()) ||
+        queryHasProductLikeSignals(u.searchParams))
+    );
+  }
+
+  if (!hostMatchesStoreKey(store, host)) return false;
+
+  if (isHomepageOnlyRetailPath(u)) return false;
+
+  const trimmed = url.trim();
+  if (isRetailerSearchUrl(store, trimmed)) return false;
+
+  const pathLower = path.toLowerCase();
+  if (!hasMeaningfulProductPathDepth(path)) return false;
+  return (
+    pathHasProductLikeSignals(pathLower) || queryHasProductLikeSignals(u.searchParams)
+  );
+}
+
 /**
  * True only for retailer-hosted **product detail** URLs (PDPs). Search/category/listing pages are false —
  * use {@link isValidStoreOutboundUrl} for Shopping pipeline outbound URLs until affiliate APIs land.
@@ -312,9 +416,9 @@ export function isValidProductDetailUrl(
 }
 
 /**
- * URLs safe to send users to the correct retailer host: real PDPs, known retailer search URLs,
- * or generated search URLs that match our store-specific patterns. Rejects empty/broken URLs,
- * wrong-host links, and bare homepages. PDP paths still reject hops/cart/etc. via {@link isStrictProductDetailUrl}.
+ * URLs safe to send users to the correct retailer host: strict PDPs, product-like merchant paths,
+ * or known retailer search URLs (generated search URLs are built elsewhere).
+ * Rejects empty/broken URLs, wrong-host links, and bare homepages.
  */
 export function isValidStoreOutboundUrl(
   store: ProductDetailStoreKey,
@@ -339,6 +443,8 @@ export function isValidStoreOutboundUrl(
 
   /** PDP branch applies {@link universalBadRetailUrl}; search URLs intentionally bypass it (e.g. `/s?k=`). */
   if (isStrictProductDetailUrl(store, trimmed)) return true;
+
+  if (isProductLikeRetailerUrl(store, trimmed)) return true;
 
   return isRetailerSearchUrl(store, trimmed);
 }
