@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useCallback, useMemo, useState } from "react";
 
+import { CopilotFeedSection } from "@/components/statements/copilot/CopilotFeedSection";
+import type { CopilotTimelineResult } from "@/lib/statements/timeline/types";
 import { ProviderComparisonModal } from "@/components/statements/actions/ProviderComparisonModal";
 import { RecommendationActionCard } from "@/components/statements/actions/RecommendationActionCard";
 import { SavingsAcceptedSummary } from "@/components/statements/actions/SavingsAcceptedSummary";
@@ -135,6 +137,36 @@ type StatementIntelligencePayload = {
   visibleRecurring: SpendingInsightRow[];
   visibleInsights: SpendingInsightRow[];
   lowConfidenceRows: SpendingInsightRow[];
+  copilot?: CopilotTimelinePayload;
+};
+
+type CopilotFeedItemPayload = {
+  id: string;
+  signalId: string;
+  title: string;
+  insight: string;
+  recommendation: string;
+  estimatedMonthlySavings?: number;
+  estimatedYearlySavings?: number;
+  currency: string;
+  severity: InsightSeverity;
+  tags: string[];
+  priority: {
+    urgency: number;
+    savingsImpact: number;
+    confidence: number;
+    effort: number;
+    overall: number;
+  };
+};
+
+type CopilotTimelinePayload = {
+  feed: CopilotFeedItemPayload[];
+  topPriorities: CopilotFeedItemPayload[];
+  behaviorTrends: CopilotFeedItemPayload[];
+  yearlyOptimizationPotential: number;
+  currency: string;
+  generatedAt: string;
 };
 
 type MerchantNormalizationDiagnosticRow = {
@@ -586,6 +618,13 @@ export default function StatementsClient() {
                     )}
                   </section>
                 </section>
+
+                {intelligence.copilot && intelligence.copilot.feed.length > 0 ? (
+                  <CopilotFeedSection
+                    copilot={intelligence.copilot as CopilotTimelineResult}
+                    formatMoney={formatMoney}
+                  />
+                ) : null}
 
                 {intelligence.savings.length > 0 ? (
                   <section className="space-y-4 border-t border-white/10 pt-10">

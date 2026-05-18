@@ -6,6 +6,7 @@ import { buildInsightsFeed } from "./insightsFeed";
 import { buildRecommendations } from "../recommendations";
 import { buildSavingsOpportunities } from "./savings";
 import { deriveSmartSignal } from "./smartSignals";
+import { buildCopilotTimeline } from "../timeline/buildTimeline";
 import type {
   EnrichedSpendingRow,
   IntelligenceInput,
@@ -96,11 +97,18 @@ export function buildStatementIntelligence(
     merchantNormByClusterId: result.merchantNormByClusterId,
   });
 
+  const recommendations = buildRecommendations({ ...input, merchantGroups });
+  const savings = buildSavingsOpportunities(input);
+  const copilot = buildCopilotTimeline(input, {
+    existingYearlySavings: recommendations.totalYearlySavings,
+  });
+
   return {
     insights: buildInsightsFeed(input),
     healthScore: buildHealthScore(input),
-    savings: buildSavingsOpportunities(input),
-    recommendations: buildRecommendations({ ...input, merchantGroups }),
+    savings,
+    recommendations,
+    copilot,
     merchantGroups,
     visibleRecurring: recurringParts.visible.sort(
       (a, b) => b.totalSpentInPeriod - a.totalSpentInPeriod

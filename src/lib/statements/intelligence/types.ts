@@ -1,3 +1,4 @@
+import type { CopilotTimelineResult } from "../timeline/types";
 import type { RecommendationsResult } from "../recommendations/types";
 import type {
   MerchantCluster,
@@ -65,6 +66,7 @@ export type StatementIntelligence = {
   healthScore: HealthScoreResult;
   savings: SavingsOpportunity[];
   recommendations: RecommendationsResult;
+  copilot: CopilotTimelineResult;
   merchantGroups: MerchantGroupSummary[];
   visibleRecurring: EnrichedSpendingRow[];
   visibleInsights: EnrichedSpendingRow[];
