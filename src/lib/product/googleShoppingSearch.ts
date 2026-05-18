@@ -607,6 +607,7 @@ function rowToCandidate(
   };
 
   if (source) out.sourceLabel = source;
+  out.shoppingQueryUsed = searchQuery.replace(/\s+/g, " ").trim();
   if (rating != null) out.rating = rating;
   if (productId) out.productId = productId;
 

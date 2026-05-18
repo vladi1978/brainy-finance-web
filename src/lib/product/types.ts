@@ -181,6 +181,8 @@ export type CandidateProduct = {
   productId?: string;
   /** Merchant/source label from the shopping row when present */
   sourceLabel?: string;
+  /** Shopping API query that produced this row (dedupe / diagnostics) */
+  shoppingQueryUsed?: string;
   /** Listing star rating when the provider exposes it */
   rating?: number | null;
 };

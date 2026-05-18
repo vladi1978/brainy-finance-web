@@ -278,6 +278,152 @@ export function parseWalmartSearchHtml(
   return filtered.slice(0, limit);
 }
 
+/**
+ * Product tiles from a Target search HTML page (anchor href + aria-label when present).
+ */
+export function parseTargetSearchHtml(
+  html: string,
+  limit = 24
+): ParsedSearchCandidate[] {
+  const out: ParsedSearchCandidate[] = [];
+  const seen = new Set<string>();
+
+  function absolutizeTargetHref(hrefRaw: string): string | null {
+    const href = hrefRaw.split("#")[0]?.split("?")[0]?.trim() ?? "";
+    if (!href.startsWith("/") && !href.startsWith("http")) return null;
+    try {
+      const url = href.startsWith("http")
+        ? new URL(href)
+        : new URL(`https://www.target.com${href}`);
+      if (url.hostname.replace(/^www\./i, "").toLowerCase() !== "target.com")
+        return null;
+      return url.toString().replace(/\/+$/, "");
+    } catch {
+      return null;
+    }
+  }
+
+  const labeled =
+    /<a[^>]+href="([^"]+)"[^>]*aria-label="([^"]{3,500})"/gi;
+  let m: RegExpExecArray | null;
+  while ((m = labeled.exec(html)) !== null && out.length < limit) {
+    const url = absolutizeTargetHref(m[1]);
+    if (!url || !isValidProductDetailUrl("target", url)) continue;
+    const lk = url.toLowerCase();
+    if (seen.has(lk)) continue;
+    seen.add(lk);
+    const title = stripTags(m[2].replace(/\s+/g, " ").trim());
+    if (title.length < 3) continue;
+    out.push({
+      title,
+      price: null,
+      currency: "USD",
+      productUrl: url,
+    });
+  }
+
+  const linkOnly = /href="([^"]*\/p\/[^"?]+\/-\/A-\d+[^"]*)"/gi;
+  while ((m = linkOnly.exec(html)) !== null && out.length < limit) {
+    const url = absolutizeTargetHref(m[1]);
+    if (!url || !isValidProductDetailUrl("target", url)) continue;
+    const lk = url.toLowerCase();
+    if (seen.has(lk)) continue;
+    seen.add(lk);
+    let slug = "";
+    try {
+      const path = new URL(url).pathname;
+      const mm = path.match(/^\/p\/(.+)\/-\/A-\d+$/i);
+      slug = mm?.[1]?.replace(/-/g, " ") ?? "";
+    } catch {
+      slug = "";
+    }
+    const title = stripTags(slug.trim()) || "unknown";
+    if (title.length < 3) continue;
+    out.push({
+      title,
+      price: null,
+      currency: "USD",
+      productUrl: url,
+    });
+  }
+
+  const deduped = dedupeByProductUrl(out);
+  return deduped.slice(0, limit);
+}
+
+/**
+ * Product tiles from a Best Buy search HTML page.
+ */
+export function parseBestBuySearchHtml(
+  html: string,
+  limit = 24
+): ParsedSearchCandidate[] {
+  const out: ParsedSearchCandidate[] = [];
+  const seen = new Set<string>();
+
+  function absolutizeBestBuyHref(hrefRaw: string): string | null {
+    const href = hrefRaw.split("#")[0]?.split("?")[0]?.trim() ?? "";
+    if (!href.startsWith("/") && !href.startsWith("http")) return null;
+    try {
+      const url = href.startsWith("http")
+        ? new URL(href)
+        : new URL(`https://www.bestbuy.com${href}`);
+      if (!url.hostname.replace(/^www\./i, "").toLowerCase().endsWith("bestbuy.com"))
+        return null;
+      return url.toString().replace(/\/+$/, "");
+    } catch {
+      return null;
+    }
+  }
+
+  const labeled =
+    /<a[^>]+href="([^"]+)"[^>]*aria-label="([^"]{3,500})"/gi;
+  let m: RegExpExecArray | null;
+  while ((m = labeled.exec(html)) !== null && out.length < limit) {
+    const url = absolutizeBestBuyHref(m[1]);
+    if (!url || !isValidProductDetailUrl("bestbuy", url)) continue;
+    const lk = url.toLowerCase();
+    if (seen.has(lk)) continue;
+    seen.add(lk);
+    const title = stripTags(m[2].replace(/\s+/g, " ").trim());
+    if (title.length < 3) continue;
+    out.push({
+      title,
+      price: null,
+      currency: "USD",
+      productUrl: url,
+    });
+  }
+
+  const linkOnly = /href="([^"]*\/site\/[^"?]+\/\d+\.p[^"?]*)"/gi;
+  while ((m = linkOnly.exec(html)) !== null && out.length < limit) {
+    const url = absolutizeBestBuyHref(m[1]);
+    if (!url || !isValidProductDetailUrl("bestbuy", url)) continue;
+    const lk = url.toLowerCase();
+    if (seen.has(lk)) continue;
+    seen.add(lk);
+    let slug = "";
+    try {
+      const path = new URL(url).pathname;
+      const leaf = path.split("/").filter(Boolean).slice(-2);
+      slug = leaf[0]?.replace(/-/g, " ") ?? "";
+    } catch {
+      slug = "";
+    }
+    const title = stripTags(slug.trim()) || "unknown";
+    if (title.length < 3) continue;
+    out.push({
+      title,
+      price: null,
+      currency: "USD",
+      productUrl: url,
+    });
+  }
+
+  const deduped = dedupeByProductUrl(out);
+  return deduped.slice(0, limit);
+}
+
 export async function fetchParsedAmazonSearch(
   query: string,
   limit = 12

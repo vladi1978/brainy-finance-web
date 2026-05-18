@@ -35,8 +35,12 @@ import { isUsablePdpTitle } from "./usablePdpTitle";
 import { findProductProviderForUrl } from "./registry";
 import { rankMatchTypes } from "./searchRelevance";
 import { getSimulatedStoreCoupons } from "../premium/couponOffers";
-import { isProductDetailStoreKey } from "./productDetailUrl";
+import {
+  isProductDetailStoreKey,
+  isStrictProductDetailUrl,
+} from "./productDetailUrl";
 import { resolveCompareCandidateOutbound } from "./productUrlResolver";
+import { resolveDisplayedSearchPdps } from "./searchPdpResolve";
 import type {
   CandidateProduct,
   CandidateStepTrace,
@@ -524,18 +528,100 @@ function normalizeUrlKey(url: string): string {
   }
 }
 
+function pickBetterDuplicateListing(
+  a: CandidateProduct,
+  b: CandidateProduct
+): CandidateProduct {
+  const ca = a.sourceConfidence ?? 0;
+  const cb = b.sourceConfidence ?? 0;
+  if (Math.abs(ca - cb) >= 1e-4) return ca >= cb ? a : b;
+  const pa = a.price ?? Number.POSITIVE_INFINITY;
+  const pb = b.price ?? Number.POSITIVE_INFINITY;
+  if (pa !== pb) return pa <= pb ? a : b;
+  return a;
+}
+
+/** Search / generated listing URLs — identity is not the shared SERP path without query. */
+function listingUsesSearchStyleIdentity(
+  store: StoreId,
+  productUrl: string
+): boolean {
+  const listing = productUrl.replace(/\s+/g, " ").trim();
+  if (!listing) return true;
+  return !isStrictProductDetailUrl(store, listing);
+}
+
+function normalizePriceDedupeKey(price: number | null): string {
+  if (price == null || !Number.isFinite(price)) return "";
+  return price.toFixed(2);
+}
+
+function normalizeImageDedupeKey(imageUrl: string | null): string {
+  if (!imageUrl?.trim()) return "";
+  try {
+    const u = new URL(imageUrl.trim());
+    const leaf = u.pathname.split("/").pop() ?? "";
+    return leaf.toLowerCase().slice(0, 160);
+  } catch {
+    return imageUrl.trim().toLowerCase().slice(0, 160);
+  }
+}
+
+function searchListingDedupeCompositeKey(item: CandidateProduct): string {
+  const q = item.shoppingQueryUsed?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
+  const src = item.sourceLabel?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
+  return [
+    item.store,
+    item.normalized.titleNorm,
+    normalizePriceDedupeKey(item.price),
+    normalizeImageDedupeKey(item.imageUrl),
+    q,
+    src,
+  ].join("|");
+}
+
 function dedupeByStoreAndUrl(items: CandidateProduct[]): CandidateProduct[] {
   const map = new Map<string, CandidateProduct>();
   for (const item of items) {
-    const key = `${item.store}|${normalizeUrlKey(item.productUrl)}`;
+    const searchStyle = listingUsesSearchStyleIdentity(item.store, item.productUrl);
+    const key = searchStyle
+      ? `s:${searchListingDedupeCompositeKey(item)}`
+      : `p:${item.store}|${normalizeUrlKey(item.productUrl)}`;
+
     const prev = map.get(key);
-    if (
-      !prev ||
-      (item.price ?? Number.POSITIVE_INFINITY) <
-        (prev.price ?? Number.POSITIVE_INFINITY)
-    ) {
+    if (!prev) {
       map.set(key, item);
+      if (searchStyle) {
+        console.log(
+          "[SEARCH_URL_DEDUPE_KEEP]",
+          JSON.stringify({
+            store: item.store,
+            titlePreview: item.title.slice(0, 100),
+            price: item.price,
+            hasImage: Boolean(item.imageUrl?.trim()),
+          })
+        );
+      }
+      continue;
     }
+
+    const winner = pickBetterDuplicateListing(prev, item);
+    const loser = winner === prev ? item : prev;
+
+    if (searchStyle) {
+      console.log(
+        "[SEARCH_URL_DEDUPE_DROP]",
+        JSON.stringify({
+          store: loser.store,
+          droppedTitlePreview: loser.title.slice(0, 100),
+          keptTitlePreview: winner.title.slice(0, 100),
+          droppedPrice: loser.price,
+          keptPrice: winner.price,
+        })
+      );
+    }
+
+    map.set(key, winner);
   }
   return [...map.values()];
 }
@@ -1351,7 +1437,7 @@ export async function compareProduct(
     ? orderedAfterPriceAnnot.filter((c) => c.priceCompareSegment === "cheaper")
     : [];
 
-  const orderedForDisplay = (() => {
+  let orderedForDisplay = (() => {
     if (!referencePriceComparable) {
       return orderedAfterPriceAnnot.slice(0, DISPLAY_LIMIT);
     }
@@ -1360,6 +1446,13 @@ export async function compareProduct(
     }
     return orderedAfterPriceAnnot.slice(0, DISPLAY_LIMIT);
   })();
+
+  if (!demoMode) {
+    orderedForDisplay = await resolveDisplayedSearchPdps(
+      orderedForDisplay,
+      demoMode
+    );
+  }
 
   rejectionSummary.baseFilteredCount = baseFiltered.length;
   rejectionSummary.orderedForDisplayCount = orderedForDisplay.length;
