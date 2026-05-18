@@ -1,0 +1,64 @@
+import { NextResponse } from "next/server";
+import { analyzeStatementPdf } from "@/lib/statements/analyzeStatement";
+
+export const runtime = "nodejs";
+
+const MAX_BYTES = 12 * 1024 * 1024;
+
+export async function POST(req: Request) {
+  try {
+    const form = await req.formData();
+    const file = form.get("file");
+
+    if (!(file instanceof File)) {
+      return NextResponse.json(
+        { ok: false, error: "Falta el archivo PDF." },
+        { status: 400 }
+      );
+    }
+
+    if (file.type && file.type !== "application/pdf") {
+      return NextResponse.json(
+        { ok: false, error: "Solo se admiten archivos PDF." },
+        { status: 400 }
+      );
+    }
+
+    if (file.size > MAX_BYTES) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "El PDF supera el tamaño máximo permitido (12 MB).",
+        },
+        { status: 413 }
+      );
+    }
+
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const result = await analyzeStatementPdf(buffer);
+
+    return NextResponse.json({
+      ok: true,
+      meta: {
+        pageCount: result.pageCount,
+        transactionCount: result.transactions.length,
+        textChars: result.textChars,
+        statementPeriod: result.statementPeriod,
+        openAiUsed: result.openAiUsed,
+        openAiError: result.openAiError,
+        fallbackUsed: result.fallbackUsed,
+      },
+      summary: result.summary,
+      subscriptions: result.subscriptions,
+    });
+  } catch (error) {
+    console.error("STATEMENTS ANALYZE ERROR:", error);
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "No se pudo procesar el estado de cuenta. Intenta con otro PDF.",
+      },
+      { status: 500 }
+    );
+  }
+}
