@@ -3,7 +3,12 @@
 import Link from "next/link";
 import { useCallback, useMemo, useState } from "react";
 
+import { ProviderComparisonModal } from "@/components/statements/actions/ProviderComparisonModal";
+import { RecommendationActionCard } from "@/components/statements/actions/RecommendationActionCard";
+import { SavingsAcceptedSummary } from "@/components/statements/actions/SavingsAcceptedSummary";
+import { useRecommendationActions } from "@/components/statements/actions/useRecommendationActions";
 import { SUBSCRIPTION_CONFIDENCE_MIN, TRUE_SUBSCRIPTION_SCORE_MIN } from "@/lib/statements/heuristics";
+import type { RecommendationActionType } from "@/lib/statements/recommendations/types";
 
 type SubscriptionFlags = {
   forgotten: boolean;
@@ -93,7 +98,7 @@ type ActionRecommendationRow = {
   estimatedYearlySavings: number;
   severity: RecommendationSeverity;
   confidence: number;
-  actionType: string;
+  actionType: RecommendationActionType;
   merchantReference?: string;
   currency: string;
 };
@@ -367,6 +372,23 @@ export default function StatementsClient() {
 
   const intelligence = data?.intelligence;
 
+  const recommendationInputs = useMemo(
+    () => intelligence?.recommendations?.items ?? [],
+    [intelligence?.recommendations?.items]
+  );
+
+  const {
+    visible: visibleRecommendations,
+    acceptedSummary,
+    modalRec,
+    modalOpen,
+    modalKind,
+    dispatchAction,
+    closeModal,
+    acceptFromModal,
+    getLastActionId,
+  } = useRecommendationActions(recommendationInputs);
+
   const displayRecurring = useMemo(
     () => intelligence?.visibleRecurring ?? data?.recurringExpenses ?? [],
     [data, intelligence]
@@ -630,74 +652,33 @@ export default function StatementsClient() {
                         </div>
                       ) : null}
                     </div>
+                    <SavingsAcceptedSummary
+                      summary={acceptedSummary}
+                      formatMoney={formatMoney}
+                    />
                     <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                      {intelligence.recommendations.items.map((rec) => {
-                        const tone =
-                          recommendationSeverityStyles[rec.severity];
-                        return (
-                          <li
-                            key={rec.id}
-                            className={[
-                              "rounded-2xl border bg-gradient-to-br to-white/[0.02] p-4",
-                              tone.border,
-                              tone.bg,
-                            ].join(" ")}
-                          >
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span
-                                className={[
-                                  "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-                                  tone.badge,
-                                ].join(" ")}
-                              >
-                                {recommendationSeverityLabel[rec.severity]}
-                              </span>
-                              <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-white/50">
-                                {Math.round(rec.confidence * 100)}% confidence
-                              </span>
-                            </div>
-                            <p
-                              className={[
-                                "mt-2 text-sm font-semibold",
-                                tone.text,
-                              ].join(" ")}
-                            >
-                              {rec.title}
-                            </p>
-                            <p className="mt-1.5 text-xs leading-relaxed text-white/55">
-                              {rec.description}
-                            </p>
-                            {rec.merchantReference ? (
-                              <p className="mt-2 text-[11px] text-white/40">
-                                Merchants:{" "}
-                                <span className="text-white/65">
-                                  {rec.merchantReference}
-                                </span>
-                              </p>
-                            ) : null}
-                            {rec.estimatedMonthlySavings > 0 ? (
-                              <p className="mt-3 text-xs text-white/45">
-                                Est. savings ≈{" "}
-                                <span className="font-medium text-white/80">
-                                  {formatMoney(
-                                    rec.estimatedMonthlySavings,
-                                    rec.currency
-                                  )}
-                                </span>
-                                /mo ·{" "}
-                                <span className="font-medium text-violet-200/90">
-                                  {formatMoney(
-                                    rec.estimatedYearlySavings,
-                                    rec.currency
-                                  )}
-                                </span>
-                                /yr
-                              </p>
-                            ) : null}
-                          </li>
-                        );
-                      })}
+                      {visibleRecommendations.map((rec) => (
+                        <RecommendationActionCard
+                          key={rec.id}
+                          rec={rec}
+                          severityStyles={recommendationSeverityStyles}
+                          severityLabel={recommendationSeverityLabel}
+                          formatMoney={formatMoney}
+                          lastActionId={getLastActionId(rec.id)}
+                          onAction={(actionId) =>
+                            dispatchAction(rec.id, actionId)
+                          }
+                        />
+                      ))}
                     </ul>
+                    <ProviderComparisonModal
+                      open={modalOpen}
+                      rec={modalRec}
+                      modalKind={modalKind}
+                      formatMoney={formatMoney}
+                      onClose={closeModal}
+                      onAccept={acceptFromModal}
+                    />
                   </section>
                 ) : null}
 
