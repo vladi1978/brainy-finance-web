@@ -4,9 +4,15 @@ import {
   coerceFrequency,
   computeHeuristicFlags,
   equivalentsForFrequency,
+  excludeClusterFromSubscriptions,
   heuristicSubscriptionsFromClusters,
+  inferFrequencyFromCharges,
   mergeFlags,
 } from "./heuristics";
+import {
+  canonicalConsumerBrandFromDescription,
+  friendlyMerchantSubscriptionLabel,
+} from "./merchantNormalize";
 import { analyzeClustersWithOpenAI } from "./openaiAnalyze";
 import {
   deriveStatementPeriod,
@@ -76,6 +82,15 @@ function enrichAiSubscription(args: {
   const cluster = clusterById.get(raw.clusterId);
   if (!cluster) return null;
 
+  const sampleMerchant = (cluster.descriptions[0] ?? raw.merchant).trim();
+  const canonBrand = canonicalConsumerBrandFromDescription(sampleMerchant);
+  const normalizedName =
+    canonBrand ??
+    friendlyMerchantSubscriptionLabel({
+      primaryDescription: sampleMerchant || raw.merchant,
+      clusterKeyUpper: cluster.key,
+    });
+
   const heurFlags = computeHeuristicFlags({
     cluster,
     statementPeriod,
@@ -117,7 +132,7 @@ function enrichAiSubscription(args: {
 
   return {
     merchant: raw.merchant,
-    normalizedName: raw.normalizedName,
+    normalizedName,
     category: subscriptionCategory(raw.category),
     amount: raw.amount,
     currency:
@@ -211,7 +226,16 @@ export async function analyzeStatementPdf(
     const ai = await analyzeClustersWithOpenAI(clusters, aiController.signal);
     openAiError = ai.error;
     if (ai.items.length > 0) {
-      const enriched = ai.items
+      const filteredItems = ai.items.filter((raw) => {
+        const cluster = clusterById.get(raw.clusterId);
+        if (!cluster) return false;
+        const debitsOnly = cluster.charges.filter((c) => c.type === "debit");
+        const inferredFreq = coerceFrequency(
+          inferFrequencyFromCharges(debitsOnly.map((d) => d.date))
+        );
+        return !excludeClusterFromSubscriptions(cluster, inferredFreq);
+      });
+      const enriched = filteredItems
         .map((raw) =>
           enrichAiSubscription({
             raw,

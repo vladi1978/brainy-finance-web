@@ -1,6 +1,12 @@
+import {
+  canonicalConsumerBrandFromDescription,
+} from "./merchantNormalize";
 import type { Transaction } from "./types";
 
 const LOG_PREFIX = "[statement-parser]";
+const LONG_LINE_WITHOUT_SIGNAL = 120;
+const LARGE_TXN_AMOUNT = 50_000;
+const HIGH_PARSE_CONFIDENCE = 0.82;
 
 /** Month names for universal locale-ish statements */
 const MONTH_WORD =
@@ -12,7 +18,42 @@ const AMOUNT_TOKEN =
 
 /** Lines that are clearly not transaction rows */
 const SKIP_LINE =
-  /^(?:page\s+\d|continued|statement\s+period|account\s+(?:number|ending)|routing|total\s+(?:debits|credits)|balance\s+carried|previous\s+balance|new\s+balance)/i;
+  /^(?:page\s*\d+|page\s+of|P\.\s*\d+|continued\s+from|statement\s+(?:period|date|coverage|cycle)|routing|total\s+(?:debits|credits)|balance\s+carried|previous\s+balance|new\s+balance)/iu;
+
+/** Drop whole line regardless of txn shape — balances, headings, disclaimers */
+const DROP_LINE_METADATA =
+  /\b(?:beginning\s+balance|ending\s+balance|opening\s+balance|closing\s+balance|available\s+(?:cash\s+)?balance|daily\s+balance|statement\s+summary(?:\s+totals)?|summary\s+(?:information|balances)|deposits?\s+(?:and|\/)\s+additions|withdrawals?\s+(?:and|\/)\s+subtractions|prior\s+(?:statement\s+)?balance|total\s+(?:debits|credits|payments))\b/ui;
+
+/** Strong signal for lines that accidentally hit keyword guards */
+const PAGE_HEADER_SIMPLE = /^(?:PAGE|Pg\.?)\s*\d+/iu;
+
+const ROUTING_ROUTING_IDS =
+  /\b(?:routing|aba|iban|bic|swift)(?:\s*(?:number|no\.|#))?[\s:]+[\d\s-]{9,}\b/ui;
+
+const ACCOUNT_NUM_LIKE_LINE =
+  /\b(?:acct|account)\s+(?:number|no\.|#)|\b(?:acct|account)\s*[:\u2013]#?[\s#*xX●•]*\d[\d\s*●•.-]{5,}\b|\b(?:ending\s+in|acct\s+(?:ending|closes))\s+\d{3,}\b|\*{3,}\s*\d{3,}\b|\b\d{17,}\b/ui;
+
+const PHONE_PRIMARY =
+  /(?:\+\d{1,2}[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})/;
+
+const IGNORE_KEYWORDS =
+  /\b(?:balance|\b(account|acct)\b|customers?\s+service|important\s+information|privacy\s+(?:notice|policy)|\bbanking\b|\bsummary\b|\b(?:bank\s+)?statement\b|deposit\s+accounts|online\s+banking|\bmember\s+(?:FDIC|SIPC))\b/ui;
+
+const SOFT_BOILERPLATE =
+  /\b(?:customer\s+service|cust\.?\s*svc|cust\.?\s*care|marketing\s+e-?mail|visit\s+(?:your\s+|our\s+|http|www))\b/ui;
+
+/** Address-like postal line (drops marketing / notice blocks) */
+const STREET_PLUS_ZIP =
+  /\d{1,5}\s+[A-Za-z0-9'.\-\\/]+\s+(?:HWY|RD|LN|LOOP|SQ|WAY|PKWY|ST|AVE|BLVD)\b[^\n]{0,100}\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b/iu;
+
+const BANK_MARKETING_BLURB =
+  /\b(?:limited\s+time|apply\s+today\b|bonus\s+(?:mile|reward|cash)\b|exclusive\s+rates\b|earn\s+rewards\b|switch\s+(?:banks?|financial)\b|visit\s+(?:www|https?:\/\/))\b/ui;
+
+const OVERDRAFT_NOTICE =
+  /\b(?:overdraft|(?:non|nsf)[-\s]*sufficient\s+funds).*?(?:protection|coverage|plans?|explain)|\bo\.?\s*d\.?\s+fee\b.*\bexplain/ui;
+
+const LEGAL_SENTENCE_GUARD =
+  /\b(?:hereinafter|accordingly\s+therefore|arbitration|class\s+action\s+waiver|limitation\s+of\s+liability|\bYOU\s+(?:UNDERSTAND|AGREE))\b/ui;
 
 const NOISE_DESCRIPTION =
   /\b(?:beginning\s+balance|ending\s+balance|opening\s+balance|closing\s+balance|previous\s+balance|available\s+balance|daily\s+balance|minimum\s+payment|payment\s+due|interest\s+(?:charged|earned)|annual\s+percentage)\b/i;
@@ -306,6 +347,168 @@ function peelTrailingAmountsTight(rest: string): { amounts: string[]; prefix: st
   }
 
   return { amounts, prefix: cur };
+}
+
+function countParsableMoneyTokens(line: string): number {
+  const rx = new RegExp(AMOUNT_TOKEN.source, AMOUNT_TOKEN.flags);
+  let n = 0;
+  for (const m of line.matchAll(rx)) {
+    const got = parseAmountFragment(m[0]);
+    if (got && Math.abs(got.value) > 1e-9) n++;
+  }
+  return n;
+}
+
+function lineHasStructuredTransactionSignals(
+  line: string,
+  defaultYear: number
+): boolean {
+  const t = stripLeadingNoise(line.trim());
+  if (!t.length) return false;
+  const monies = countParsableMoneyTokens(t);
+  if (monies === 0 || monies > 2) return false;
+  const dh = matchDateSubstring(t, defaultYear);
+  if (!dh || dh.start > 42) return false;
+  const rx = new RegExp(AMOUNT_TOKEN.source, AMOUNT_TOKEN.flags);
+  const parts = [...t.matchAll(rx)].filter((m) => {
+    const q = parseAmountFragment(m[0]);
+    return q && Math.abs(q.value) > 1e-9;
+  });
+  if (!parts.length) return false;
+  const last = parts[parts.length - 1];
+  if (typeof last.index !== "number") return false;
+  const end = last.index + last[0].length;
+  return t.trimEnd().length - end <= 6;
+}
+
+function preCleanStatementLines(
+  lines: string[],
+  defaultYear: number
+): string[] {
+  const out: string[] = [];
+  for (const raw of lines) {
+    const t = raw
+      .replace(/\t+/gu, " ")
+      .replace(/[ \u00a0]{2,}/gu, " ")
+      .trim();
+    if (!t) continue;
+    if (!/[A-Za-z\u00C0-\u024f]/u.test(t)) continue;
+
+    const txnShape = lineHasStructuredTransactionSignals(t, defaultYear);
+    const moneyCount = countParsableMoneyTokens(t);
+    if (moneyCount > 2) continue;
+
+    if (SKIP_LINE.test(t)) continue;
+    if (PAGE_HEADER_SIMPLE.test(t)) continue;
+    if (DROP_LINE_METADATA.test(t)) continue;
+    if (ROUTING_ROUTING_IDS.test(t)) continue;
+    if (ACCOUNT_NUM_LIKE_LINE.test(t)) continue;
+    if (!txnShape && PHONE_PRIMARY.test(t)) continue;
+    if (!txnShape && STREET_PLUS_ZIP.test(t)) continue;
+    if (!txnShape && IGNORE_KEYWORDS.test(t)) continue;
+    if (
+      !txnShape &&
+      (BANK_MARKETING_BLURB.test(t) ||
+        LEGAL_SENTENCE_GUARD.test(t) ||
+        OVERDRAFT_NOTICE.test(t) ||
+        SOFT_BOILERPLATE.test(t))
+    ) {
+      continue;
+    }
+    if (t.length > LONG_LINE_WITHOUT_SIGNAL && !txnShape) continue;
+    out.push(t);
+  }
+  return out;
+}
+
+function descriptionLooksMerchantLike(description: string): boolean {
+  const d = description.trim().replace(/\s+/gu, " ");
+  if (d.length < 3 || d.length > 400) return false;
+  const letters = d.replace(/[^a-zA-Z]/gu, "").length;
+  if (letters < 3) return false;
+  if (NOISE_DESCRIPTION.test(d) || DROP_LINE_METADATA.test(d)) return false;
+  const tokenish = d.split(/\s+/u).filter((w) => /[A-Za-z]{3,}/u.test(w));
+  if (!tokenish.length) return false;
+  return true;
+}
+
+function isDominantUppercaseLegalText(text: string): boolean {
+  const letters = text.replace(/[^a-zA-Z]/gu, "");
+  if (letters.length < 26) return false;
+  const up = letters.replace(/[^A-Z]/gu, "").length;
+  return up / letters.length > 0.88;
+}
+
+function containsAccountNumberSignals(text: string): boolean {
+  return ACCOUNT_NUM_LIKE_LINE.test(text) || /\*{3,}\d{3,}/u.test(text);
+}
+
+function parseRowConfidence(
+  block: string,
+  row: ParsedRow,
+  defaultYear: number
+): number {
+  let c = 0.48;
+  const b = stripLeadingNoise(block.trim());
+  const dh = matchDateSubstring(b, defaultYear);
+  if (dh && dh.start <= 8) c += 0.2;
+
+  if (row.strategy.includes("dual-column")) c += 0.12;
+  else if (row.strategy.includes("labeled")) c += 0.08;
+  else if (row.strategy.includes("fallback")) c -= 0.07;
+
+  if (descriptionLooksMerchantLike(row.description)) c += 0.12;
+  if (
+    canonicalConsumerBrandFromDescription(row.description) ||
+    canonicalConsumerBrandFromDescription(b)
+  ) {
+    c += 0.1;
+  }
+
+  const L = row.description.length;
+  if (L >= 5 && L <= 92) c += 0.06;
+
+  if (row.amount > 0 && row.amount <= 2500) c += 0.05;
+  if (row.amount > LARGE_TXN_AMOUNT) c -= 0.08;
+
+  return Math.min(1, Math.max(0, c));
+}
+
+function passesPostParseValidation(
+  block: string,
+  row: ParsedRow,
+  defaultYear: number
+): boolean {
+  if (!descriptionLooksMerchantLike(row.description)) return false;
+  if (containsAccountNumberSignals(row.description)) return false;
+  if (isDominantUppercaseLegalText(row.description)) return false;
+
+  const brandHit = canonicalConsumerBrandFromDescription(row.description);
+  if (IGNORE_KEYWORDS.test(row.description) && !brandHit) return false;
+
+  if (row.amount <= 0 || row.amount > 1e7) return false;
+
+  const conf = parseRowConfidence(block, row, defaultYear);
+  if (row.amount > LARGE_TXN_AMOUNT && conf < HIGH_PARSE_CONFIDENCE)
+    return false;
+  return true;
+}
+
+/** Drop AI-derived rows that still look like summaries or legal noise */
+export function sanitizeStatementTransactions(
+  rows: Transaction[],
+  fallbackYear?: number
+): Transaction[] {
+  const y =
+    fallbackYear ??
+    (rows[0] && rows[0].date.length >= 4
+      ? Number(rows[0].date.slice(0, 4))
+      : new Date().getFullYear());
+  return rows.filter((t) => {
+    const block = `${t.date} ${t.description}`;
+    const proxy: ParsedRow = { ...t, strategy: "ai-fallback" };
+    return passesPostParseValidation(block, proxy, y);
+  });
 }
 
 function debitCreditFromDescription(
@@ -747,13 +950,14 @@ export function parseTransactionsFromText(text: string): Transaction[] {
   const physical = splitPhysicalLines(normalized);
   const defaultYear = inferStatementYear(physical);
 
-  const cleanedLines = physical.filter((l) => !SKIP_LINE.test(l));
+  const cleanedLines = preCleanStatementLines(physical, defaultYear);
   const blocks = groupLinesIntoBlocks(cleanedLines, defaultYear);
 
   const parsed: ParsedRow[] = [];
   for (const block of blocks) {
     const row = parseBlockWithStrategies(block, defaultYear);
-    if (row) parsed.push(row);
+    if (row && passesPostParseValidation(block, row, defaultYear))
+      parsed.push(row);
   }
 
   parsed.sort((a, b) => a.date.localeCompare(b.date));

@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { sanitizeStatementTransactions } from "./parseTransactions";
 import type { Transaction } from "./types";
 
 const MODEL_DEFAULT = "gpt-4o-mini";
@@ -23,6 +24,12 @@ function coerceTransaction(raw: unknown): Transaction | null {
   if (!type) return null;
 
   return { date, description, amount: Math.abs(amount), type, currency };
+}
+
+function inferSanitizeYear(rows: Transaction[]): number {
+  if (!rows.length) return new Date().getFullYear();
+  const y = Number(rows[0].date.slice(0, 4));
+  return Number.isFinite(y) && y >= 1990 ? y : new Date().getFullYear();
 }
 
 /**
@@ -57,7 +64,8 @@ export async function extractTransactionsViaOpenAI(
               "You extract banking/credit-card transactions from statement plain text. " +
               "Return ONLY JSON: {\"transactions\":[{\"date\":\"YYYY-MM-DD\",\"description\":\"string\",\"amount\":positive number,\"type\":\"debit\"|\"credit\",\"currency\":\"USD\"}]}. " +
               "Use debit for purchases/withdrawals/fees and credit for refunds/deposits/payments-received when sign is ambiguous. " +
-              "Normalize dates to ISO. Omit headers, balances, summaries, and non-transaction lines.",
+              "Normalize dates to ISO. Omit page headers/footers, account numbers, addresses, routing numbers, " +
+              "beginning/ending balances, summary totals (deposits+additions, withdrawals+subtractions), payroll lines, legal/marketing/disclosure paragraphs, phone numbers, and customer-service blurbs.",
           },
           {
             role: "user",
@@ -78,9 +86,13 @@ export async function extractTransactionsViaOpenAI(
       ? parsed.transactions
       : [];
 
-    const transactions = rows
+    const coerced = rows
       .map(coerceTransaction)
       .filter((x): x is Transaction => Boolean(x));
+    const transactions = sanitizeStatementTransactions(
+      coerced,
+      inferSanitizeYear(coerced)
+    );
 
     transactions.sort((a, b) => a.date.localeCompare(b.date));
 

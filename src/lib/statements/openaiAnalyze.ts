@@ -89,7 +89,9 @@ export async function analyzeClustersWithOpenAI(
           {
             role: "system",
             content:
-              "Eres un analista financiero. Identifica suscripciones y cargos recurrentes a partir de agrupaciones de transacciones. Responde SOLO JSON válido con la forma {\"subscriptions\":[...]}. No incluyas markdown ni texto fuera del JSON.",
+              "Eres un analista financiero. Identifica suscripciones recurrentes de consumo (streaming, música, SaaS). Responde SOLO JSON válido con {\"subscriptions\":[...]} — sin markdown. " +
+              "Excluye nómina/payroll y depósitos de salario, devoluciones de cheques rechazadas, cargos NSF y overdraft salvo algo claramente un plan recurrente tipo suscripción bancaria. " +
+              "Excluye bares cafeterías vinaterías y liquor stores salvo cargos muy regulares típicos de suscripción estable. Servicios conocidos tipo Netflix o Spotify están bien cuando encajan.",
           },
           {
             role: "user",
@@ -100,6 +102,8 @@ export async function analyzeClustersWithOpenAI(
               "lastCharged (YYYY-MM-DD), monthlyEquivalent, annualEquivalent (números), confidence (0-1),",
               "flags: { forgotten, duplicate, priceIncreased, trialConverted, suspicious } todos boolean.",
               "Si un grupo no es recurrente, omitirlo. merchant debe ser legible para el usuario.",
+              "No incluir: transferencias ACH de sueldo, ADP/Gusto/Paychex típicos como suscripción; chargebacks/check returns; cargos NSF/OD/overdraft;",
+              "licorerías/coffee shops genéricos/micro-bares solo si aparecen cargos repetidos y homogéneos en fecha y monto típicos de suscripción (si no, omitir). normalizedName debe ser una marca conocida cuando aplique (Netflix, Spotify, Apple, Adobe, etc.).",
               "",
               JSON.stringify({ clusters: payload }),
             ].join("\n"),

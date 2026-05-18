@@ -1,7 +1,8 @@
+import { applyInlineMerchantAliases } from "./merchantNormalize";
 import type { MerchantCluster, Transaction } from "./types";
 
 export function normalizeMerchantKey(description: string): string {
-  return description
+  return applyInlineMerchantAliases(description)
     .toUpperCase()
     .replace(/\*|#/gu, " ")
     .replace(/\b(POS|PURCHASE|ACH|DEBIT|CARD|ENDING\s+\d+)\b/gu, " ")

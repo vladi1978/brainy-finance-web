@@ -1,3 +1,4 @@
+import { friendlyMerchantSubscriptionLabel } from "./merchantNormalize";
 import type {
   MerchantCluster,
   StatementPeriod,
@@ -130,6 +131,43 @@ export function computeHeuristicFlags(args: {
   };
 }
 
+/** Exclude obvious non-subscription charge clusters before heuristics + AI merges */
+export function excludeClusterFromSubscriptions(
+  cluster: MerchantCluster,
+  recurringFrequency?: SubscriptionFrequency
+): boolean {
+  const blob =
+    `${cluster.descriptions.join(" ")} ${cluster.key}`.toUpperCase();
+
+  const payrollReturnedOverdraft =
+    /\b(ADP|PAYCHEX|GUSTO|DAYFORCE|ZENEFITS|TALX|INTUIT\s+PAYROLL|PAYSTUB)\b/u.test(blob) ||
+    /\b(?:DIRECT\s+DEP|AUTO\s+PAY)\b.*?PAYROLL/u.test(blob) ||
+    /\bNET\s+PAY\b/u.test(blob) ||
+    /\b(?:SALARY|WAGE|EARN\s+INC)\s+PAY\b/u.test(blob) ||
+    /\b(RTND\s+CHK|CHK\s+RTND|RETURNED\s+CHK|CHK\s+RET|RD\s+CHK|RETURNED\s+ITEM|RCK\b|ORIG\s+RTRND|CHG\s+RTRND|REVERS(?:AL|ED\s+DEBIT))\b/u.test(blob) ||
+    /\bOVERDRAFT|\bOVERDR\.?\b|\bOD\s+F(?:EE|E)\b|\bOD\s+PAY\b|\bNSF\b|NON\s*SUF|INSUFFICIENT\s+FUNDS/u.test(blob);
+  if (payrollReturnedOverdraft) return true;
+
+  const liquorAndCafe =
+    /\b(?:LIQUOR|SPIRIT|PACKAGE\s+(?:STORE|LIQUORS)|TOTAL\s+WINE|CONVENIEN|\bSTARBU|SAXBY|WINE\s+SHOP|TAPHOUSE|ESPRESSO|DUNKIN|COFFEE\s+(?:HOUSE|SHOP))\b/u.test(blob);
+  const strongRecurrence =
+    recurringFrequency === "monthly" ||
+    recurringFrequency === "weekly" ||
+    recurringFrequency === "annual";
+
+  if (
+    liquorAndCafe &&
+    !(
+      cluster.charges.filter((c) => c.type === "debit").length >= 3 &&
+      strongRecurrence
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 export function heuristicSubscriptionsFromClusters(
   clusters: MerchantCluster[],
   statementPeriod: StatementPeriod | null,
@@ -143,6 +181,8 @@ export function heuristicSubscriptionsFromClusters(
 
     const freq = coerceFrequency(inferFrequencyFromCharges(debits.map((d) => d.date)));
     if (freq === "unknown" && debits.length < 3) continue;
+
+    if (excludeClusterFromSubscriptions(cluster, freq)) continue;
 
     const amounts = debits.map((d) => d.amount);
     const lastAmt = amounts[amounts.length - 1];
@@ -158,6 +198,10 @@ export function heuristicSubscriptionsFromClusters(
     });
 
     const merchant = cluster.descriptions[0] ?? cluster.key;
+    const normalizedName = friendlyMerchantSubscriptionLabel({
+      primaryDescription: merchant,
+      clusterKeyUpper: cluster.key,
+    });
     const totalSpentInPeriod = debits.reduce((s, d) => s + d.amount, 0);
     const lastCharged = debits[debits.length - 1].date;
     const daysSinceLastCharge = lastCharged
@@ -170,7 +214,7 @@ export function heuristicSubscriptionsFromClusters(
 
     out.push({
       merchant,
-      normalizedName: merchant.slice(0, 80),
+      normalizedName,
       category: guessCategory(merchant),
       amount: lastAmt,
       currency,
