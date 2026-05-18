@@ -474,6 +474,13 @@ export default function ComparePage() {
                 </p>
               )}
 
+              {result.aiProductSummary ? (
+                <p className="text-cyan-100/90 text-sm rounded-lg border border-cyan-500/25 bg-cyan-500/10 px-3 py-2">
+                  <span className="font-semibold text-cyan-200/95">Brainy (IA): </span>
+                  {result.aiProductSummary}
+                </p>
+              ) : null}
+
               {showBest && best && (
                 <p className="text-green-400/95 text-sm font-medium">
                   Best deal (among{" "}

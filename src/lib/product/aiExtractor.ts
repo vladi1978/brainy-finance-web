@@ -334,6 +334,24 @@ function mergeUnderstandingBase(
   };
 }
 
+/** Merge AI-derived spec tokens into structured overlap signals (cross-brand saves). */
+export function mergeExtraKeySpecsIntoUnderstanding(
+  u: ProductUnderstanding,
+  extraRaw: string[]
+): ProductUnderstanding {
+  const normalized = extraRaw
+    .map((s) => normalizeUnderstandingBlob(String(s)))
+    .filter((s) => s.length >= 2);
+  if (normalized.length === 0) return u;
+  return mergeUnderstandingBase(u, {
+    keySpecsNorm: uniqNormTokens([...u.keySpecsNorm, ...normalized]),
+    extractionConfidence: Math.min(
+      0.94,
+      u.extractionConfidence + Math.min(0.08, normalized.length * 0.02)
+    ),
+  });
+}
+
 function emptyUnderstanding(
   provenance: ProductUnderstandingProvenance,
   extractionConfidence: number

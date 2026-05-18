@@ -2,7 +2,11 @@ import {
   scoreAttributeMatch,
   type AttributeMatchResult,
 } from "./attributeMatch";
-import { buildReferenceUnderstanding } from "./aiExtractor";
+import {
+  buildReferenceUnderstanding,
+  mergeExtraKeySpecsIntoUnderstanding,
+} from "./aiExtractor";
+import { fetchAiCompareEnrichment } from "./aiCompareEnrichment";
 import { toAffiliateUrl } from "./affiliateUrl";
 import {
   buildCriticalShoppingCoreSegments,
@@ -453,6 +457,39 @@ export function buildUniversalShoppingQueryPlan(args: {
   return out;
 }
 
+/** Prefer AI-suggested queries first (cross-brand recall), then legacy progressive plan. */
+function mergeShoppingQueryPlans(
+  headQueries: string[],
+  tailPlan: string[],
+  maxQueries: number
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const q of [...headQueries, ...tailPlan]) {
+    const t = q.replace(/\s+/g, " ").trim();
+    if (t.length < 4) continue;
+    const k = t.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+    if (out.length >= maxQueries) break;
+  }
+  return out;
+}
+
+function candidateViolatesLlmExclusions(
+  title: string,
+  exclusions: string[]
+): boolean {
+  if (exclusions.length === 0) return false;
+  const lower = title.toLowerCase();
+  for (const ex of exclusions) {
+    const phrase = ex.replace(/\s+/g, " ").trim().toLowerCase();
+    if (phrase.length >= 4 && lower.includes(phrase)) return true;
+  }
+  return false;
+}
+
 const DEMO_STORES: StoreId[] = [
   "amazon",
   "walmart",
@@ -463,8 +500,11 @@ const DEMO_STORES: StoreId[] = [
   "lowes",
 ];
 
+/** Target minimum cheaper-than-reference rows when a reference price exists */
+const MIN_CHEAPER_RESULTS_TARGET = 10;
+
 /** Max store rows returned in `candidates` / UI lists */
-const DISPLAY_LIMIT = 10;
+const DISPLAY_LIMIT = 14;
 
 export { buildRetailerSearchUrlFromTitle } from "./productUrlResolver";
 
@@ -875,6 +915,7 @@ export async function compareProduct(
       comparisonMessage:
         "Could not derive a product description from that input.",
       scrapeBotWalled,
+      aiProductSummary: null,
     };
   }
 
@@ -897,7 +938,7 @@ export async function compareProduct(
     referenceNormalized
   );
 
-  const referenceUnderstanding = buildReferenceUnderstanding({
+  let referenceUnderstanding = buildReferenceUnderstanding({
     primaryTitle: referenceProductQuery,
     supplementaryText: normSourceText,
     sourceUrl:
@@ -908,6 +949,31 @@ export async function compareProduct(
     normalized: referenceNormalized,
     scrapedListingOk: scrapedOk,
   });
+
+  const aiCompareEnrichment = await fetchAiCompareEnrichment({
+    primaryTitle: referenceProductQuery,
+    supplementaryText: normSourceText,
+    sourceUrl:
+      scrapedSource?.sourceUrl?.trim() ||
+      parsed.inputUrl?.trim() ||
+      null,
+    skipAi: demoMode,
+  });
+
+  if (aiCompareEnrichment.specTokens.length > 0) {
+    referenceUnderstanding = mergeExtraKeySpecsIntoUnderstanding(
+      referenceUnderstanding,
+      aiCompareEnrichment.specTokens
+    );
+  }
+
+  if (aiCompareEnrichment.usedAi) {
+    pipelineLog("ai_compare_enrichment_applied", {
+      shoppingQueriesFromAi: aiCompareEnrichment.shoppingQueries.length,
+      specTokens: aiCompareEnrichment.specTokens.length,
+      exclusions: aiCompareEnrichment.excludePhrases.length,
+    });
+  }
 
   const normalizedQueryFallback =
     scrapedOk ? referenceProductQuery : normSourceText || referenceProductQuery;
@@ -926,13 +992,19 @@ export async function compareProduct(
         )
       : buildRetailSearchQueryPack(referenceNormalized, referenceProductQuery));
 
-  const shoppingQueryPlan = buildUniversalShoppingQueryPlan({
+  const baseShoppingQueryPlan = buildUniversalShoppingQueryPlan({
     referenceNormalized,
     referenceTitle: referenceProductQuery,
     explicitQueryPack,
     resolvedRetailPack: searchQueryPack,
     pdpTitleSearchPlanOnly: Boolean(scrapedOk && !explicitQueryPack),
   });
+
+  const shoppingQueryPlan = mergeShoppingQueryPlans(
+    aiCompareEnrichment.shoppingQueries,
+    baseShoppingQueryPlan,
+    10
+  );
 
   console.log(
     "[QUERY_PACK]",
@@ -941,6 +1013,7 @@ export async function compareProduct(
       simplifiedQuery: searchQueryPack.simplifiedQuery,
       specsQuery: searchQueryPack.specsQuery,
       shoppingPlan: shoppingQueryPlan,
+      aiQueriesPrepended: aiCompareEnrichment.shoppingQueries,
     })
   );
 
@@ -995,7 +1068,7 @@ export async function compareProduct(
       await fetchGoogleShoppingCandidatesWithDiagnostics(
         shoppingQueryPlan,
         searchCtxBase,
-        { totalLimit: 56, perQueryLimit: 28 }
+        { totalLimit: 88, perQueryLimit: 36 }
       );
     allCandidates = candidates;
     providerDiagnostics = diagnostics;
@@ -1151,6 +1224,29 @@ export async function compareProduct(
       continue;
     }
 
+    if (
+      aiCompareEnrichment.excludePhrases.length > 0 &&
+      candidateViolatesLlmExclusions(c.title, aiCompareEnrichment.excludePhrases)
+    ) {
+      candidateSteps.push({
+        key: candidateKey(c, candidateSteps.length),
+        store: c.store,
+        title: c.title,
+        price: c.price,
+        productUrl: c.productUrl,
+        outcome: "rejected_hard_gate",
+        rejectionReason: "llm_exclusion_phrase",
+        detail: "llm_exclusion_phrase",
+      });
+      pipelineLog("candidate_rejected", {
+        store: c.store,
+        title: c.title.slice(0, 80),
+        reason: "llm_exclusion_phrase",
+      });
+      bumpAttributeReject("llm_exclusion_phrase");
+      continue;
+    }
+
     // Structured gates favor similar cross-retailer substitutes (strict only on gross mismatches).
     const rel = scoreAttributeMatch(
       referenceNormalized,
@@ -1237,10 +1333,27 @@ export async function compareProduct(
         Boolean(api.outboundUrl?.trim())
     );
 
-  const orderedForDisplay = annotateAndOrderCandidates(
+  const orderedAfterPriceAnnot = annotateAndOrderCandidates(
     baseFiltered,
     referenceListPrice
-  ).slice(0, DISPLAY_LIMIT);
+  );
+
+  const referencePriceComparable =
+    referenceListPrice != null && isValidComparablePrice(referenceListPrice);
+
+  const cheaperPool = referencePriceComparable
+    ? orderedAfterPriceAnnot.filter((c) => c.priceCompareSegment === "cheaper")
+    : [];
+
+  const orderedForDisplay = (() => {
+    if (!referencePriceComparable) {
+      return orderedAfterPriceAnnot.slice(0, DISPLAY_LIMIT);
+    }
+    if (cheaperPool.length > 0) {
+      return cheaperPool.slice(0, DISPLAY_LIMIT);
+    }
+    return orderedAfterPriceAnnot.slice(0, DISPLAY_LIMIT);
+  })();
 
   rejectionSummary.baseFilteredCount = baseFiltered.length;
   rejectionSummary.orderedForDisplayCount = orderedForDisplay.length;
@@ -1334,6 +1447,7 @@ export async function compareProduct(
           ? "Shopping API credentials missing."
           : "No priced listings found for that search.",
       scrapeBotWalled,
+      aiProductSummary: aiCompareEnrichment.summaryOneLine,
       ...(tracePayload() ? { comparisonTrace: tracePayload()! } : {}),
     };
   }
@@ -1373,7 +1487,7 @@ export async function compareProduct(
           (c) =>
             !(c.store === bestApi!.store && c.productUrl === bestApi!.productUrl)
         )
-        .slice(0, 9)
+        .slice(0, Math.max(0, DISPLAY_LIMIT - 1))
         .map((c) => {
           const r = rowForApi(c);
           return r ? toDeal(c, r.rel) : null;
@@ -1418,10 +1532,19 @@ export async function compareProduct(
   }
 
   if (!comparisonMessage) {
-    comparisonMessage =
-      referenceListPrice != null && isValidComparablePrice(referenceListPrice)
-        ? "Precio de referencia: primero las opciones más baratas."
-        : "Orden: coincidencia, luego precio.";
+    const refOk =
+      referenceListPrice != null && isValidComparablePrice(referenceListPrice);
+    if (refOk && cheaperPool.length > 0) {
+      comparisonMessage =
+        orderedForDisplay.length >= MIN_CHEAPER_RESULTS_TARGET
+          ? `${orderedForDisplay.length} opciones más baratas que tu referencia — cada tarjeta enlaza al listado del comercio (ideal para afiliados).`
+          : `${orderedForDisplay.length} opción(es) más barata(s). Buscamos hasta ${MIN_CHEAPER_RESULTS_TARGET}; si faltan resultados, refina el nombre o el tamaño en el formulario.`;
+    } else if (refOk) {
+      comparisonMessage =
+        "No aparecieron listados más baratos que tu precio de referencia con estos criterios; mostramos las coincidencias más cercanas.";
+    } else {
+      comparisonMessage = "Orden: coincidencia, luego precio.";
+    }
   }
 
   const confidenceOut = overallConfidenceFromDeal(bestDeal);
@@ -1440,6 +1563,7 @@ export async function compareProduct(
     savings,
     comparisonMessage,
     scrapeBotWalled,
+    aiProductSummary: aiCompareEnrichment.summaryOneLine,
     ...(tracePayload() ? { comparisonTrace: tracePayload()! } : {}),
   };
 }

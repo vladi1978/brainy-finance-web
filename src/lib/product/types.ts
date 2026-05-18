@@ -386,7 +386,7 @@ export type CompareProductResponse = {
   query: string;
   /** Normalized multi-field search string sent to stores */
   normalizedQuery: string;
-  /** All candidates (match-scored), ordered for display (cheaper-first when reference price exists), capped at 10 */
+  /** All candidates (match-scored), ordered for display — up to ~14 rows; cheaper-than-reference only when a reference price exists */
   candidates: CompareApiCandidate[];
   /** Same listings grouped by retailer */
   resultsByStore: { store: StoreId; candidates: CompareApiCandidate[] }[];
@@ -416,6 +416,8 @@ export type CompareProductResponse = {
   savings: number | null;
   /** e.g. "Closest matches found" when no best-deal banner */
   comparisonMessage?: string | null;
+  /** AI summary: immutable specs vs flexible brand/model for savings-focused matching */
+  aiProductSummary?: string | null;
   /** @deprecated retained for trace compatibility only */
   closestSimilarDealOnly?: boolean;
   /** @deprecated retained for trace compatibility only */
