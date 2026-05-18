@@ -493,18 +493,6 @@ export default function ComparePage() {
                 </p>
               )}
 
-              {!showBest && result.candidates.length > 0 && (
-                <div>
-                  <h3 className="text-xl font-semibold text-white mb-1">
-                    {result.comparisonMessage ?? "Coincidencias"}
-                  </h3>
-                  <p className="text-white/50 text-sm mb-4">
-                    Algunos enlaces abren la ficha del producto y otros una búsqueda en la tienda;
-                    revisa el listado antes de comprar.
-                  </p>
-                </div>
-              )}
-
               {result.message && (
                 <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-amber-100 text-sm">
                   {result.message}
@@ -513,8 +501,22 @@ export default function ComparePage() {
 
               {result.candidates.length > 0 && (
                 <div>
+                  <h3 className="text-xl font-semibold text-white mb-1">
+                    {result.comparisonMessage ?? "Coincidencias"}
+                  </h3>
+                  <p className="text-white/50 text-sm mb-2">
+                    Lista completa para este resultado:{" "}
+                    <span className="text-white/75 font-medium">
+                      {result.candidates.length}{" "}
+                      {result.candidates.length === 1 ? "candidato" : "candidatos"}
+                    </span>
+                    . Las filas con etiqueta{" "}
+                    <span className="text-white/75">Enlace de búsqueda</span> llevan el
+                    botón &quot;Ver resultados en [tienda]&quot;; no es una ficha única hasta
+                    que confirmes el producto en la lista.
+                  </p>
                   <h4 className="text-lg font-semibold mb-3 text-white/90">
-                    Store results
+                    Todas las coincidencias listadas ({result.candidates.length})
                   </h4>
                   <ul className="space-y-3">
                     {(() => {
@@ -578,6 +580,28 @@ export default function ComparePage() {
                                     <span className="text-white/80 text-sm font-medium">
                                       {storeLabel}
                                     </span>
+                                    {c.urlType === "search" ? (
+                                      <span
+                                        className="text-[11px] font-medium uppercase tracking-wide rounded-md border border-amber-500/45 bg-amber-500/12 px-2 py-0.5 text-amber-200/95"
+                                        title="Abre una búsqueda en la tienda, no una ficha fija."
+                                      >
+                                        Enlace de búsqueda
+                                      </span>
+                                    ) : c.urlType === "product" ? (
+                                      <span
+                                        className="text-[11px] font-medium uppercase tracking-wide rounded-md border border-emerald-500/35 bg-emerald-500/10 px-2 py-0.5 text-emerald-100/95"
+                                        title="Enlace directo al listado en la tienda."
+                                      >
+                                        Ficha en tienda
+                                      </span>
+                                    ) : (
+                                      <span
+                                        className="text-[11px] font-medium uppercase tracking-wide rounded-md border border-white/20 bg-white/5 px-2 py-0.5 text-white/55"
+                                        title="Tipo de URL no clasificado."
+                                      >
+                                        Enlace externo
+                                      </span>
+                                    )}
                                     <MatchBadge type={c.matchType} />
                                     <span className="text-white/40 text-sm">
                                       {Math.round(c.confidence * 100)}%

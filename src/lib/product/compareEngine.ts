@@ -1448,10 +1448,19 @@ export async function compareProduct(
   })();
 
   if (!demoMode) {
-    orderedForDisplay = await resolveDisplayedSearchPdps(
-      orderedForDisplay,
-      demoMode
-    );
+    try {
+      orderedForDisplay = await resolveDisplayedSearchPdps(
+        orderedForDisplay,
+        demoMode
+      );
+    } catch (err) {
+      console.log(
+        "[PDP_RESOLVE_BATCH_FAIL]",
+        JSON.stringify({
+          reason: err instanceof Error ? err.message : String(err),
+        })
+      );
+    }
   }
 
   rejectionSummary.baseFilteredCount = baseFiltered.length;

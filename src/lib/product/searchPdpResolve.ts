@@ -94,80 +94,93 @@ export async function resolveDisplayedSearchPdps(
 
   return Promise.all(
     apis.map(async (api) => {
-      if (
-        api.urlType !== "search" ||
-        !PDP_SECOND_PASS_STORES.has(api.store as StoreId)
-      ) {
-        return api;
-      }
+      try {
+        if (
+          api.urlType !== "search" ||
+          !PDP_SECOND_PASS_STORES.has(api.store as StoreId)
+        ) {
+          return api;
+        }
 
-      const store = api.store as StoreId;
-      const { outboundUrlRaw } = resolveCompareCandidateOutbound({
-        store,
-        listingProductUrl: api.productUrl,
-        title: api.title,
-      });
-      const searchUrl = outboundUrlRaw.trim();
-      if (!searchUrl) {
-        console.log(
-          "[PDP_RESOLVE_FAIL]",
-          JSON.stringify({ store, reason: "empty_search_url" })
-        );
-        return api;
-      }
-
-      console.log(
-        "[PDP_RESOLVE_ATTEMPT]",
-        JSON.stringify({
+        const store = api.store as StoreId;
+        const { outboundUrlRaw } = resolveCompareCandidateOutbound({
           store,
-          searchUrlPreview: searchUrl.slice(0, 180),
-          titlePreview: api.title.slice(0, 120),
-        })
-      );
+          listingProductUrl: api.productUrl,
+          title: api.title,
+        });
+        const searchUrl = outboundUrlRaw.trim();
+        if (!searchUrl) {
+          console.log(
+            "[PDP_RESOLVE_FAIL]",
+            JSON.stringify({ store, reason: "empty_search_url" })
+          );
+          return api;
+        }
 
-      const resolved = await resolvePdpFromStoreSearchSerp({
-        store,
-        searchUrl,
-        candidateTitle: api.title,
-      });
+        console.log(
+          "[PDP_RESOLVE_ATTEMPT]",
+          JSON.stringify({
+            store,
+            searchUrlPreview: searchUrl.slice(0, 180),
+            titlePreview: api.title.slice(0, 120),
+          })
+        );
 
-      if (!resolved) {
+        const resolved = await resolvePdpFromStoreSearchSerp({
+          store,
+          searchUrl,
+          candidateTitle: api.title,
+        });
+
+        if (!resolved) {
+          console.log(
+            "[PDP_RESOLVE_FAIL]",
+            JSON.stringify({
+              store,
+              reason: "no_matching_pdp_or_fetch_parse_failed",
+              searchUrlPreview: searchUrl.slice(0, 140),
+            })
+          );
+          return api;
+        }
+
+        console.log(
+          "[PDP_RESOLVE_SUCCESS]",
+          JSON.stringify({
+            store,
+            confidence: resolved.confidence,
+            similarity: Math.round(resolved.similarity * 1000) / 1000,
+            pdpPreview: resolved.productUrl.slice(0, 160),
+            matchedTitlePreview: resolved.matchedTitle.slice(0, 120),
+          })
+        );
+
+        const outboundRaw = resolved.productUrl;
+        const affiliateUrl =
+          outboundRaw.length > 0 ? toAffiliateUrl(outboundRaw, store) : "";
+
+        return {
+          ...api,
+          resolvedProductUrl: outboundRaw,
+          affiliateUrl: affiliateUrl || outboundRaw,
+          outboundUrl: affiliateUrl || outboundRaw,
+          urlType: "product",
+          urlConfidence: resolved.confidence,
+          urlResolutionReason: "pdp_resolved_from_store_search_serp",
+          outboundIsStoreSearch: false,
+        };
+      } catch (err) {
+        const store = api.store;
         console.log(
           "[PDP_RESOLVE_FAIL]",
           JSON.stringify({
             store,
-            reason: "no_matching_pdp_or_fetch_parse_failed",
-            searchUrlPreview: searchUrl.slice(0, 140),
+            reason: "resolver_threw",
+            detail: err instanceof Error ? err.message : String(err),
           })
         );
         return api;
       }
-
-      console.log(
-        "[PDP_RESOLVE_SUCCESS]",
-        JSON.stringify({
-          store,
-          confidence: resolved.confidence,
-          similarity: Math.round(resolved.similarity * 1000) / 1000,
-          pdpPreview: resolved.productUrl.slice(0, 160),
-          matchedTitlePreview: resolved.matchedTitle.slice(0, 120),
-        })
-      );
-
-      const outboundRaw = resolved.productUrl;
-      const affiliateUrl =
-        outboundRaw.length > 0 ? toAffiliateUrl(outboundRaw, store) : "";
-
-      return {
-        ...api,
-        resolvedProductUrl: outboundRaw,
-        affiliateUrl: affiliateUrl || outboundRaw,
-        outboundUrl: affiliateUrl || outboundRaw,
-        urlType: "product",
-        urlConfidence: resolved.confidence,
-        urlResolutionReason: "pdp_resolved_from_store_search_serp",
-        outboundIsStoreSearch: false,
-      };
     })
   );
 }
