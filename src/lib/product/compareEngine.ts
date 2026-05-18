@@ -58,6 +58,7 @@ import type {
   SourceProduct,
   StoreId,
   TvDisplayTechBucket,
+  UniversalStoreId,
 } from "./types";
 
 /**
@@ -543,9 +544,26 @@ function pickBetterDuplicateListing(
 
 /** Search / generated listing URLs — identity is not the shared SERP path without query. */
 function listingUsesSearchStyleIdentity(
-  store: StoreId,
+  store: UniversalStoreId,
   productUrl: string
 ): boolean {
+  if (store === "other") {
+    const listing = productUrl.replace(/\s+/g, " ").trim();
+    if (!listing) return true;
+    try {
+      const u = new URL(listing);
+      const host = u.hostname.replace(/^www\./i, "").toLowerCase();
+      if (
+        (host === "google.com" || host.endsWith(".google.com")) &&
+        u.pathname.toLowerCase().startsWith("/search")
+      ) {
+        return true;
+      }
+    } catch {
+      return true;
+    }
+    return false;
+  }
   const listing = productUrl.replace(/\s+/g, " ").trim();
   if (!listing) return true;
   return !isStrictProductDetailUrl(store, listing);
@@ -728,9 +746,11 @@ function toCompareApiCandidate(
   const outboundRaw = resolution.outboundUrlRaw.trim();
   const affiliateUrl =
     outboundRaw.length > 0 ? toAffiliateUrl(outboundRaw, c.store) : "";
+  const storeLabel = c.sourceLabel?.trim() || undefined;
 
   return {
     store: c.store,
+    storeLabel,
     title: c.title,
     price: c.price,
     currency: c.currency,
@@ -760,6 +780,7 @@ function toDeal(
 ): CompareProductDeal {
   return {
     store: row.store,
+    storeLabel: row.storeLabel,
     title: row.title,
     price: row.price,
     currency: row.currency,
@@ -858,19 +879,25 @@ function annotateAndOrderCandidates(
   return [...cheaper, ...notCheaper, ...unknown];
 }
 
+function storeGroupKey(r: CompareApiCandidate): string {
+  if (r.store !== "other") return r.store;
+  const lab = r.storeLabel?.replace(/\s+/g, " ").trim().toLowerCase();
+  return lab ? `other:${lab}` : "other:unknown";
+}
+
 function groupByStore(rows: CompareApiCandidate[]): {
-  store: StoreId;
+  store: string;
   candidates: CompareApiCandidate[];
 }[] {
-  const map = new Map<StoreId, CompareApiCandidate[]>();
-  const order: StoreId[] = [];
+  const map = new Map<string, CompareApiCandidate[]>();
+  const order: string[] = [];
   for (const r of rows) {
-    const s = r.store as StoreId;
-    if (!map.has(s)) {
-      order.push(s);
-      map.set(s, []);
+    const key = storeGroupKey(r);
+    if (!map.has(key)) {
+      order.push(key);
+      map.set(key, []);
     }
-    map.get(s)!.push(r);
+    map.get(key)!.push(r);
   }
   return order.map((store) => ({
     store,
@@ -1257,7 +1284,7 @@ export async function compareProduct(
       titlePreview: c.title.slice(0, 120),
     });
 
-    if (!isProductDetailStoreKey(c.store)) {
+    if (!isProductDetailStoreKey(c.store) && c.store !== "other") {
       candidateSteps.push({
         key: candidateKey(c, candidateSteps.length),
         store: c.store,
@@ -1379,6 +1406,7 @@ export async function compareProduct(
       store: c.store,
       listingProductUrl: c.productUrl,
       title: c.title,
+      sourceLabel: c.sourceLabel,
     });
     if (
       !resolution.outboundUrlRaw.trim() ||
@@ -1421,7 +1449,7 @@ export async function compareProduct(
     .filter(
       (api) =>
         (api.urlType === "product" || api.urlType === "search") &&
-        isProductDetailStoreKey(api.store) &&
+        (isProductDetailStoreKey(api.store) || api.store === "other") &&
         Boolean(api.outboundUrl?.trim())
     );
 
@@ -1610,7 +1638,7 @@ export async function compareProduct(
 
     if (
       bestDeal &&
-      (!isProductDetailStoreKey(bestDeal.store) ||
+      ((!isProductDetailStoreKey(bestDeal.store) && bestDeal.store !== "other") ||
         bestDeal.urlType === "unknown" ||
         !bestDeal.outboundUrl?.trim())
     ) {

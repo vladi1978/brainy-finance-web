@@ -1,4 +1,4 @@
-import type { PremiumCouponOffer, ProductCategory, StoreId } from "@/lib/product/types";
+import type { PremiumCouponOffer, ProductCategory, StoreId, UniversalStoreId } from "@/lib/product/types";
 
 function stableId(parts: string[]): string {
   return parts.join("|").replace(/\s+/g, "-").slice(0, 120);
@@ -9,9 +9,10 @@ function stableId(parts: string[]): string {
  * (`process.env.COUPON_API_URL`, etc.) without changing the comparison API shape.
  */
 export function getSimulatedStoreCoupons(
-  store: StoreId,
+  store: UniversalStoreId,
   category: ProductCategory
 ): PremiumCouponOffer[] {
+  if (store === "other") return [];
   const now = new Date();
   const end = new Date(now);
   end.setDate(end.getDate() + 14);

@@ -342,3 +342,54 @@ export function isValidStoreOutboundUrl(
 
   return isRetailerSearchUrl(store, trimmed);
 }
+
+/**
+ * Outbound URLs for Google Shopping rows tied to merchants we do not map to {@link StoreId}:
+ * HTTPS links with a non-root path, or `google.com/search?q=` fallbacks (never Shopping surfaces).
+ */
+export function isAcceptableUniversalShoppingOutboundUrl(url: string): boolean {
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+
+  let u: URL;
+  try {
+    u = new URL(trimmed);
+  } catch {
+    return false;
+  }
+
+  if (!/^https?:$/i.test(u.protocol)) return false;
+
+  const host = normHost(u.hostname);
+
+  if (host === "google.com" || host.endsWith(".google.com")) {
+    const pl = u.pathname.toLowerCase();
+    if (!pl.startsWith("/search")) return false;
+    const q = u.searchParams.get("q")?.trim();
+    return Boolean(q && q.length >= 2);
+  }
+
+  if (
+    host === "googleusercontent.com" ||
+    host.endsWith(".googleusercontent.com") ||
+    host === "gstatic.com" ||
+    host.endsWith(".gstatic.com") ||
+    host === "schema.org"
+  ) {
+    return false;
+  }
+
+  const path = u.pathname.replace(/\/+$/, "");
+  if (path === "" || path === "/") return false;
+
+  const plower = u.pathname.toLowerCase();
+  if (
+    plower.includes("/cart") ||
+    plower.includes("/checkout") ||
+    plower.includes("/buybucket")
+  ) {
+    return false;
+  }
+
+  return true;
+}

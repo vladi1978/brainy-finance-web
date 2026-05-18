@@ -17,6 +17,11 @@ function formatPrice(n: number | null): string {
   return `$${n.toFixed(2)}`;
 }
 
+/** Prefer Google Shopping source label; fallback to branded id (e.g. `walmart` → Walmart). */
+function candidateRetailerName(c: { store: string; storeLabel?: string }): string {
+  return c.storeLabel?.trim() || storeDisplayLabel(c.store);
+}
+
 function MatchBadge({ type }: { type: CompareApiCandidate["matchType"] }) {
   const colors = {
     high: "bg-green-500/20 text-green-300 border-green-500/40",
@@ -44,13 +49,16 @@ function MatchBadge({ type }: { type: CompareApiCandidate["matchType"] }) {
 
 function StoreLogo({
   store,
+  displayName,
   className,
 }: {
   store: string;
+  /** When set, used for initials / aria when the logo is missing (e.g. SERP merchant name). */
+  displayName?: string;
   className?: string;
 }) {
   const src = storeLogoUrl(store);
-  const label = storeDisplayLabel(store);
+  const label = displayName ?? storeDisplayLabel(store);
   const initial = label.slice(0, 1).toUpperCase();
   const [imgOk, setImgOk] = useState(Boolean(src));
 
@@ -489,7 +497,7 @@ export default function ComparePage() {
                       (x) => x.matchType === "high" || x.matchType === "equivalent"
                     ).length
                   }{" "}
-                  strong matches): {formatPrice(best.price)} at {storeDisplayLabel(best.store)}
+                  strong matches): {formatPrice(best.price)} at {candidateRetailerName(best)}
                 </p>
               )}
 
@@ -531,7 +539,7 @@ export default function ComparePage() {
                           c.store === best.store;
                         const outbound =
                           (c.outboundUrl?.trim() || c.affiliateUrl || c.productUrl);
-                        const storeLabel = storeDisplayLabel(c.store);
+                        const storeLabel = candidateRetailerName(c);
                         const showSearchDisclaimer = c.urlType === "search";
                         const outboundButtonLabel =
                           c.urlType === "product"
@@ -570,7 +578,7 @@ export default function ComparePage() {
                               )}
                               <div className="flex-1 min-w-0">
                                 <div className="flex flex-wrap items-center gap-2 mb-2">
-                                  <StoreLogo store={c.store} />
+                                  <StoreLogo store={c.store} displayName={storeLabel} />
                                   <div className="flex flex-wrap items-center gap-2">
                                     {isWinner && (
                                       <span className="text-xs font-semibold text-green-400 uppercase">

@@ -1,4 +1,4 @@
-import type { StoreId } from "./types";
+import type { UniversalStoreId } from "./types";
 
 /**
  * Strip noisy tracking params while keeping legitimate retailer query strings.
@@ -27,8 +27,12 @@ function scrubKnownNoiseParams(url: string): string {
  * Central affiliate formatter: returns a clean merchant PDP today, with room to
  * append program-specific tags once keys exist in the environment.
  */
-export function toAffiliateUrl(productUrl: string, store: StoreId): string {
+export function toAffiliateUrl(productUrl: string, store: UniversalStoreId): string {
   let out = scrubKnownNoiseParams(productUrl.trim());
+
+  if (store === "other") {
+    return out;
+  }
 
   const amazonTag = process.env.AMAZON_ASSOCIATE_TAG?.trim();
   if (store === "amazon" && amazonTag) {

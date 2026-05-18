@@ -16,6 +16,12 @@ export type StoreId =
   | "homedepot"
   | "lowes";
 
+/**
+ * Shopping pipeline id: known retailers plus `other` for merchants outside the PDP/affiliate set.
+ * Use {@link CandidateProduct.sourceLabel} / API `storeLabel` for the real SERP retailer name.
+ */
+export type UniversalStoreId = StoreId | "other";
+
 export type ProductCategory =
   | "tv"
   | "monitor"
@@ -167,7 +173,7 @@ export type SourceProduct = {
  * One listing row from a retailer, already mapped into our normalized shape.
  */
 export type CandidateProduct = {
-  store: StoreId;
+  store: UniversalStoreId;
   title: string;
   price: number | null;
   currency: string;
@@ -311,6 +317,10 @@ export type CompareConfidence = "high" | "medium" | "low";
 
 export type CompareProductDeal = {
   store: string;
+  /**
+   * Merchant / SERP source label when present (preferred over {@link store} for display name).
+   */
+  storeLabel?: string;
   title: string;
   price: number | null;
   currency: string;
@@ -342,6 +352,10 @@ export type CompareProductDeal = {
 /** Search-first API candidate (shared shape across stores). */
 export type CompareApiCandidate = {
   store: string;
+  /**
+   * Human-readable retailer name from Google Shopping (or normalized fallback). Prefer for UI copy.
+   */
+  storeLabel?: string;
   title: string;
   price: number | null;
   currency: string;
@@ -391,7 +405,7 @@ export type CompareProductResponse = {
   /** All candidates (match-scored), ordered for display — up to ~14 rows; cheaper-than-reference only when a reference price exists */
   candidates: CompareApiCandidate[];
   /** Same listings grouped by retailer */
-  resultsByStore: { store: StoreId; candidates: CompareApiCandidate[] }[];
+  resultsByStore: { store: string; candidates: CompareApiCandidate[] }[];
   bestDeal: CompareProductDeal | null;
   /** True when a primary pick (`bestDeal`) is highlighted among returned candidates */
   showBestDeal: boolean;

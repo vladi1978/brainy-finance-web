@@ -27,10 +27,23 @@ export {
   runHardGates,
   scoreTvStructured,
 } from "./match";
+/** Universal matcher — profile-driven gates + weighted similarity (extends cleanly with embeddings/APIs). */
+export {
+  runUniversalHardGates,
+  scoreUniversalStructured,
+} from "./matching/universalMatchEngine";
+export type { UniversalStructuredScore } from "./matching/universalMatchEngine";
+export {
+  CATEGORY_MATCH_PROFILES,
+  profileForCategory,
+} from "./matching/weightProfiles";
+export type { CategoryGateFlags, CategoryMatchProfile } from "./matching/weightProfiles";
+export type { UniversalAttributeKey } from "./matching/attributeKeys";
 export type {
   CompareApiCandidate,
   CompareConfidence,
   ComparisonCategory,
   SearchMatchType,
   StructuredProduct,
+  UniversalStoreId,
 } from "./types";

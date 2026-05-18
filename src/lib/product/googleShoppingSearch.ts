@@ -1,12 +1,18 @@
 import { buildNormalizedProduct, detectStoreFromProductUrl } from "./normalize";
-import { buildRetailerSearchUrlFromTitle } from "./productUrlResolver";
-import { isProductDetailStoreKey, isValidStoreOutboundUrl } from "./productDetailUrl";
+import {
+  buildGoogleSearchUrlForRetailerListing,
+  buildRetailerSearchUrlFromTitle,
+} from "./productUrlResolver";
+import {
+  isAcceptableUniversalShoppingOutboundUrl,
+  isValidStoreOutboundUrl,
+} from "./productDetailUrl";
 import { dedupeIdenticalListingUrls } from "./candidateDedupe";
 import type {
   CandidateProduct,
   ProviderSearchContext,
   ProviderSearchDiagnostics,
-  StoreId,
+  UniversalStoreId,
 } from "./types";
 
 function shoppingLog(payload: Record<string, unknown>): void {
@@ -61,7 +67,7 @@ function coerceExtractedPriceToString(val: unknown): string | null {
   return null;
 }
 
-function inferStoreFromSourceLabel(label: unknown): StoreId | null {
+function inferStoreFromSourceLabel(label: unknown): UniversalStoreId | null {
   if (typeof label !== "string") return null;
   const combined = `${label} ${label.replace(/^https?:\/\//i, "")}`.toLowerCase();
   if (/\bamazon\b|amazon\.(?:com|[a-z.]+)\b|\.amazon\./i.test(combined))
@@ -524,48 +530,76 @@ function rowToCandidate(
   const source = pickSourceLabel(row);
   const merchantUrl = pickFirstFinalMerchantUrl(row);
 
-  const storeFromUrl = merchantUrl ? detectStoreFromProductUrl(merchantUrl) : null;
-  const storeInferred = inferStoreFromSourceLabel(source);
-  const store = storeFromUrl ?? storeInferred;
-
-  if (!store) {
-    logShoppingRowSkip("unknown_store", {
-      titlePreview: title.slice(0, 120),
-      source: source ?? null,
-      hadMerchantUrl: Boolean(merchantUrl),
-    });
-    return null;
-  }
-
-  if (!isProductDetailStoreKey(store)) {
-    logShoppingRowSkip("unsupported_store", {
-      store,
-      titlePreview: title.slice(0, 80),
-      source: source ?? null,
-    });
-    return null;
-  }
-
-  let productUrl = merchantUrl ?? buildRetailerSearchUrlFromTitle(store, title);
-
-  if (!isValidStoreOutboundUrl(store, productUrl)) {
-    const generated = buildRetailerSearchUrlFromTitle(store, title);
-    if (generated !== productUrl && isValidStoreOutboundUrl(store, generated)) {
-      productUrl = generated;
+  let store: UniversalStoreId;
+  if (merchantUrl) {
+    const fromUrl = detectStoreFromProductUrl(merchantUrl);
+    store = fromUrl ?? "other";
+  } else {
+    const inferred = inferStoreFromSourceLabel(source);
+    if (inferred) {
+      store = inferred;
+    } else if (source?.trim()) {
+      store = "other";
+    } else {
+      logShoppingRowSkip("unknown_store_no_source_no_url", {
+        titlePreview: title.slice(0, 120),
+      });
+      return null;
     }
   }
 
-  if (!isValidStoreOutboundUrl(store, productUrl)) {
-    logShoppingRowSkip("invalid_outbound_url", {
-      store,
-      titlePreview: title.slice(0, 80),
-      urlPreview: productUrl.slice(0, 160),
+  if (store === "other" && !source?.trim()) {
+    logShoppingRowSkip("other_requires_source_label", {
+      titlePreview: title.slice(0, 120),
+      hadMerchantUrl: Boolean(merchantUrl),
     });
     return null;
   }
 
   const priceRaw = pickPriceRawFromRow(row);
   const price = parsePriceLoose(priceRaw ?? undefined);
+  if (price == null) {
+    logShoppingRowSkip("missing_parseable_price", {
+      store,
+      titlePreview: title.slice(0, 80),
+    });
+    return null;
+  }
+
+  let productUrl: string;
+  if (store === "other") {
+    const src = source!.trim();
+    if (merchantUrl && isAcceptableUniversalShoppingOutboundUrl(merchantUrl)) {
+      productUrl = merchantUrl;
+    } else {
+      productUrl = buildGoogleSearchUrlForRetailerListing(title, src);
+    }
+    if (!isAcceptableUniversalShoppingOutboundUrl(productUrl)) {
+      logShoppingRowSkip("invalid_other_outbound_url", {
+        titlePreview: title.slice(0, 80),
+        urlPreview: productUrl.slice(0, 160),
+      });
+      return null;
+    }
+  } else {
+    productUrl = merchantUrl ?? buildRetailerSearchUrlFromTitle(store, title);
+
+    if (!isValidStoreOutboundUrl(store, productUrl)) {
+      const generated = buildRetailerSearchUrlFromTitle(store, title);
+      if (generated !== productUrl && isValidStoreOutboundUrl(store, generated)) {
+        productUrl = generated;
+      }
+    }
+
+    if (!isValidStoreOutboundUrl(store, productUrl)) {
+      logShoppingRowSkip("invalid_outbound_url", {
+        store,
+        titlePreview: title.slice(0, 80),
+        urlPreview: productUrl.slice(0, 160),
+      });
+      return null;
+    }
+  }
 
   const imageUrl = pickThumbnailFromRow(row);
   const rating = pickRatingFromRow(row);
@@ -590,8 +624,6 @@ function rowToCandidate(
     qWords.length > 0
       ? Math.min(0.98, 0.45 + (matchWords / qWords.length) * 0.5)
       : 0.72;
-  /** No parseable numeric price — still keep row, softer confidence cap */
-  if (price == null) sourceConfidence = Math.min(sourceConfidence, 0.52);
 
   const out: CandidateProduct = {
     store,
