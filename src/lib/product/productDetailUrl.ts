@@ -215,6 +215,11 @@ function lowesPdpPath(path: string): boolean {
   return /^\/pd\/[^/]+\/\d+/i.test(path);
 }
 
+function isHomepageOnlyRetailPath(u: URL): boolean {
+  const p = u.pathname.replace(/\/+$/, "");
+  return p === "" || p === "/";
+}
+
 /** True only for retailer-hosted product detail paths (never search/category landing pages). */
 export function isStrictProductDetailUrl(
   store: ProductDetailStoreKey,
@@ -262,8 +267,7 @@ export function isStrictProductDetailUrl(
 }
 
 /**
- * Retailer-hosted search/browse URL (same heuristics as {@link isValidProductDetailUrl} search paths,
- * restricted to matching store host — unlike {@link isValidProductDetailUrl}, does not classify PDPs.)
+ * Retailer-hosted search/browse URL (restricted to matching store host — does not classify PDPs.)
  */
 export function isRetailerSearchUrl(store: ProductDetailStoreKey, url: string): boolean {
   let u: URL;
@@ -297,66 +301,44 @@ export function isRetailerSearchUrl(store: ProductDetailStoreKey, url: string): 
 }
 
 /**
- * True when `url` is a retailer product detail page or an allowed store search fallback
- * (used when Shopping APIs only return Google hops), for `store`.
+ * True only for retailer-hosted **product detail** URLs (PDPs). Search/category/listing pages are false —
+ * use {@link isValidStoreOutboundUrl} for Shopping pipeline outbound URLs until affiliate APIs land.
  */
 export function isValidProductDetailUrl(
   store: ProductDetailStoreKey,
   url: string
 ): boolean {
+  return isStrictProductDetailUrl(store, url);
+}
+
+/**
+ * URLs safe to send users to the correct retailer host: real PDPs, known retailer search URLs,
+ * or generated search URLs that match our store-specific patterns. Rejects empty/broken URLs,
+ * wrong-host links, and bare homepages. PDP paths still reject hops/cart/etc. via {@link isStrictProductDetailUrl}.
+ */
+export function isValidStoreOutboundUrl(
+  store: ProductDetailStoreKey,
+  url: string
+): boolean {
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+
   let u: URL;
   try {
-    u = new URL(url.trim());
+    u = new URL(trimmed);
   } catch {
     return false;
   }
 
   if (!/^https?:$/i.test(u.protocol)) return false;
 
-  const hrefLower = u.href.toLowerCase();
-  if (
-    hrefLower.includes("/search") ||
-    hrefLower.includes("searchterm") ||
-    hrefLower.includes("?q=") ||
-    hrefLower.includes("?k=") ||
-    hrefLower.includes("?st=") ||
-    hrefLower.includes("_nkw=")
-  ) {
-    return true;
-  }
-
   const host = normHost(u.hostname);
-
-  if (hostMatchesStoreKey(store, host) && isRetailerSearchLandingUrl(store, u)) {
-    return true;
-  }
-
-  if (universalBadRetailUrl(u)) return false;
-
-  const path = u.pathname;
-
-  if (isDemoPdpPlaceholder(host, path)) {
-    return demoHostMatchesStore(store, host);
-  }
-
   if (!hostMatchesStoreKey(store, host)) return false;
 
-  switch (store) {
-    case "amazon":
-      return amazonPdpPath(path);
-    case "walmart":
-      return walmartPdpPath(path);
-    case "target":
-      return targetPdpPath(path);
-    case "temu":
-      return temuPdpPath(path);
-    case "bestbuy":
-      return bestbuyPdpPath(path);
-    case "homedepot":
-      return homedepotPdpPath(path);
-    case "lowes":
-      return lowesPdpPath(path);
-    default:
-      return false;
-  }
+  if (isHomepageOnlyRetailPath(u)) return false;
+
+  /** PDP branch applies {@link universalBadRetailUrl}; search URLs intentionally bypass it (e.g. `/s?k=`). */
+  if (isStrictProductDetailUrl(store, trimmed)) return true;
+
+  return isRetailerSearchUrl(store, trimmed);
 }

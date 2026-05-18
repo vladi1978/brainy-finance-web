@@ -12,9 +12,9 @@ export type CategoryGateFlags = {
   rejectDiagonalMismatchWhenBothKnown: boolean;
   /** Reject when exactly one diagonal is unknown — softened via scoring elsewhere when false. */
   rejectDiagonalOneSideUnknown: boolean;
-  /** Reject resolution bucket mismatch when both sides resolved. */
+  /** When true, hard-reject on resolution mismatch; when false, rely on scoring penalties only. */
   rejectResolutionMismatchWhenBothKnown: boolean;
-  /** Reject incompatible display panel buckets when both resolved. */
+  /** When true, hard-reject on display/panel mismatch; when false, scoring penalties only. */
   rejectDisplayPanelMismatchWhenBothKnown: boolean;
   /**
    * When reference has rich model identifiers, require fuzzy/substring model compatibility.

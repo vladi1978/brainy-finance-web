@@ -1057,9 +1057,31 @@ export async function compareProduct(
   };
 
   const rows: Row[] = [];
-  const rejectionCounts: Record<string, number> = {};
-  const bumpReject = (reason: string) => {
-    rejectionCounts[reason] = (rejectionCounts[reason] ?? 0) + 1;
+  const rejectionSummary: {
+    totalCandidates: number;
+    afterDeduped: number;
+    invalidStore: number;
+    sameAsInput: number;
+    noPrice: number;
+    attributeRejected: Record<string, number>;
+    urlRejected: number;
+    acceptedRows: number;
+    baseFilteredCount?: number;
+    orderedForDisplayCount?: number;
+  } = {
+    totalCandidates: allCandidates.length,
+    afterDeduped: deduped.length,
+    invalidStore: 0,
+    sameAsInput: 0,
+    noPrice: 0,
+    attributeRejected: {},
+    urlRejected: 0,
+    acceptedRows: 0,
+  };
+
+  const bumpAttributeReject = (reason: string) => {
+    rejectionSummary.attributeRejected[reason] =
+      (rejectionSummary.attributeRejected[reason] ?? 0) + 1;
   };
 
   for (const c of deduped) {
@@ -1086,7 +1108,7 @@ export async function compareProduct(
         title: c.title.slice(0, 80),
         reason: "unsupported_store_for_compare",
       });
-      bumpReject("unsupported_store_for_compare");
+      rejectionSummary.invalidStore += 1;
       continue;
     }
 
@@ -1105,7 +1127,7 @@ export async function compareProduct(
         title: c.title.slice(0, 80),
         reason: "same_listing_as_pasted_url",
       });
-      bumpReject("skipped_same_source_listing");
+      rejectionSummary.sameAsInput += 1;
       continue;
     }
 
@@ -1125,7 +1147,7 @@ export async function compareProduct(
         title: c.title.slice(0, 80),
         reason: "missing_price",
       });
-      bumpReject("missing_price");
+      rejectionSummary.noPrice += 1;
       continue;
     }
 
@@ -1160,7 +1182,7 @@ export async function compareProduct(
         store: c.store,
         rejectionReason: rel.rejectionReason,
       });
-      bumpReject(rel.rejectionReason ?? "attribute_rejected");
+      bumpAttributeReject(rel.rejectionReason ?? "attribute_rejected_unknown");
       continue;
     }
 
@@ -1170,8 +1192,16 @@ export async function compareProduct(
       listingProductUrl: c.productUrl,
       title: c.title,
     });
+    if (
+      !resolution.outboundUrlRaw.trim() ||
+      resolution.urlType === "unknown"
+    ) {
+      rejectionSummary.urlRejected += 1;
+    }
+
     const api = toCompareApiCandidate(c, rel, resolution, coupons);
     rows.push({ api, rel });
+    rejectionSummary.acceptedRows += 1;
 
     candidateSteps.push({
       key: candidateKey(c, candidateSteps.length),
@@ -1198,8 +1228,6 @@ export async function compareProduct(
     });
   }
 
-  console.log("[REJECTION_SUMMARY]", rejectionCounts);
-
   const baseFiltered = rows
     .map((r) => r.api)
     .filter(
@@ -1213,6 +1241,11 @@ export async function compareProduct(
     baseFiltered,
     referenceListPrice
   ).slice(0, DISPLAY_LIMIT);
+
+  rejectionSummary.baseFilteredCount = baseFiltered.length;
+  rejectionSummary.orderedForDisplayCount = orderedForDisplay.length;
+
+  console.log("[REJECTION_SUMMARY]", JSON.stringify(rejectionSummary));
 
   const sourceProduct =
     scrapedOk && scrapedSource

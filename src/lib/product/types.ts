@@ -177,6 +177,12 @@ export type CandidateProduct = {
   imageUrl: string | null;
   normalized: NormalizedProduct;
   sourceConfidence: number;
+  /** Google Shopping / Serp row id when present — diagnostics and future affiliate wiring */
+  productId?: string;
+  /** Merchant/source label from the shopping row when present */
+  sourceLabel?: string;
+  /** Listing star rating when the provider exposes it */
+  rating?: number | null;
 };
 
 /** @deprecated Prefer MatchConfidenceLabel — kept for internal scoring migration */

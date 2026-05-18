@@ -1,5 +1,6 @@
 import { buildNormalizedProduct, detectStoreFromProductUrl } from "./normalize";
-import { isProductDetailStoreKey, isValidProductDetailUrl } from "./productDetailUrl";
+import { buildRetailerSearchUrlFromTitle } from "./productUrlResolver";
+import { isProductDetailStoreKey, isValidStoreOutboundUrl } from "./productDetailUrl";
 import type {
   CandidateProduct,
   ProviderSearchContext,
@@ -109,6 +110,29 @@ function pickThumbnailFromRow(row: Record<string, unknown>): string | null {
     for (const t of st) {
       if (typeof t === "string" && t.startsWith("http")) return t;
     }
+  }
+  return null;
+}
+
+function pickShoppingProductId(row: Record<string, unknown>): string | undefined {
+  const raw =
+    row.product_id ??
+    row.productId ??
+    row.gid ??
+    row.product_token ??
+    (row as { product_token_secure?: unknown }).product_token_secure;
+  if (typeof raw === "string" && raw.trim()) return raw.trim();
+  if (typeof raw === "number" && Number.isFinite(raw)) return String(raw);
+  return undefined;
+}
+
+function pickRatingFromRow(row: Record<string, unknown>): number | null {
+  const raw = row.rating ?? row.stars ?? row.review_rating ?? row.star_rating;
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (raw != null && typeof raw === "object") {
+    const v = (raw as { value?: unknown; rating?: unknown }).value ??
+      (raw as { rating?: unknown }).rating;
+    if (typeof v === "number" && Number.isFinite(v)) return v;
   }
   return null;
 }
@@ -277,30 +301,6 @@ function pickFirstFinalMerchantUrl(row: Record<string, unknown>): string | null 
     const u = finalizeMerchantProductUrl(v);
     if (u) return u;
   }
-  return null;
-}
-
-/**
- * When Serper only returns a Google `link`, build a retailer search URL from `source` + row title.
- */
-function buildFallbackMerchantSearchUrlFromSource(
-  source: string | null,
-  title: string
-): string | null {
-  if (typeof source !== "string" || !source.trim() || !title.trim()) return null;
-  const s = source.toLowerCase();
-  const q = encodeURIComponent(title.trim());
-
-  if (s.includes("best buy"))
-    return `https://www.bestbuy.com/site/searchpage.jsp?st=${q}`;
-  if (s.includes("home depot"))
-    return `https://www.homedepot.com/s/${q}`;
-  if (s.includes("walmart")) return `https://www.walmart.com/search?q=${q}`;
-  if (s.includes("amazon")) return `https://www.amazon.com/s?k=${q}`;
-  if (s.includes("target"))
-    return `https://www.target.com/s?searchTerm=${q}`;
-  if (s.includes("temu"))
-    return `https://www.temu.com/search_result.html?search_key=${q}`;
   return null;
 }
 
@@ -502,6 +502,10 @@ async function fetchSerpApiShoppingJson(query: string): Promise<unknown | null> 
   }
 }
 
+function logShoppingRowSkip(reason: string, detail: Record<string, unknown>): void {
+  console.log("[google-shopping-row-skip]", JSON.stringify({ reason, ...detail }));
+}
+
 function rowToCandidate(
   row: Record<string, unknown>,
   searchQuery: string
@@ -516,24 +520,55 @@ function rowToCandidate(
         : null;
   if (!title || title.length < 3) return null;
 
-  const productUrl =
-    pickFirstFinalMerchantUrl(row) ??
-    buildFallbackMerchantSearchUrlFromSource(pickSourceLabel(row), title);
-  if (!productUrl) return null;
+  const source = pickSourceLabel(row);
+  const merchantUrl = pickFirstFinalMerchantUrl(row);
 
-  let store =
-    detectStoreFromProductUrl(productUrl) ??
-    inferStoreFromSourceLabel(pickSourceLabel(row));
+  const storeFromUrl = merchantUrl ? detectStoreFromProductUrl(merchantUrl) : null;
+  const storeInferred = inferStoreFromSourceLabel(source);
+  const store = storeFromUrl ?? storeInferred;
 
-  if (!store) return null;
-  if (!isProductDetailStoreKey(store)) return null;
+  if (!store) {
+    logShoppingRowSkip("unknown_store", {
+      titlePreview: title.slice(0, 120),
+      source: source ?? null,
+      hadMerchantUrl: Boolean(merchantUrl),
+    });
+    return null;
+  }
 
-  if (!isValidProductDetailUrl(store, productUrl)) return null;
+  if (!isProductDetailStoreKey(store)) {
+    logShoppingRowSkip("unsupported_store", {
+      store,
+      titlePreview: title.slice(0, 80),
+      source: source ?? null,
+    });
+    return null;
+  }
+
+  let productUrl = merchantUrl ?? buildRetailerSearchUrlFromTitle(store, title);
+
+  if (!isValidStoreOutboundUrl(store, productUrl)) {
+    const generated = buildRetailerSearchUrlFromTitle(store, title);
+    if (generated !== productUrl && isValidStoreOutboundUrl(store, generated)) {
+      productUrl = generated;
+    }
+  }
+
+  if (!isValidStoreOutboundUrl(store, productUrl)) {
+    logShoppingRowSkip("invalid_outbound_url", {
+      store,
+      titlePreview: title.slice(0, 80),
+      urlPreview: productUrl.slice(0, 160),
+    });
+    return null;
+  }
 
   const priceRaw = pickPriceRawFromRow(row);
   const price = parsePriceLoose(priceRaw ?? undefined);
 
   const imageUrl = pickThumbnailFromRow(row);
+  const rating = pickRatingFromRow(row);
+  const productId = pickShoppingProductId(row);
 
   const normalized = buildNormalizedProduct(title, {
     price,
@@ -557,7 +592,7 @@ function rowToCandidate(
   /** No parseable numeric price — still keep row, softer confidence cap */
   if (price == null) sourceConfidence = Math.min(sourceConfidence, 0.52);
 
-  return {
+  const out: CandidateProduct = {
     store,
     title,
     price,
@@ -569,6 +604,12 @@ function rowToCandidate(
     normalized,
     sourceConfidence,
   };
+
+  if (source) out.sourceLabel = source;
+  if (rating != null) out.rating = rating;
+  if (productId) out.productId = productId;
+
+  return out;
 }
 
 /** Preserve distinct search fallbacks that only differ by query or /s/ segment. */
