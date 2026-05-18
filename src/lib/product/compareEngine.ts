@@ -1057,6 +1057,10 @@ export async function compareProduct(
   };
 
   const rows: Row[] = [];
+  const rejectionCounts: Record<string, number> = {};
+  const bumpReject = (reason: string) => {
+    rejectionCounts[reason] = (rejectionCounts[reason] ?? 0) + 1;
+  };
 
   for (const c of deduped) {
     const candidateListingKey = c.productUrl;
@@ -1082,6 +1086,7 @@ export async function compareProduct(
         title: c.title.slice(0, 80),
         reason: "unsupported_store_for_compare",
       });
+      bumpReject("unsupported_store_for_compare");
       continue;
     }
 
@@ -1100,6 +1105,7 @@ export async function compareProduct(
         title: c.title.slice(0, 80),
         reason: "same_listing_as_pasted_url",
       });
+      bumpReject("skipped_same_source_listing");
       continue;
     }
 
@@ -1119,6 +1125,7 @@ export async function compareProduct(
         title: c.title.slice(0, 80),
         reason: "missing_price",
       });
+      bumpReject("missing_price");
       continue;
     }
 
@@ -1153,6 +1160,7 @@ export async function compareProduct(
         store: c.store,
         rejectionReason: rel.rejectionReason,
       });
+      bumpReject(rel.rejectionReason ?? "attribute_rejected");
       continue;
     }
 
@@ -1189,6 +1197,8 @@ export async function compareProduct(
       score: rel.relevanceScore,
     });
   }
+
+  console.log("[REJECTION_SUMMARY]", rejectionCounts);
 
   const baseFiltered = rows
     .map((r) => r.api)
