@@ -16,7 +16,12 @@ import {
   passesTrueSubscriptionGate,
   snapshotSubscriptionCandidate,
 } from "./heuristics";
-import { deriveMerchantPresentation } from "./merchantNormalize";
+import {
+  buildMerchantNormalizationMap,
+  clusterMerchantPresentation,
+  merchantNormalizationDiagnostics,
+} from "./merchantNormalization";
+import type { MerchantNormalizationResult } from "./merchantNormalization";
 import { clusterLooksSubscriptionMerchant } from "./subscriptionSignals";
 import { analyzeClustersWithOpenAI } from "./openaiAnalyze";
 import { deriveStatementPeriod, parseTransactionsFromText } from "./parseTransactions";
@@ -73,6 +78,7 @@ function enrichAiSubscription(args: {
     flags: Partial<SubscriptionInsight["flags"]>;
   };
   clusterById: Map<string, MerchantCluster>;
+  merchantNormByClusterId: Map<string, MerchantNormalizationResult>;
   statementPeriod: AnalyzeStatementResult["statementPeriod"];
   heuristicRefDate: string;
   displayRefDate: string;
@@ -87,12 +93,10 @@ function enrichAiSubscription(args: {
   const cluster = clusterById.get(raw.clusterId);
   if (!cluster) return null;
 
-  const sampleMerchant = (cluster.descriptions[0] ?? raw.merchant).trim();
-
-  const presentation = deriveMerchantPresentation({
-    primaryDescription: sampleMerchant || raw.merchant,
-    clusterKeyUpper: cluster.key,
-  });
+  const presentation = clusterMerchantPresentation(
+    cluster,
+    args.merchantNormByClusterId?.get(cluster.id)
+  );
 
   const heurFlags = computeHeuristicFlags({
     cluster,
@@ -313,11 +317,17 @@ export async function analyzeStatementPdf(
   const displayRefDate = isoTodayUtc();
   const clusterById = new Map(clusters.map((c) => [c.id, c]));
 
+  const merchantNormByClusterId = await buildMerchantNormalizationMap({
+    clusters,
+    signal: aiController.signal,
+  });
+
   const heuristicRows = heuristicSubscriptionsFromClusters(
     clusters,
     statementPeriod,
     heuristicRefDate,
-    displayRefDate
+    displayRefDate,
+    merchantNormByClusterId
   );
 
   let aiSubscriptions: SubscriptionInsight[] = [];
@@ -345,6 +355,7 @@ export async function analyzeStatementPdf(
         enrichAiSubscription({
           raw,
           clusterById,
+          merchantNormByClusterId,
           statementPeriod,
           heuristicRefDate,
           displayRefDate,
@@ -453,6 +464,7 @@ export async function analyzeStatementPdf(
     buildSpendingInsightsFromClusters({
       clusters,
       subscriptionClusterIds,
+      merchantNormByClusterId,
     });
 
   const spendingInsightsTotal = spendingInsights.reduce(
@@ -482,6 +494,7 @@ export async function analyzeStatementPdf(
     recurringExpenses,
     spendingInsights,
     transfers,
+    merchantNormByClusterId,
   });
 
   return {
@@ -501,6 +514,10 @@ export async function analyzeStatementPdf(
       recurringExpenseCount: recurringExpenses.length,
       aiAssistedSubscriptionClusterIds,
       excludedFromSubscriptions,
+      merchantNormalizations: merchantNormalizationDiagnostics(
+        clusters,
+        merchantNormByClusterId
+      ),
     },
     openAiUsed,
     openAiError,

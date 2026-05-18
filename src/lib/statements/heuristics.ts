@@ -1,4 +1,5 @@
-import { deriveMerchantPresentation } from "./merchantNormalize";
+import { clusterMerchantPresentation } from "./merchantNormalization";
+import type { MerchantNormalizationResult } from "./merchantNormalization";
 import {
   inferSpendingInsightCategory,
   spendingCategoryDisplay,
@@ -213,6 +214,7 @@ export function passesTrueSubscriptionGate(
 export function buildSpendingInsightsFromClusters(args: {
   clusters: MerchantCluster[];
   subscriptionClusterIds: Set<string>;
+  merchantNormByClusterId?: Map<string, MerchantNormalizationResult>;
   maxRecurring?: number;
   maxInsights?: number;
 }): {
@@ -233,11 +235,10 @@ export function buildSpendingInsightsFromClusters(args: {
     if (isZelleOrTransferCluster(cluster)) {
       const debits = cluster.charges.filter((c) => c.type === "debit");
       if (debits.length >= 1) {
-        const description = cluster.descriptions[0] ?? cluster.key;
-        const presentation = deriveMerchantPresentation({
-          primaryDescription: description,
-          clusterKeyUpper: cluster.key,
-        });
+        const presentation = clusterMerchantPresentation(
+          cluster,
+          args.merchantNormByClusterId?.get(cluster.id)
+        );
         const last = debits[debits.length - 1];
         const totalSpentInPeriod = debits.reduce((s, d) => s + d.amount, 0);
         transferDraft.push({
@@ -266,13 +267,12 @@ export function buildSpendingInsightsFromClusters(args: {
     // Credits / incoming deposits are never treated as expenses
     if (debits.length < 1) continue;
 
-    const description = cluster.descriptions[0] ?? cluster.key;
-    const presentation = deriveMerchantPresentation({
-      primaryDescription: description,
-      clusterKeyUpper: cluster.key,
-    });
+    const presentation = clusterMerchantPresentation(
+      cluster,
+      args.merchantNormByClusterId?.get(cluster.id)
+    );
 
-    let categoryKey = inferSpendingInsightCategory(cluster);
+    const categoryKey = inferSpendingInsightCategory(cluster);
 
     const amounts = debits.map((d) => d.amount);
     const similarAmts = debitAmountsSimilar(amounts);
@@ -809,7 +809,8 @@ export function heuristicSubscriptionsFromClusters(
   clusters: MerchantCluster[],
   statementPeriod: StatementPeriod | null,
   heuristicRefDate: string,
-  displayRefDate: string
+  displayRefDate: string,
+  merchantNormByClusterId?: Map<string, MerchantNormalizationResult>
 ): SubscriptionInsight[] {
   const out: SubscriptionInsight[] = [];
 
@@ -818,8 +819,6 @@ export function heuristicSubscriptionsFromClusters(
 
     const debits = cluster.charges.filter((c) => c.type === "debit");
     if (debits.length < 1) continue;
-
-    const description = cluster.descriptions[0] ?? cluster.key;
 
     const subStyle = clusterLooksSubscriptionMerchant(cluster);
     const freq = coerceFrequency(inferFrequencyFromCharges(debits.map((d) => d.date)));
@@ -861,10 +860,10 @@ export function heuristicSubscriptionsFromClusters(
       referenceDate: heuristicRefDate,
     });
 
-    const { merchant, normalizedName, category } = deriveMerchantPresentation({
-      primaryDescription: description,
-      clusterKeyUpper: cluster.key,
-    });
+    const { merchant, normalizedName, category } = clusterMerchantPresentation(
+      cluster,
+      merchantNormByClusterId?.get(cluster.id)
+    );
 
     const totalSpentInPeriod = debits.reduce((s, d) => s + d.amount, 0);
     const lastCharged = debits[debits.length - 1].date;

@@ -1,4 +1,5 @@
-import { deriveMerchantPresentation } from "../merchantNormalize";
+import { clusterMerchantPresentation } from "../merchantNormalization";
+import type { MerchantNormalizationResult } from "../merchantNormalization";
 import type { MerchantCluster, SpendingInsight } from "../types";
 import type { MerchantGroupSummary } from "./types";
 import { rowConfidence } from "./confidence";
@@ -22,6 +23,7 @@ export function merchantGroupKey(name: string): string {
 export function buildMerchantGroups(args: {
   clusters: MerchantCluster[];
   spendingRows: SpendingInsight[];
+  merchantNormByClusterId?: Map<string, MerchantNormalizationResult>;
 }): MerchantGroupSummary[] {
   const rowByCluster = new Map(
     args.spendingRows.map((r) => [r.clusterId, r])
@@ -46,10 +48,17 @@ export function buildMerchantGroups(args: {
     const debits = cluster.charges.filter((c) => c.type === "debit");
     if (debits.length < 1) continue;
 
-    const presentation = deriveMerchantPresentation({
-      primaryDescription: cluster.descriptions[0] ?? cluster.key,
-      clusterKeyUpper: cluster.key,
-    });
+    const rowNorm = row?.normalizedName;
+    const presentation =
+      rowNorm && rowNorm.length >= 2
+        ? {
+            normalizedName: rowNorm,
+            merchant: rowNorm,
+          }
+        : clusterMerchantPresentation(
+            cluster,
+            args.merchantNormByClusterId?.get(cluster.id)
+          );
 
     const gKey = merchantGroupKey(presentation.normalizedName).toUpperCase();
     const displayName = merchantGroupKey(presentation.normalizedName);

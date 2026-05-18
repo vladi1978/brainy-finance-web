@@ -111,6 +111,16 @@ type StatementIntelligencePayload = {
   lowConfidenceRows: SpendingInsightRow[];
 };
 
+type MerchantNormalizationDiagnosticRow = {
+  clusterId: string;
+  rawMerchant: string;
+  normalizedName: string;
+  rawExamples: string[];
+  confidence: number;
+  reason: string;
+  source: "rules" | "openai";
+};
+
 type DiagnosticsMeta = {
   subscriptionCount: number;
   spendingInsightCount: number;
@@ -121,6 +131,7 @@ type DiagnosticsMeta = {
     merchantLabel: string;
     reasons: string[];
   }>;
+  merchantNormalizations?: MerchantNormalizationDiagnosticRow[];
 };
 
 type AnalyzeOk = {
@@ -783,6 +794,44 @@ export default function StatementsClient() {
                     </dl>
                   </details>
                 ) : null}
+
+                <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                  <summary className="cursor-pointer text-white/70">
+                    Merchant normalization (
+                    {data.diagnostics.merchantNormalizations?.length ?? 0})
+                  </summary>
+                  {data.diagnostics.merchantNormalizations?.length ? (
+                    <ul className="mt-2 max-h-52 space-y-2 overflow-y-auto">
+                      {data.diagnostics.merchantNormalizations
+                        .slice(0, 48)
+                        .map((row) => (
+                          <li
+                            key={row.clusterId}
+                            className="rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-[11px]"
+                          >
+                            <span className="text-white/75">{row.normalizedName}</span>
+                            <span className="text-white/35"> · </span>
+                            <span className="text-white/50">
+                              {(row.confidence * 100).toFixed(0)}% · {row.source}
+                            </span>
+                            <p className="mt-1 text-white/45">{row.reason}</p>
+                            <p className="mt-0.5 font-mono text-[10px] text-white/35">
+                              raw: {row.rawMerchant}
+                            </p>
+                            {row.rawExamples.length > 1 ? (
+                              <p className="mt-0.5 text-[10px] text-white/30">
+                                variants: {row.rawExamples.slice(1, 4).join(" · ")}
+                              </p>
+                            ) : null}
+                          </li>
+                        ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-2 text-white/45">
+                      No merchant clusters were normalized for this run.
+                    </p>
+                  )}
+                </details>
 
                 <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
                   <summary className="cursor-pointer text-white/70">

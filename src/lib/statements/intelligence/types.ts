@@ -76,4 +76,8 @@ export type IntelligenceInput = {
   recurringExpenses: SpendingInsight[];
   spendingInsights: SpendingInsight[];
   transfers: SpendingInsight[];
+  merchantNormByClusterId?: Map<
+    string,
+    import("../merchantNormalization").MerchantNormalizationResult
+  >;
 };

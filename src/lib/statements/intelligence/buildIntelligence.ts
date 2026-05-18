@@ -58,7 +58,12 @@ export function buildStatementIntelligence(
     | "recurringExpenses"
     | "spendingInsights"
     | "transfers"
-  >
+  > & {
+    merchantNormByClusterId?: Map<
+      string,
+      import("../merchantNormalization").MerchantNormalizationResult
+    >;
+  }
 ): StatementIntelligence {
   const clusterById = new Map(result.clusters.map((c) => [c.id, c]));
 
@@ -69,6 +74,7 @@ export function buildStatementIntelligence(
     recurringExpenses: result.recurringExpenses,
     spendingInsights: result.spendingInsights,
     transfers: result.transfers,
+    merchantNormByClusterId: result.merchantNormByClusterId,
   };
 
   const allSpendRows = [...result.recurringExpenses, ...result.spendingInsights];
@@ -90,6 +96,7 @@ export function buildStatementIntelligence(
     merchantGroups: buildMerchantGroups({
       clusters: result.clusters,
       spendingRows: allSpendRows,
+      merchantNormByClusterId: result.merchantNormByClusterId,
     }),
     visibleRecurring: recurringParts.visible.sort(
       (a, b) => b.totalSpentInPeriod - a.totalSpentInPeriod

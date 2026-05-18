@@ -146,6 +146,10 @@ export type ParsePipelineDebug = {
   }>;
 };
 
+import type { MerchantNormalizationDiagnostic } from "./merchantNormalization";
+
+export type { MerchantNormalizationDiagnostic } from "./merchantNormalization";
+
 export type SubscriptionDiagnostics = {
   subscriptionCount: number;
   spendingInsightCount: number;
@@ -157,6 +161,8 @@ export type SubscriptionDiagnostics = {
     merchantLabel: string;
     reasons: string[];
   }>;
+  /** Raw statement descriptors vs normalized merchant labels (diagnostics only) */
+  merchantNormalizations: MerchantNormalizationDiagnostic[];
 };
 
 export type { StatementIntelligence } from "./intelligence/types";

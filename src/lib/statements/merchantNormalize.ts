@@ -40,7 +40,7 @@ function normalizeDescriptorTokens(desc: string): string {
 }
 
 /** Human-readable names from ubiquitous billing descriptors (pattern-based). */
-function patternBasedMerchant(blob: string): string | null {
+export function matchKnownMerchantBrand(blob: string): string | null {
   const upper = blob.toUpperCase();
   if (
     /\bZELLE\b/u.test(upper) &&
@@ -128,7 +128,7 @@ function patternBasedMerchant(blob: string): string | null {
 
 /** Category for known patterns (software/digital vs streaming etc.). */
 function patternCategory(blob: string, hint: SubscriptionCategory | null): SubscriptionCategory {
-  const branded = patternBasedMerchant(blob);
+  const branded = matchKnownMerchantBrand(blob);
   if (branded === "OpenAI ChatGPT") {
     return "ai_tools";
   }
@@ -233,7 +233,7 @@ export function deriveMerchantPresentation(args: {
 
   const { categoryHint } = merchantTextSignals(raw, args.clusterKeyUpper);
 
-  const branded = patternBasedMerchant(blob);
+  const branded = matchKnownMerchantBrand(blob);
   if (branded) {
     return {
       merchant: branded,
