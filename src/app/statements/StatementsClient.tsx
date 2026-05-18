@@ -83,6 +83,21 @@ type FinancialInsightCard = {
   annualImpact?: number;
 };
 
+type RecommendationSeverity = "low" | "medium" | "high";
+
+type ActionRecommendationRow = {
+  id: string;
+  title: string;
+  description: string;
+  estimatedMonthlySavings: number;
+  estimatedYearlySavings: number;
+  severity: RecommendationSeverity;
+  confidence: number;
+  actionType: string;
+  merchantReference?: string;
+  currency: string;
+};
+
 type StatementIntelligencePayload = {
   insights: FinancialInsightCard[];
   healthScore: {
@@ -98,6 +113,12 @@ type StatementIntelligencePayload = {
     yearlySavings: number;
     currency: string;
   }>;
+  recommendations: {
+    items: ActionRecommendationRow[];
+    totalMonthlySavings: number;
+    totalYearlySavings: number;
+    currency: string;
+  };
   merchantGroups: Array<{
     groupKey: string;
     displayName: string;
@@ -249,6 +270,36 @@ const healthScoreTone = (score: number): string => {
   if (score >= 70) return "text-sky-300";
   if (score >= 55) return "text-amber-300";
   return "text-red-300";
+};
+
+const recommendationSeverityStyles: Record<
+  RecommendationSeverity,
+  { border: string; bg: string; badge: string; text: string }
+> = {
+  high: {
+    border: "border-red-400/25",
+    bg: "from-red-500/[0.07]",
+    badge: "border-red-400/30 bg-red-500/15 text-red-100",
+    text: "text-red-100",
+  },
+  medium: {
+    border: "border-amber-400/25",
+    bg: "from-amber-500/[0.07]",
+    badge: "border-amber-400/30 bg-amber-500/15 text-amber-100",
+    text: "text-amber-100",
+  },
+  low: {
+    border: "border-sky-400/20",
+    bg: "from-sky-500/[0.06]",
+    badge: "border-sky-400/25 bg-sky-500/10 text-sky-100",
+    text: "text-sky-100",
+  },
+};
+
+const recommendationSeverityLabel: Record<RecommendationSeverity, string> = {
+  high: "High",
+  medium: "Medium",
+  low: "Low",
 };
 
 const insightKindLabel: Record<string, string> = {
@@ -545,6 +596,107 @@ export default function StatementsClient() {
                           </p>
                         </li>
                       ))}
+                    </ul>
+                  </section>
+                ) : null}
+
+                {intelligence.recommendations?.items.length ? (
+                  <section className="space-y-4 border-t border-white/10 pt-10">
+                    <div className="flex flex-wrap items-end justify-between gap-4">
+                      <SectionIntro
+                        title="Recommended actions"
+                        description="Deterministic recommendations from subscriptions, fees, recurring spend, and merchant patterns — savings are conservative estimates, not quoted prices."
+                      />
+                      {intelligence.recommendations.totalMonthlySavings > 0 ? (
+                        <div className="rounded-xl border border-violet-400/20 bg-violet-500/[0.08] px-4 py-2.5 text-sm">
+                          <p className="text-xs uppercase tracking-widest text-violet-200/70">
+                            Potential monthly savings
+                          </p>
+                          <p className="mt-0.5 font-semibold tabular-nums text-violet-100">
+                            {formatMoney(
+                              intelligence.recommendations.totalMonthlySavings,
+                              intelligence.recommendations.currency
+                            )}
+                            <span className="text-xs font-normal text-white/45">
+                              {" "}
+                              /mo ·{" "}
+                              {formatMoney(
+                                intelligence.recommendations.totalYearlySavings,
+                                intelligence.recommendations.currency
+                              )}
+                              /yr
+                            </span>
+                          </p>
+                        </div>
+                      ) : null}
+                    </div>
+                    <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      {intelligence.recommendations.items.map((rec) => {
+                        const tone =
+                          recommendationSeverityStyles[rec.severity];
+                        return (
+                          <li
+                            key={rec.id}
+                            className={[
+                              "rounded-2xl border bg-gradient-to-br to-white/[0.02] p-4",
+                              tone.border,
+                              tone.bg,
+                            ].join(" ")}
+                          >
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span
+                                className={[
+                                  "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                                  tone.badge,
+                                ].join(" ")}
+                              >
+                                {recommendationSeverityLabel[rec.severity]}
+                              </span>
+                              <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-white/50">
+                                {Math.round(rec.confidence * 100)}% confidence
+                              </span>
+                            </div>
+                            <p
+                              className={[
+                                "mt-2 text-sm font-semibold",
+                                tone.text,
+                              ].join(" ")}
+                            >
+                              {rec.title}
+                            </p>
+                            <p className="mt-1.5 text-xs leading-relaxed text-white/55">
+                              {rec.description}
+                            </p>
+                            {rec.merchantReference ? (
+                              <p className="mt-2 text-[11px] text-white/40">
+                                Merchants:{" "}
+                                <span className="text-white/65">
+                                  {rec.merchantReference}
+                                </span>
+                              </p>
+                            ) : null}
+                            {rec.estimatedMonthlySavings > 0 ? (
+                              <p className="mt-3 text-xs text-white/45">
+                                Est. savings ≈{" "}
+                                <span className="font-medium text-white/80">
+                                  {formatMoney(
+                                    rec.estimatedMonthlySavings,
+                                    rec.currency
+                                  )}
+                                </span>
+                                /mo ·{" "}
+                                <span className="font-medium text-violet-200/90">
+                                  {formatMoney(
+                                    rec.estimatedYearlySavings,
+                                    rec.currency
+                                  )}
+                                </span>
+                                /yr
+                              </p>
+                            ) : null}
+                          </li>
+                        );
+                      })}
                     </ul>
                   </section>
                 ) : null}

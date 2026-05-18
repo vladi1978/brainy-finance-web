@@ -3,6 +3,7 @@ import { CONFIDENCE_VISIBLE_MIN, confidenceTier, rowConfidence } from "./confide
 import { buildMerchantGroups } from "./merchantGroups";
 import { buildHealthScore } from "./healthScore";
 import { buildInsightsFeed } from "./insightsFeed";
+import { buildRecommendations } from "../recommendations";
 import { buildSavingsOpportunities } from "./savings";
 import { deriveSmartSignal } from "./smartSignals";
 import type {
@@ -89,15 +90,18 @@ export function buildStatementIntelligence(
     ...insightParts.hidden,
   ].sort((a, b) => b.totalSpentInPeriod - a.totalSpentInPeriod);
 
+  const merchantGroups = buildMerchantGroups({
+    clusters: result.clusters,
+    spendingRows: allSpendRows,
+    merchantNormByClusterId: result.merchantNormByClusterId,
+  });
+
   return {
     insights: buildInsightsFeed(input),
     healthScore: buildHealthScore(input),
     savings: buildSavingsOpportunities(input),
-    merchantGroups: buildMerchantGroups({
-      clusters: result.clusters,
-      spendingRows: allSpendRows,
-      merchantNormByClusterId: result.merchantNormByClusterId,
-    }),
+    recommendations: buildRecommendations({ ...input, merchantGroups }),
+    merchantGroups,
     visibleRecurring: recurringParts.visible.sort(
       (a, b) => b.totalSpentInPeriod - a.totalSpentInPeriod
     ),

@@ -1,3 +1,4 @@
+import type { RecommendationsResult } from "../recommendations/types";
 import type {
   MerchantCluster,
   SpendingInsight,
@@ -63,6 +64,7 @@ export type StatementIntelligence = {
   insights: FinancialInsightCard[];
   healthScore: HealthScoreResult;
   savings: SavingsOpportunity[];
+  recommendations: RecommendationsResult;
   merchantGroups: MerchantGroupSummary[];
   visibleRecurring: EnrichedSpendingRow[];
   visibleInsights: EnrichedSpendingRow[];
