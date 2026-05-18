@@ -7,6 +7,11 @@ import {
   mergeExtraKeySpecsIntoUnderstanding,
 } from "./aiExtractor";
 import { fetchAiCompareEnrichment } from "./aiCompareEnrichment";
+import {
+  aiProductMetadataSearchQueries,
+  applyAiProductMetadataToUnderstanding,
+  fetchAiProductMetadata,
+} from "./aiProductMetadata";
 import { toAffiliateUrl } from "./affiliateUrl";
 import {
   buildCriticalShoppingCoreSegments,
@@ -1063,21 +1068,46 @@ export async function compareProduct(
     scrapedListingOk: scrapedOk,
   });
 
-  const aiCompareEnrichment = await fetchAiCompareEnrichment({
-    primaryTitle: referenceProductQuery,
-    supplementaryText: normSourceText,
-    sourceUrl:
-      scrapedSource?.sourceUrl?.trim() ||
-      parsed.inputUrl?.trim() ||
-      null,
-    skipAi: demoMode,
-  });
+  const metadataSourceUrl =
+    scrapedSource?.sourceUrl?.trim() ||
+    parsed.inputUrl?.trim() ||
+    "";
+
+  const [aiProductMetadata, aiCompareEnrichment] = await Promise.all([
+    fetchAiProductMetadata({
+      rawTitle: referenceProductQuery,
+      url: metadataSourceUrl || referenceProductQuery,
+      pageText:
+        normSourceText !== referenceProductQuery ? normSourceText : null,
+      skipAi: demoMode,
+    }),
+    fetchAiCompareEnrichment({
+      primaryTitle: referenceProductQuery,
+      supplementaryText: normSourceText,
+      sourceUrl: metadataSourceUrl || null,
+      skipAi: demoMode,
+    }),
+  ]);
+
+  referenceUnderstanding = applyAiProductMetadataToUnderstanding(
+    referenceUnderstanding,
+    aiProductMetadata
+  );
 
   if (aiCompareEnrichment.specTokens.length > 0) {
     referenceUnderstanding = mergeExtraKeySpecsIntoUnderstanding(
       referenceUnderstanding,
       aiCompareEnrichment.specTokens
     );
+  }
+
+  if (aiProductMetadata.usedAi) {
+    pipelineLog("ai_product_metadata_applied", {
+      hasBrand: Boolean(aiProductMetadata.brand),
+      hasModel: Boolean(aiProductMetadata.model),
+      searchQueries: aiProductMetadata.searchQueries?.length ?? 0,
+      keySpecs: aiProductMetadata.keySpecs?.length ?? 0,
+    });
   }
 
   if (aiCompareEnrichment.usedAi) {
@@ -1087,6 +1117,9 @@ export async function compareProduct(
       exclusions: aiCompareEnrichment.excludePhrases.length,
     });
   }
+
+  const aiMetadataSearchQueries =
+    aiProductMetadataSearchQueries(aiProductMetadata);
 
   const normalizedQueryFallback =
     scrapedOk ? referenceProductQuery : normSourceText || referenceProductQuery;
@@ -1114,7 +1147,7 @@ export async function compareProduct(
   });
 
   const shoppingQueryPlan = mergeShoppingQueryPlans(
-    aiCompareEnrichment.shoppingQueries,
+    [...aiCompareEnrichment.shoppingQueries, ...aiMetadataSearchQueries],
     baseShoppingQueryPlan,
     10
   );
@@ -1126,7 +1159,10 @@ export async function compareProduct(
       simplifiedQuery: searchQueryPack.simplifiedQuery,
       specsQuery: searchQueryPack.specsQuery,
       shoppingPlan: shoppingQueryPlan,
-      aiQueriesPrepended: aiCompareEnrichment.shoppingQueries,
+      aiQueriesPrepended: [
+        ...aiCompareEnrichment.shoppingQueries,
+        ...aiMetadataSearchQueries,
+      ],
     })
   );
 

@@ -4,6 +4,12 @@
  */
 
 export { compareProduct, DEMO_MODE, isCompareDemoMode } from "./compareEngine";
+export {
+  fetchAiProductMetadata,
+  applyAiProductMetadataToUnderstanding,
+  aiProductMetadataSearchQueries,
+} from "./aiProductMetadata";
+export type { AiProductMetadata, AiProductMetadataInput } from "./aiProductMetadata";
 export { scoreAttributeMatch } from "./attributeMatch";
 export {
   buildNormalizedProduct,
