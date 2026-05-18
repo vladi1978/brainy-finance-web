@@ -170,6 +170,12 @@ export type AnalyzeStatementResult = {
   recurringExpenses: SpendingInsight[];
   /** One-off or notable flows — excluded from subscription totals */
   spendingInsights: SpendingInsight[];
+  /**
+   * Zelle and peer-transfer flows — excluded from all expense totals,
+   * subscriptions, recurring expenses, and spending insights.
+   * Presented in a separate collapsed section only when present.
+   */
+  transfers: SpendingInsight[];
   summary: {
     monthlySpend: number;
     annualSpend: number;

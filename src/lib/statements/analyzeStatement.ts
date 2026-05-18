@@ -448,7 +448,7 @@ export async function analyzeStatementPdf(
 
   const subscriptionClusterIds = new Set(subscriptions.map((s) => s.clusterId));
 
-  const { recurringExpenses, spendingInsights } =
+  const { recurringExpenses, spendingInsights, transfers } =
     buildSpendingInsightsFromClusters({
       clusters,
       subscriptionClusterIds,
@@ -483,6 +483,7 @@ export async function analyzeStatementPdf(
     subscriptions,
     recurringExpenses,
     spendingInsights,
+    transfers,
     summary,
     diagnostics: {
       subscriptionCount: subscriptions.length,

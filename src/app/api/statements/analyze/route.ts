@@ -76,6 +76,7 @@ export async function POST(req: Request) {
       subscriptions: result.subscriptions,
       recurringExpenses: result.recurringExpenses,
       spendingInsights: result.spendingInsights,
+      transfers: result.transfers,
       diagnostics: result.diagnostics,
     });
   } catch (error) {

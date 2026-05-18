@@ -104,6 +104,8 @@ type AnalyzeOk = {
   subscriptions: SubscriptionRow[];
   recurringExpenses: SpendingInsightRow[];
   spendingInsights: SpendingInsightRow[];
+  /** Zelle and peer-transfer flows — excluded from all dashboard totals */
+  transfers: SpendingInsightRow[];
   diagnostics: DiagnosticsMeta;
 };
 
@@ -445,6 +447,31 @@ export default function StatementsClient() {
                 </ul>
               )}
             </section>
+
+            {data.transfers.length > 0 ? (
+              <details className="rounded-2xl border border-amber-400/15 bg-amber-500/[0.04]">
+                <summary className="cursor-pointer select-none px-5 py-4 text-sm font-semibold text-amber-100/90">
+                  Transfers ({data.transfers.length}){" "}
+                  <span className="font-normal text-white/40">
+                    — Zelle and peer payments · excluded from all totals
+                  </span>
+                </summary>
+                <div className="space-y-3 px-5 pb-5">
+                  <p className="text-xs text-white/45">
+                    These transactions are classified as transfers and are not
+                    counted toward subscription totals, recurring expenses, or
+                    spending insights.
+                  </p>
+                  <ul className="space-y-3">
+                    {data.transfers.map((row) => (
+                      <li key={row.clusterId}>
+                        <TransferCard row={row} />
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </details>
+            ) : null}
 
             <details className="group rounded-2xl border border-white/10 bg-white/[0.02] px-4 py-3 text-sm text-white/55">
               <summary className="cursor-pointer select-none text-sm font-medium text-white/80">
@@ -927,6 +954,43 @@ function SubscriptionCard(props: {
         >
           Find alternative
         </Link>
+      </div>
+    </div>
+  );
+}
+
+function TransferCard(props: { row: SpendingInsightRow }) {
+  const { row: r } = props;
+  return (
+    <div className="rounded-xl border border-amber-400/15 bg-black/25 px-4 py-3">
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-black/40 text-sm font-bold text-amber-200">
+          {merchantInitial(r.normalizedName)}
+        </div>
+        <div className="min-w-0 flex-1">
+          <h4 className="truncate text-sm font-semibold text-white">
+            {r.normalizedName}
+          </h4>
+          {r.normalizedName.trim().toUpperCase() !==
+          r.merchant.trim().toUpperCase() ? (
+            <p className="text-xs text-white/35">Descriptor: {r.merchant}</p>
+          ) : null}
+          <p className="mt-0.5 text-xs text-white/45">
+            Last seen {r.lastCharged}
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="text-sm font-semibold text-white">
+            {formatMoney(r.amount, r.currency)}
+          </p>
+          <p className="text-xs text-white/40">Latest debit</p>
+          <p className="mt-1 text-xs text-white/55">
+            Period total{" "}
+            <span className="text-white/80">
+              {formatMoney(r.totalSpentInPeriod, r.currency)}
+            </span>
+          </p>
+        </div>
       </div>
     </div>
   );

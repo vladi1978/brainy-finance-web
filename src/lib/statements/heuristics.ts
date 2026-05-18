@@ -94,11 +94,25 @@ function classifySpendingInsightMeta(args: {
   return { kind: "one_time_expense", recommendation: "Review this expense" };
 }
 
+/**
+ * Matches any cluster whose descriptions contain Zelle or plain
+ * "Payment From / Payment To" peer-transfer language.  These are
+ * always excluded from subscriptions, recurring expenses, and
+ * spending insights — they surface in their own Transfers section.
+ */
+export function isZelleOrTransferCluster(cluster: MerchantCluster): boolean {
+  const blob = clusterBlobUpper(cluster);
+  return /\bZELLE\b|\bPAYMENT\s+FROM\b|\bPAYMENT\s+TO\b/u.test(blob);
+}
+
 /** Parsing noise / non-purchase rails — excluded from Spending Insights only */
 export function excludeClusterFromSpendingInsights(
   cluster: MerchantCluster
 ): boolean {
   const blob = clusterBlobUpper(cluster);
+
+  // Zelle and plain P2P payment rails always excluded
+  if (isZelleOrTransferCluster(cluster)) return true;
 
   if (
     /\b(BEGINNING|OPENING|STARTING)\s+BALANCE\b|\b(ENDING|CLOSING|FINAL)\s+BALANCE\b|\bAVAILABLE\s+BALANCE\b|\bMINIMUM\s+PAYMENT\s+DUE\b|\bTOTAL\s+PAYMENTS?\s+THIS\s+(PERIOD|CYCLE)|\bTOTAL\s+PURCHASES\b|\bACCOUNT\s+SUMMARY\b/u.test(
@@ -201,17 +215,55 @@ export function buildSpendingInsightsFromClusters(args: {
   subscriptionClusterIds: Set<string>;
   maxRecurring?: number;
   maxInsights?: number;
-}): { recurringExpenses: SpendingInsight[]; spendingInsights: SpendingInsight[] } {
+}): {
+  recurringExpenses: SpendingInsight[];
+  spendingInsights: SpendingInsight[];
+  transfers: SpendingInsight[];
+} {
   const maxRecurring = args.maxRecurring ?? 48;
   const maxInsights = args.maxInsights ?? 48;
   const recurringDraft: SpendingInsight[] = [];
   const insightDraft: SpendingInsight[] = [];
+  const transferDraft: SpendingInsight[] = [];
 
   for (const cluster of args.clusters) {
     if (args.subscriptionClusterIds.has(cluster.id)) continue;
+
+    // Zelle / P2P transfers: route to dedicated section, never count as expenses
+    if (isZelleOrTransferCluster(cluster)) {
+      const debits = cluster.charges.filter((c) => c.type === "debit");
+      if (debits.length >= 1) {
+        const description = cluster.descriptions[0] ?? cluster.key;
+        const presentation = deriveMerchantPresentation({
+          primaryDescription: description,
+          clusterKeyUpper: cluster.key,
+        });
+        const last = debits[debits.length - 1];
+        const totalSpentInPeriod = debits.reduce((s, d) => s + d.amount, 0);
+        transferDraft.push({
+          clusterId: cluster.id,
+          merchant: presentation.merchant,
+          normalizedName: presentation.normalizedName,
+          categoryLabel: "Transfers",
+          categoryKey: "transfers",
+          kind: "income_transfer",
+          recommendation: "Not a subscription",
+          amount: last.amount,
+          currency: last.currency || "USD",
+          frequency: "unknown",
+          totalSpentInPeriod,
+          lastCharged: last.date,
+          recurringExpenseScore: 0,
+          spendingInsightScore: 0,
+        });
+      }
+      continue;
+    }
+
     if (excludeClusterFromSpendingInsights(cluster)) continue;
 
     const debits = cluster.charges.filter((c) => c.type === "debit");
+    // Credits / incoming deposits are never treated as expenses
     if (debits.length < 1) continue;
 
     const description = cluster.descriptions[0] ?? cluster.key;
@@ -291,7 +343,11 @@ export function buildSpendingInsightsFromClusters(args: {
     .sort((a, b) => b.spendingInsightScore - a.spendingInsightScore)
     .slice(0, maxInsights);
 
-  return { recurringExpenses, spendingInsights };
+  const transfers = transferDraft.sort(
+    (a, b) => b.totalSpentInPeriod - a.totalSpentInPeriod
+  );
+
+  return { recurringExpenses, spendingInsights, transfers };
 }
 
 /** 0–1: strength of repeat-pattern everyday / transfer / fee spend (not a subscription bill). */
@@ -648,6 +704,9 @@ export function excludeClusterFromSubscriptions(
   void recurringFrequency;
   const blob =
     `${cluster.descriptions.join(" ")} ${cluster.key}`.toUpperCase();
+
+  // Zelle and P2P payment rails are never subscriptions
+  if (isZelleOrTransferCluster(cluster)) return true;
 
   if (
     /\b(PAYROLL|NÓMINA|NOMINA|NET\s+PAY|GROSS\s+PAY|SALARY|HOURLY\s+PAY|WAGE)\b/u.test(
