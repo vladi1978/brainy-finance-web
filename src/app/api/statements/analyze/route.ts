@@ -37,6 +37,15 @@ export async function POST(req: Request) {
     const buffer = Buffer.from(await file.arrayBuffer());
     const result = await analyzeStatementPdf(buffer);
 
+    console.log(
+      "[statements/analyze] extracted text length (chars):",
+      result.textChars
+    );
+    console.log(
+      "[statements/analyze] first 5 parsed transactions:",
+      result.transactions.slice(0, 5)
+    );
+
     return NextResponse.json({
       ok: true,
       meta: {
