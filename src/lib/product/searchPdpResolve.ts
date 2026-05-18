@@ -1,7 +1,5 @@
-import { toAffiliateUrl } from "./affiliateUrl";
 import { tokenizeSignificant } from "./normalize";
 import { isStrictProductDetailUrl } from "./productDetailUrl";
-import { resolveCompareCandidateOutbound } from "./productUrlResolver";
 import { fetchSearchPageHtml } from "./scrapeProduct";
 import {
   parseBestBuySearchHtml,
@@ -10,7 +8,8 @@ import {
 } from "./searchParse";
 import type { CompareApiCandidate, StoreId } from "./types";
 
-const PDP_SECOND_PASS_STORES = new Set<StoreId>([
+/** Stores where we may later attach affiliate PDP resolution (was SERP second-pass). */
+export const PDP_SECOND_PASS_STORES = new Set<StoreId>([
   "walmart",
   "target",
   "bestbuy",
@@ -85,6 +84,8 @@ export async function resolvePdpFromStoreSearchSerp(args: {
 
 /**
  * Second-pass PDP resolution for compare candidates that only have a store search outbound URL.
+ *
+ * Today: passthrough — callers keep retailer search URLs as `urlType: "search"` (no server fetch).
  */
 export async function resolveDisplayedSearchPdps(
   apis: CompareApiCandidate[],
@@ -92,6 +93,17 @@ export async function resolveDisplayedSearchPdps(
 ): Promise<CompareApiCandidate[]> {
   if (demoMode) return apis;
 
+  // TODO: replace with affiliate API when keys available
+  //
+  // Disabled SERP fetch/parse path (was slow and often failed). Previously, for
+  // `api.urlType === "search"` and `PDP_SECOND_PASS_STORES`, we called
+  // `resolvePdpFromStoreSearchSerp`, then on success rewrote outbound URLs via
+  // `toAffiliateUrl` and set `urlType: "product"`. Re-enable or swap that logic
+  // once affiliate PDP URLs can be resolved reliably without scraping.
+
+  return apis;
+
+  /*
   return Promise.all(
     apis.map(async (api) => {
       try {
@@ -183,4 +195,5 @@ export async function resolveDisplayedSearchPdps(
       }
     })
   );
+  */
 }
