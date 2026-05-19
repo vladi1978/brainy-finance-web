@@ -9,17 +9,30 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const debug = Boolean(body?.debug);
+    const pricePaid =
+      typeof body?.pricePaid === "string"
+        ? body.pricePaid
+        : typeof body?.referencePrice === "string"
+          ? body.referencePrice
+          : null;
 
     const manual = normalizeManualProductForm(body?.manualProduct);
     const linkFromForm = manual?.link?.trim();
+    const compareOpts = {
+      debug,
+      pricePaid: pricePaid?.trim() || manual?.pricePaid || null,
+    };
 
     if (linkFromForm) {
-      const result = await compareProduct(linkFromForm, { debug });
+      const result = await compareProduct(linkFromForm, compareOpts);
       return NextResponse.json(result);
     }
 
     if (manual && manualFormHasSearchableCore(manual)) {
-      const result = await compareProduct("", { debug, manualProduct: manual });
+      const result = await compareProduct("", {
+        ...compareOpts,
+        manualProduct: manual,
+      });
       return NextResponse.json(result);
     }
 
@@ -31,7 +44,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const result = await compareProduct(input, { debug });
+    const result = await compareProduct(input, compareOpts);
 
     return NextResponse.json(result);
   } catch (error) {

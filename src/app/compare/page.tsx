@@ -26,7 +26,7 @@ function formatReferencePrice(n: number | null): string {
 function candidateRetailerName(c: { store: string; storeLabel?: string }): string {
   const label = c.storeLabel?.trim();
   if (label) return label;
-  if (c.store === "other") return "Tienda externa";
+  if (c.store === "other") return "External store";
   return storeDisplayLabel(c.store);
 }
 
@@ -93,7 +93,7 @@ function CouponsPanel({ coupons }: { coupons: PremiumCouponOffer[] }) {
   return (
     <div className="mt-3 rounded-lg border border-violet-500/25 bg-violet-500/10 px-3 py-2">
       <p className="text-[11px] font-semibold uppercase tracking-wide text-violet-200/90">
-        Beneficio Brainy · cupones activos (preview)
+        Brainy benefit · active coupons (preview)
       </p>
       <ul className="mt-2 space-y-2">
         {coupons.map((o) => (
@@ -117,6 +117,7 @@ type InputMode = "link" | "manual";
 export default function ComparePage() {
   const [inputMode, setInputMode] = useState<InputMode>("link");
   const [linkValue, setLinkValue] = useState("");
+  const [linkPricePaid, setLinkPricePaid] = useState("");
   const [manualBrand, setManualBrand] = useState("");
   const [manualProductName, setManualProductName] = useState("");
   const [manualCategory, setManualCategory] = useState("");
@@ -189,18 +190,18 @@ export default function ComparePage() {
   const trackPrice = async (c: CompareApiCandidate) => {
     setTrackMessage(null);
     if (!userId) {
-      setTrackMessage("No se pudo identificar tu sesión para guardar la alerta.");
+      setTrackMessage("Could not identify your session to save the alert.");
       return;
     }
     const suggested =
       c.price != null && Number.isFinite(c.price)
         ? String(Math.round(c.price * 0.92 * 100) / 100)
         : "";
-    const raw = window.prompt("Precio objetivo (USD)", suggested);
+    const raw = window.prompt("Target price (USD)", suggested);
     if (raw == null) return;
     const targetPrice = Number.parseFloat(raw.trim());
     if (!Number.isFinite(targetPrice) || targetPrice <= 0) {
-      setTrackMessage("Precio objetivo no válido.");
+      setTrackMessage("Invalid target price.");
       return;
     }
     const outbound =
@@ -219,10 +220,10 @@ export default function ComparePage() {
     });
     const payload = (await res.json()) as { error?: string };
     if (!res.ok) {
-      setTrackMessage(payload.error ?? "No se pudo crear la alerta.");
+      setTrackMessage(payload.error ?? "Could not create the alert.");
       return;
     }
-    setTrackMessage("Alerta de precio guardada. Te avisaremos cuando baje (simulación).");
+    setTrackMessage("Price alert saved. We will notify you when it drops (simulation).");
     void refreshPriceFeed();
   };
 
@@ -233,7 +234,10 @@ export default function ComparePage() {
 
     if (inputMode === "link") {
       if (!linkValue.trim()) return;
-      body = { input: linkValue.trim() };
+      body = {
+        input: linkValue.trim(),
+        ...(linkPricePaid.trim() ? { pricePaid: linkPricePaid.trim() } : {}),
+      };
     } else {
       const manualProduct = {
         brand: manualBrand.trim() || null,
@@ -387,20 +391,28 @@ export default function ComparePage() {
           </div>
 
           {inputMode === "link" ? (
-            <div className="flex flex-col md:flex-row gap-3 mb-6">
+            <div className="space-y-3 mb-6">
+              <div className="flex flex-col md:flex-row gap-3">
+                <input
+                  value={linkValue}
+                  onChange={(e) => setLinkValue(e.target.value)}
+                  placeholder="Paste a store URL or type a product name"
+                  className="flex-1 rounded-xl bg-black border border-white/15 px-4 py-3 text-white outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={handleCompare}
+                  className="rounded-xl bg-green-500 px-6 py-3 font-semibold text-black hover:bg-green-400 transition shrink-0"
+                >
+                  {loading ? "Searching..." : "Compare Now"}
+                </button>
+              </div>
               <input
-                value={linkValue}
-                onChange={(e) => setLinkValue(e.target.value)}
-                placeholder="Paste a store URL or type a product name"
-                className="flex-1 rounded-xl bg-black border border-white/15 px-4 py-3 text-white outline-none"
+                value={linkPricePaid}
+                onChange={(e) => setLinkPricePaid(e.target.value)}
+                placeholder="Price you found / paid (optional)"
+                className="w-full max-w-md rounded-xl bg-black border border-white/15 px-4 py-3 text-white outline-none"
               />
-              <button
-                type="button"
-                onClick={handleCompare}
-                className="rounded-xl bg-green-500 px-6 py-3 font-semibold text-black hover:bg-green-400 transition"
-              >
-                {loading ? "Searching..." : "Compare Now"}
-              </button>
             </div>
           ) : (
             <div className="space-y-4 mb-6">
@@ -438,7 +450,7 @@ export default function ComparePage() {
                 <input
                   value={manualPricePaid}
                   onChange={(e) => setManualPricePaid(e.target.value)}
-                  placeholder="Price paid (optional)"
+                  placeholder="Price you found / paid (optional)"
                   className="rounded-xl bg-black border border-white/15 px-4 py-3 text-white outline-none"
                 />
               </div>
@@ -561,21 +573,20 @@ export default function ComparePage() {
               {result.candidates.length > 0 && (
                 <div>
                   <h3 className="text-xl font-semibold text-white mb-1">
-                    {result.comparisonMessage ?? "Coincidencias"}
+                    {result.comparisonMessage ?? "Matches"}
                   </h3>
                   <p className="text-white/50 text-sm mb-2">
-                    Lista completa para este resultado:{" "}
+                    Full list for this result:{" "}
                     <span className="text-white/75 font-medium">
                       {result.candidates.length}{" "}
-                      {result.candidates.length === 1 ? "candidato" : "candidatos"}
+                      {result.candidates.length === 1 ? "candidate" : "candidates"}
                     </span>
-                    . Las filas con etiqueta{" "}
-                    <span className="text-white/75">Enlace de búsqueda</span> llevan el
-                    botón &quot;Ver resultados en [tienda]&quot;; no es una ficha única hasta
-                    que confirmes el producto en la lista.
+                    . Rows labeled{" "}
+                    <span className="text-white/75">Search result</span> open a store
+                    search — confirm the exact product on the retailer site before buying.
                   </p>
                   <h4 className="text-lg font-semibold mb-3 text-white/90">
-                    Todas las coincidencias listadas ({result.candidates.length})
+                    All listed matches ({result.candidates.length})
                   </h4>
                   <ul className="space-y-3">
                     {(() => {
@@ -610,7 +621,7 @@ export default function ComparePage() {
                           <li key={`${c.store}-${c.productUrl}-${idx}`}>
                             {showSimilarBanner && (
                               <p className="text-sm text-amber-200/95 mb-3 rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2">
-                                No es más barato, pero es similar
+                                Not cheaper, but similar
                               </p>
                             )}
                             <div
@@ -645,23 +656,23 @@ export default function ComparePage() {
                                     {c.urlType === "search" ? (
                                       <span
                                         className="text-[11px] font-medium uppercase tracking-wide rounded-md border border-amber-500/45 bg-amber-500/12 px-2 py-0.5 text-amber-200/95"
-                                        title="Abre una búsqueda en la tienda, no una ficha fija."
+                                        title="Opens a store search, not a fixed product page."
                                       >
-                                        Enlace de búsqueda
+                                        Search result
                                       </span>
                                     ) : c.urlType === "product" ? (
                                       <span
                                         className="text-[11px] font-medium uppercase tracking-wide rounded-md border border-emerald-500/35 bg-emerald-500/10 px-2 py-0.5 text-emerald-100/95"
-                                        title="Enlace directo al listado en la tienda."
+                                        title="Direct link to the retailer listing."
                                       >
-                                        Ficha en tienda
+                                        Store listing
                                       </span>
                                     ) : (
                                       <span
                                         className="text-[11px] font-medium uppercase tracking-wide rounded-md border border-white/20 bg-white/5 px-2 py-0.5 text-white/55"
-                                        title="Tipo de URL no clasificado."
+                                        title="Unclassified URL type."
                                       >
-                                        Enlace externo
+                                        External link
                                       </span>
                                     )}
                                     <MatchBadge type={c.matchType} />
@@ -670,7 +681,7 @@ export default function ComparePage() {
                                     </span>
                                     {savingsVs != null && savingsVs > 0 ? (
                                       <span className="text-xs font-semibold text-green-400 rounded-md border border-green-500/40 bg-green-500/15 px-2 py-0.5">
-                                        Ahorra {formatPrice(savingsVs)}
+                                        Save {formatPrice(savingsVs)}
                                       </span>
                                     ) : null}
                                   </div>
@@ -684,7 +695,7 @@ export default function ComparePage() {
                                 {showSearchDisclaimer ? (
                                   <p className="text-white/45 text-xs mt-2 space-y-1">
                                     <span className="block">
-                                      Enlace de búsqueda, verifica el producto antes de comprar.
+                                      Search result — verify the product before buying.
                                     </span>
                                   </p>
                                 ) : null}
@@ -711,7 +722,7 @@ export default function ComparePage() {
                                     onClick={() => void trackPrice(c)}
                                     className="inline-flex items-center rounded-lg border border-white/20 bg-white/5 px-4 py-2 text-sm font-medium text-white/90 hover:bg-white/10"
                                   >
-                                    Rastrear precio
+                                    Track price
                                   </button>
                                 </div>
                                 <CouponsPanel coupons={c.premiumCoupons ?? []} />

@@ -1,3 +1,4 @@
+import { parseDimensionPairs } from "./matching/criticalSpecs";
 import { normalizeTitle } from "./normalize";
 import type { CriticalListingAttributes, NormalizedProduct } from "./types";
 
@@ -15,8 +16,8 @@ function dimensionSignaturesFromText(raw: string): string[] {
   const t = raw.replace(/\u2033/g, '"').replace(/\u2032/g, "'");
   const sigs = new Set<string>();
 
-  for (const m of t.matchAll(/\b(\d+)\s*[x×]\s*(\d+)\b/gi)) {
-    sigs.add(`${m[1]}x${m[2]}`.toLowerCase());
+  for (const p of parseDimensionPairs(t)) {
+    sigs.add(p.key);
   }
 
   for (const m of t.matchAll(/\b(\d{2,3})\s*(?:"|''|′′|inches?\b|inch\b|-inch)\b/gi)) {

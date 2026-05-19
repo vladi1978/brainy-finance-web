@@ -1144,8 +1144,9 @@ export async function compareProduct(
     ? scrapedSource!.title
     : parsed.productQuery.trim();
 
-  const priceFromManual =
-    useManualForm && manual ? parsePricePaidRaw(manual.pricePaid) : null;
+  const priceFromManual = parsePricePaidRaw(
+    options.pricePaid ?? (useManualForm && manual ? manual.pricePaid : null)
+  );
 
   let referenceNormalized = scrapedOk
     ? scrapedSource!.normalized
@@ -1375,12 +1376,16 @@ export async function compareProduct(
   const candidateSteps: CandidateStepTrace[] = [];
   const queryForMatch = `${referenceProductQuery} ${normalizedQuery}`.trim();
 
-  const referenceListPrice: number | null =
-    scrapedOk && scrapedSource && isValidComparablePrice(scrapedSource.originalPrice)
+  const pdpListPrice =
+    scrapedOk &&
+    scrapedSource &&
+    isValidComparablePrice(scrapedSource.originalPrice)
       ? scrapedSource.originalPrice
-      : priceFromManual != null && isValidComparablePrice(priceFromManual)
-        ? priceFromManual
-        : null;
+      : null;
+  const referenceListPrice: number | null =
+    priceFromManual != null && isValidComparablePrice(priceFromManual)
+      ? priceFromManual
+      : pdpListPrice;
 
   const referencePriceUrl =
     scrapedSource?.sourceUrl?.trim() || parsed.inputUrl?.trim() || null;
@@ -1390,7 +1395,9 @@ export async function compareProduct(
       price: referenceListPrice,
       source:
         priceFromManual != null && isValidComparablePrice(priceFromManual)
-          ? "manual_form"
+          ? useManualForm
+            ? "manual_form"
+            : "manual_reference_price"
           : referencePriceExtractionSource ?? "scraped_pdp",
     });
   } else if (referencePriceUrl || useManualForm) {
@@ -1677,7 +1684,13 @@ export async function compareProduct(
 
   const sourceProduct =
     scrapedOk && scrapedSource
-      ? extractedSourceSummary(scrapedSource, parsed.inputUrl)
+      ? extractedSourceSummary(
+          {
+            ...scrapedSource,
+            originalPrice: referenceListPrice ?? scrapedSource.originalPrice,
+          },
+          parsed.inputUrl
+        )
       : useManualForm || !parsed.inputUrl
         ? queryDerivedSourceSummary(
             referenceProductQuery,
@@ -1865,7 +1878,7 @@ export async function compareProduct(
       comparisonMessage =
         "No aparecieron listados más baratos que tu precio de referencia con estos criterios; mostramos las coincidencias más cercanas.";
     } else {
-      comparisonMessage = "Orden: coincidencia, luego precio.";
+      comparisonMessage = "Sorted by match, then price.";
     }
   }
 

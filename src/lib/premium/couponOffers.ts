@@ -21,8 +21,8 @@ export function getSimulatedStoreCoupons(
 
   const base: Omit<PremiumCouponOffer, "id">[] = [
     {
-      headline: `${store} · envío o recogida`,
-      detail: "Oferta simulada: revisa el carrito para promos de envío gratis en elegibles.",
+      headline: `${store} · shipping or pickup`,
+      detail: "Simulated offer: check cart for free shipping promos on eligible items.",
       code: null,
       validThrough,
       source: "simulated",
@@ -32,7 +32,7 @@ export function getSimulatedStoreCoupons(
   if (store === "walmart" || store === "target") {
     base.push({
       headline: "Fresh / grocery pickup",
-      detail: "Cupón simulado de pickup: aplica en categorías de comestibles seleccionadas.",
+      detail: "Simulated pickup coupon for select grocery categories.",
       code: "BF-SIM-PICKUP",
       validThrough,
       source: "simulated",
@@ -41,8 +41,8 @@ export function getSimulatedStoreCoupons(
 
   if (category === "tv" || category === "monitor" || category === "audio") {
     base.push({
-      headline: "Electrónica · accesorios",
-      detail: "Promo simulada en cables, montajes y barras de sonido compatibles.",
+      headline: "Electronics · accessories",
+      detail: "Simulated promo on cables, mounts, and compatible sound bars.",
       code: "BF-SIM-ACC",
       validThrough,
       source: "simulated",

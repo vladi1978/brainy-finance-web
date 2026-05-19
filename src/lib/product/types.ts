@@ -268,6 +268,11 @@ export type CompareProductOptions = {
   /** When true, attaches `comparisonTrace` and enables verbose console logs */
   debug?: boolean;
   /**
+   * Optional manual reference price (USD). Overrides PDP scrape when the user typed it;
+   * used as fallback when PDP price is missing.
+   */
+  pricePaid?: string | null;
+  /**
    * When set without `link`, builds universal search queries from structured fields.
    * When `link` is set, callers should run the URL flow instead (`compareProduct(url)`).
    */

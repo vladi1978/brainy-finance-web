@@ -4,7 +4,11 @@ import {
   type ProductUnderstanding,
 } from "./aiExtractor";
 import {
-  missingCriticalDimensionSignatures,
+  checkUniversalCriticalSpecsGate,
+  criticalSpecRejectPayload,
+  logCriticalSpecRejected,
+} from "./matching/criticalSpecs";
+import {
   runUniversalHardGates,
   scoreUniversalStructured,
   shouldApplyCriticalKindPhraseSoftPenalty,
@@ -43,9 +47,6 @@ const TIER2_BLEND_MIN = 23;
 /** Structured score shortcut for Tier 1 when blend is borderline. */
 const TIER1_STRUCTURED_MIN = 86;
 
-const CRITICAL_DIM_SOFT_PENALTY_EACH = 12;
-const CRITICAL_DIM_SOFT_PENALTY_CAP = 40;
-
 /** One-sided missing parsed diagonal vs peer structured size — soften instead of rejecting. */
 const DIAG_INCOMPLETE_FACTOR = 0.82;
 
@@ -66,6 +67,31 @@ export function scoreAttributeMatch(
   candidateTitle: string,
   options?: AttributeMatchOptions
 ): AttributeMatchResult {
+  const criticalGate = checkUniversalCriticalSpecsGate(
+    source,
+    candidate,
+    candidateTitle
+  );
+  if (!criticalGate.ok) {
+    logCriticalSpecRejected(
+      criticalSpecRejectPayload(
+        criticalGate.reason,
+        source,
+        candidate,
+        candidateTitle
+      )
+    );
+    return {
+      confidence: 0,
+      matchType: "low",
+      matchConfidenceLabel: "low",
+      relevanceScore: 0,
+      reasons: [`critical_spec:${criticalGate.reason}`],
+      rejected: true,
+      rejectionReason: criticalGate.reason,
+    };
+  }
+
   const gate = runUniversalHardGates(source, candidate);
   if (!gate.ok) {
     return {
@@ -81,20 +107,7 @@ export function scoreAttributeMatch(
 
   const structured = scoreUniversalStructured(source, candidate);
   let attrScore = structured.score;
-  const missingDims = missingCriticalDimensionSignatures(source, candidate);
   const dimPenaltyReasons: string[] = [];
-  if (missingDims.length > 0) {
-    const deduction = Math.min(
-      CRITICAL_DIM_SOFT_PENALTY_CAP,
-      missingDims.length * CRITICAL_DIM_SOFT_PENALTY_EACH
-    );
-    attrScore = Math.max(0, attrScore - deduction);
-    for (const dim of missingDims) {
-      dimPenaltyReasons.push(
-        `soft_penalty:critical_dimension_unconfirmed(${dim})`
-      );
-    }
-  }
 
   if (shouldApplyDiagonalIncompleteSoftPenalty(source, candidate)) {
     attrScore *= DIAG_INCOMPLETE_FACTOR;
