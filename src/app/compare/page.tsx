@@ -19,24 +19,22 @@ function formatPrice(n: number | null): string {
 
 /** Prefer Google Shopping source label; fallback to branded id (e.g. `walmart` → Walmart). */
 function candidateRetailerName(c: { store: string; storeLabel?: string }): string {
-  return c.storeLabel?.trim() || storeDisplayLabel(c.store);
+  const label = c.storeLabel?.trim();
+  if (label) return label;
+  if (c.store === "other") return "Tienda externa";
+  return storeDisplayLabel(c.store);
 }
 
 function MatchBadge({ type }: { type: CompareApiCandidate["matchType"] }) {
   const colors = {
-    high: "bg-green-500/20 text-green-300 border-green-500/40",
-    equivalent: "bg-emerald-500/18 text-emerald-200 border-emerald-500/35",
-    medium: "bg-amber-500/20 text-amber-200 border-amber-500/40",
-    low: "bg-white/10 text-white/60 border-white/20",
-    similar_product:
-      "bg-sky-500/15 text-sky-200 border-sky-500/35",
+    exact_match: "bg-green-500/20 text-green-300 border-green-500/40",
+    close_match: "bg-emerald-500/18 text-emerald-200 border-emerald-500/35",
+    alternative: "bg-sky-500/15 text-sky-200 border-sky-500/35",
   };
   const labels: Record<CompareApiCandidate["matchType"], string> = {
-    high: "Same product line",
-    equivalent: "Equivalent pick",
-    medium: "Possible match",
-    low: "Broad match",
-    similar_product: "Similar product",
+    exact_match: "Best Deal",
+    close_match: "Similar Product",
+    alternative: "Alternative Option",
   };
   return (
     <span
@@ -57,9 +55,10 @@ function StoreLogo({
   displayName?: string;
   className?: string;
 }) {
-  const src = storeLogoUrl(store);
+  const src = store === "other" ? null : storeLogoUrl(store);
   const label = displayName ?? storeDisplayLabel(store);
-  const initial = label.slice(0, 1).toUpperCase();
+  const initial =
+    store === "other" ? "?" : label.slice(0, 1).toUpperCase();
   const [imgOk, setImgOk] = useState(Boolean(src));
 
   if (!src || !imgOk) {
@@ -493,11 +492,10 @@ export default function ComparePage() {
                 <p className="text-green-400/95 text-sm font-medium">
                   Best deal (among{" "}
                   {
-                    result.candidates.filter(
-                      (x) => x.matchType === "high" || x.matchType === "equivalent"
-                    ).length
+                    result.candidates.filter((x) => x.matchType === "exact_match")
+                      .length
                   }{" "}
-                  strong matches): {formatPrice(best.price)} at {candidateRetailerName(best)}
+                  exact matches): {formatPrice(best.price)} at {candidateRetailerName(best)}
                 </p>
               )}
 
@@ -580,9 +578,9 @@ export default function ComparePage() {
                                 <div className="flex flex-wrap items-center gap-2 mb-2">
                                   <StoreLogo store={c.store} displayName={storeLabel} />
                                   <div className="flex flex-wrap items-center gap-2">
-                                    {isWinner && (
+                                    {isWinner && best?.matchType === "exact_match" && (
                                       <span className="text-xs font-semibold text-green-400 uppercase">
-                                        Best price
+                                        Best Deal
                                       </span>
                                     )}
                                     <span className="text-white/80 text-sm font-medium">
@@ -612,7 +610,7 @@ export default function ComparePage() {
                                     )}
                                     <MatchBadge type={c.matchType} />
                                     <span className="text-white/40 text-sm">
-                                      {Math.round(c.confidence * 100)}%
+                                      {c.identityScore}/100
                                     </span>
                                     {savingsVs != null && savingsVs > 0 ? (
                                       <span className="text-xs font-semibold text-green-400 rounded-md border border-green-500/40 bg-green-500/15 px-2 py-0.5">

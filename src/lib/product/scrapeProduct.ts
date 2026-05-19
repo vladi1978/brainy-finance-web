@@ -4,11 +4,21 @@ import {
   looksLikeAmazonAsinToken,
 } from "./urlProductQuery";
 
+export type PriceExtractionSource =
+  | "json_ld"
+  | "open_graph"
+  | "meta_itemprop"
+  | "retailer_specific"
+  | "visible_usd"
+  | null;
+
 export type ScrapedProduct = {
   /** Listing / PDP-visible product title when parseable — may be empty when only meta/sku cues exist */
   productName: string;
   price: number | null;
   currency: string;
+  /** How {@link ScrapedProduct.price} was resolved when present */
+  priceSource?: PriceExtractionSource;
   brand: string | null;
   /** Retailer SKU when present */
   sku: string | null;
@@ -664,39 +674,71 @@ function pickTitle(
   return null;
 }
 
+function tryVisibleUsdPrice(html: string): number | null {
+  const scan = html.slice(0, 250_000);
+  const patterns = [
+    /\$\s*([0-9]{1,6}(?:\.[0-9]{2})?)/g,
+    /\bUSD\s*([0-9]{1,6}(?:\.[0-9]{2})?)\b/gi,
+  ];
+  for (const re of patterns) {
+    for (const m of scan.matchAll(re)) {
+      const n = parsePriceFromString(m[1]);
+      if (n != null && isPlausibleProductPrice(n)) return n;
+    }
+  }
+  return null;
+}
+
 function pickPrice(
   html: string,
   jsonLd: ReturnType<typeof extractFromJsonLd>,
   host: string
-): { price: number | null; currency: string } {
+): {
+  price: number | null;
+  currency: string;
+  priceSource: PriceExtractionSource;
+} {
   const isWalmart = /walmart\.com/i.test(host);
   const isAmazon = isAmazonHostname(host);
 
   let price: number | null = null;
+  let priceSource: PriceExtractionSource = null;
 
-  if (isWalmart) {
-    price = extractWalmartPdpPrice(html);
-  } else if (isAmazon) {
-    price = extractAmazonPdpPrice(html);
+  const jp = jsonLd.price ?? null;
+  if (jp != null && isPlausibleProductPrice(jp)) {
+    price = jp;
+    priceSource = "json_ld";
   }
 
   if (price == null) {
-    price = tryMetaAndItempropPrice(html);
+    const ogAmount = getMetaProperty(html, "og:price:amount");
+    const ogN = parsePriceFromString(ogAmount);
+    if (ogN != null && isPlausibleProductPrice(ogN)) {
+      price = ogN;
+      priceSource = "open_graph";
+    }
   }
 
   if (price == null) {
-    const jp = jsonLd.price ?? null;
-    price = jp != null && isPlausibleProductPrice(jp) ? jp : null;
+    const meta = tryMetaAndItempropPrice(html);
+    if (meta != null) {
+      price = meta;
+      priceSource = "meta_itemprop";
+    }
   }
 
   if (price == null) {
-    price = parsePriceFromString(getMetaProperty(html, "og:price:amount"));
+    if (isWalmart) {
+      price = extractWalmartPdpPrice(html);
+    } else if (isAmazon) {
+      price = extractAmazonPdpPrice(html);
+    }
+    if (price != null) priceSource = "retailer_specific";
   }
 
   if (price == null) {
-    const loose = html.match(/\$\s*([0-9]{1,6}(?:\.[0-9]{2})?)/);
-    const n = parsePriceFromString(loose?.[1]);
-    price = n != null && isPlausibleProductPrice(n) ? n : null;
+    price = tryVisibleUsdPrice(html);
+    if (price != null) priceSource = "visible_usd";
   }
 
   const currency =
@@ -705,7 +747,7 @@ function pickPrice(
     jsonLd.currency ||
     "USD";
 
-  return { price, currency };
+  return { price, currency, priceSource };
 }
 
 /**
@@ -740,7 +782,7 @@ export async function scrapeProduct(
 
   let productName = pickTitle(html, host, jsonLd) ?? null;
 
-  const { price, currency } = pickPrice(html, jsonLd, host);
+  const { price, currency, priceSource } = pickPrice(html, jsonLd, host);
 
   if (!productName) {
     const ogTitle = getMetaProperty(html, "og:title");
@@ -792,6 +834,7 @@ export async function scrapeProduct(
     productName: productName?.trim() || "",
     price,
     currency: currency || "USD",
+    priceSource: price != null ? priceSource : null,
     brand: brandLine,
     sku: skuLine,
     model: modelLine,

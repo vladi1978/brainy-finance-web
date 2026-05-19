@@ -1,12 +1,19 @@
 import { buildNormalizedProduct, detectStoreFromProductUrl } from "./normalize";
-import { buildRetailerSearchUrlFromTitle } from "./productUrlResolver";
-import { isValidStoreOutboundUrl } from "./productDetailUrl";
+import {
+  buildGoogleSearchUrlForRetailerListing,
+  buildRetailerSearchUrlFromTitle,
+} from "./productUrlResolver";
+import {
+  isAcceptableUniversalShoppingOutboundUrl,
+  isValidStoreOutboundUrl,
+} from "./productDetailUrl";
 import { dedupeIdenticalListingUrls } from "./candidateDedupe";
 import type {
   CandidateProduct,
   ProviderSearchContext,
   ProviderSearchDiagnostics,
   StoreId,
+  UniversalStoreId,
 } from "./types";
 
 function shoppingLog(payload: Record<string, unknown>): void {
@@ -72,6 +79,19 @@ function inferStoreFromSourceLabel(label: unknown): StoreId | null {
   if (/\bbest\s*buy\b|bestbuy\.com\b/i.test(combined)) return "bestbuy";
   if (/\bhome\s*depot\b|homedepot\.com\b/i.test(combined)) return "homedepot";
   if (/\blowes\b|lowes\.com\b/i.test(combined)) return "lowes";
+  if (/\bcostco\b|costco\.com\b/i.test(combined)) return "costco";
+  if (/\bsam'?s\s*club\b|samsclub\.com\b/i.test(combined)) return "samsclub";
+  if (/\bebay\b|ebay\.com\b/i.test(combined)) return "ebay";
+  if (/\bmacys\b|macy'?s\b|macys\.com\b/i.test(combined)) return "macys";
+  if (/\bkohls\b|kohl'?s\b|kohls\.com\b/i.test(combined)) return "kohls";
+  if (/\bwayfair\b|wayfair\.com\b/i.test(combined)) return "wayfair";
+  if (/\boverstock\b|overstock\.com\b/i.test(combined)) return "overstock";
+  if (/\bchewy\b|chewy\.com\b/i.test(combined)) return "chewy";
+  if (/\bacademy\b|academy\.com\b/i.test(combined)) return "academy";
+  if (/\btractor\s*supply\b|tractorsupply\.com\b/i.test(combined))
+    return "tractorsupply";
+  if (/\bnike\b|nike\.com\b/i.test(combined)) return "nike";
+  if (/\badidas\b|adidas\.com\b/i.test(combined)) return "adidas";
   return null;
 }
 
@@ -507,8 +527,48 @@ function logShoppingRowSkip(reason: string, detail: Record<string, unknown>): vo
   console.log("[google-shopping-row-skip]", JSON.stringify({ reason, ...detail }));
 }
 
-function logUnknownStoreSkip(detail: Record<string, unknown>): void {
-  console.log("[UNKNOWN_STORE_SKIP]", JSON.stringify(detail));
+function logUnknownStoreKept(detail: Record<string, unknown>): void {
+  console.log("[UNKNOWN_STORE_KEPT]", JSON.stringify(detail));
+}
+
+function resolveStoreForShoppingRow(
+  merchantUrl: string | null,
+  source: string | null
+): { store: UniversalStoreId; mappedKnownStore: boolean } {
+  if (merchantUrl) {
+    const fromUrl = detectStoreFromProductUrl(merchantUrl);
+    if (fromUrl) return { store: fromUrl, mappedKnownStore: true };
+    return { store: "other", mappedKnownStore: false };
+  }
+  const inferred = inferStoreFromSourceLabel(source);
+  if (inferred) return { store: inferred, mappedKnownStore: true };
+  return { store: "other", mappedKnownStore: false };
+}
+
+function buildProductUrlForShoppingRow(args: {
+  store: UniversalStoreId;
+  title: string;
+  merchantUrl: string | null;
+  sourceLabel: string | null;
+}): string | null {
+  const { store, title, merchantUrl, sourceLabel } = args;
+  if (store === "other") {
+    if (merchantUrl && isAcceptableUniversalShoppingOutboundUrl(merchantUrl)) {
+      return merchantUrl;
+    }
+    const label = sourceLabel?.trim() ?? "";
+    return buildGoogleSearchUrlForRetailerListing(title, label || title);
+  }
+
+  let productUrl = merchantUrl ?? buildRetailerSearchUrlFromTitle(store, title);
+  if (!isValidStoreOutboundUrl(store, productUrl)) {
+    const generated = buildRetailerSearchUrlFromTitle(store, title);
+    if (generated !== productUrl && isValidStoreOutboundUrl(store, generated)) {
+      productUrl = generated;
+    }
+  }
+  if (!isValidStoreOutboundUrl(store, productUrl)) return null;
+  return productUrl;
 }
 
 function rowToCandidate(
@@ -527,37 +587,20 @@ function rowToCandidate(
 
   const source = pickSourceLabel(row);
   const merchantUrl = pickFirstFinalMerchantUrl(row);
+  const retailerName = source?.trim() || null;
 
-  let store: StoreId;
-  if (merchantUrl) {
-    const fromUrl = detectStoreFromProductUrl(merchantUrl);
-    if (!fromUrl) {
-      logUnknownStoreSkip({
-        reason: "merchant_url_not_mapped",
-        merchantUrlPreview: merchantUrl.slice(0, 220),
-        sourcePreview: source?.trim().slice(0, 120) ?? null,
-        titlePreview: title.slice(0, 120),
-      });
-      return null;
-    }
-    store = fromUrl;
-  } else {
-    const inferred = inferStoreFromSourceLabel(source);
-    if (!inferred) {
-      if (!source?.trim()) {
-        logShoppingRowSkip("unknown_store_no_source_no_url", {
-          titlePreview: title.slice(0, 120),
-        });
-        return null;
-      }
-      logUnknownStoreSkip({
-        reason: "source_label_not_mapped",
-        sourcePreview: source.trim().slice(0, 120),
-        titlePreview: title.slice(0, 120),
-      });
-      return null;
-    }
-    store = inferred;
+  const { store, mappedKnownStore } = resolveStoreForShoppingRow(
+    merchantUrl,
+    source
+  );
+
+  if (!mappedKnownStore) {
+    logUnknownStoreKept({
+      store: "other",
+      retailerName,
+      merchantUrlPreview: merchantUrl?.slice(0, 220) ?? null,
+      titlePreview: title.slice(0, 120),
+    });
   }
 
   const priceRaw = pickPriceRawFromRow(row);
@@ -570,20 +613,18 @@ function rowToCandidate(
     return null;
   }
 
-  let productUrl = merchantUrl ?? buildRetailerSearchUrlFromTitle(store, title);
+  const productUrl = buildProductUrlForShoppingRow({
+    store,
+    title,
+    merchantUrl,
+    sourceLabel: retailerName,
+  });
 
-  if (!isValidStoreOutboundUrl(store, productUrl)) {
-    const generated = buildRetailerSearchUrlFromTitle(store, title);
-    if (generated !== productUrl && isValidStoreOutboundUrl(store, generated)) {
-      productUrl = generated;
-    }
-  }
-
-  if (!isValidStoreOutboundUrl(store, productUrl)) {
+  if (!productUrl) {
     logShoppingRowSkip("invalid_outbound_url", {
       store,
       titlePreview: title.slice(0, 80),
-      urlPreview: productUrl.slice(0, 160),
+      urlPreview: (merchantUrl ?? "").slice(0, 160),
     });
     return null;
   }
@@ -625,7 +666,7 @@ function rowToCandidate(
     sourceConfidence,
   };
 
-  if (source) out.sourceLabel = source;
+  if (retailerName) out.sourceLabel = retailerName;
   out.shoppingQueryUsed = searchQuery.replace(/\s+/g, " ").trim();
   if (rating != null) out.rating = rating;
   if (productId) out.productId = productId;

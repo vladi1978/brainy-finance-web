@@ -30,15 +30,22 @@ import {
   areSameRetailerListings,
   buildNormalizedProduct,
   buildNormalizedSearchQuery,
+  detectStoreFromProductUrl,
   extractSearchQuery,
 } from "./normalize";
+import { scrapeProduct, toSourceScrapedHints } from "./scrapeProduct";
 import {
   isGenericRetailProductQuery,
   looksLikeAmazonAsinToken,
 } from "./urlProductQuery";
 import { isUsablePdpTitle } from "./usablePdpTitle";
 import { findProductProviderForUrl } from "./registry";
-import { rankMatchTypes } from "./searchRelevance";
+import {
+  identityMatchLabel,
+  rankIdentityMatchTypes,
+  scoreProductIdentity,
+  type ProductIdentityResult,
+} from "./matching/productIdentity";
 import { getSimulatedStoreCoupons } from "../premium/couponOffers";
 import {
   isProductDetailStoreKey,
@@ -522,6 +529,35 @@ function isValidComparablePrice(price: number | null | undefined): boolean {
   return price != null && Number.isFinite(price) && price > 0;
 }
 
+function logReferencePriceOutcome(args: {
+  url: string | null;
+  price: number | null;
+  source?: string | null;
+  reason?: string;
+}): void {
+  const { url, price, source, reason } = args;
+  if (price != null && isValidComparablePrice(price)) {
+    console.log(
+      "[REFERENCE_PRICE_EXTRACTED]",
+      JSON.stringify({
+        price,
+        source: source ?? "unknown",
+        url: url?.slice(0, 400) ?? null,
+      })
+    );
+    return;
+  }
+  if (url) {
+    console.log(
+      "[REFERENCE_PRICE_MISSING]",
+      JSON.stringify({
+        url: url.slice(0, 400),
+        reason: reason ?? "no_comparable_price",
+      })
+    );
+  }
+}
+
 function pipelineLog(phase: string, data?: Record<string, unknown>) {
   console.log("[compare-product]", phase, data ?? {});
 }
@@ -685,6 +721,18 @@ const DEMO_PRICE_BY_STORE: Record<StoreId, number> = {
   bestbuy: 122.0,
   homedepot: 118.0,
   lowes: 121.0,
+  costco: 117.5,
+  samsclub: 116.0,
+  ebay: 112.0,
+  macys: 125.0,
+  kohls: 118.5,
+  wayfair: 114.0,
+  overstock: 110.0,
+  chewy: 115.0,
+  academy: 119.0,
+  tractorsupply: 120.0,
+  nike: 128.0,
+  adidas: 127.0,
 };
 
 function buildDemoCandidates(
@@ -728,23 +776,22 @@ function emptyGoogleDiagnostics(query: string): ProviderSearchDiagnostics {
   };
 }
 
-function relevanceReasonLine(rel: AttributeMatchResult): string {
-  const label =
-    rel.matchType === "high"
-      ? "Same product line — strongest attribute match"
-      : rel.matchType === "equivalent"
-        ? "Equivalent alternative — compatible core specs"
-        : rel.matchType === "similar_product"
-          ? "Similar product — weaker spec overlap (verify details)"
-          : rel.matchType === "medium"
-            ? "Moderate keyword overlap"
-            : "Related listing";
-  return `${label}: ${rel.matchType} (${Math.round(rel.confidence * 100)}% confidence, score ${rel.relevanceScore})`;
+function relevanceReasonLine(
+  rel: AttributeMatchResult,
+  identity: ProductIdentityResult
+): string {
+  const uiLabel = identityMatchLabel(identity.matchType);
+  const missing =
+    identity.missingCriticalAttributes.length > 0
+      ? `; missing: ${identity.missingCriticalAttributes.join(", ")}`
+      : "";
+  return `${uiLabel} — identity ${identity.identityScore}/100 (attribute ${rel.matchType}, relevance ${rel.relevanceScore})${missing}`;
 }
 
 function toCompareApiCandidate(
   c: CandidateProduct,
   rel: AttributeMatchResult,
+  identity: ProductIdentityResult,
   resolution: import("./productUrlResolver").ResolvedCompareCandidateOutbound,
   premiumCoupons?: PremiumCouponOffer[]
 ): CompareApiCandidate {
@@ -765,10 +812,14 @@ function toCompareApiCandidate(
     normalized: c.normalized,
     confidence: rel.confidence,
     matchConfidenceLabel: rel.matchConfidenceLabel,
-    matchType: rel.matchType,
+    matchType: identity.matchType,
+    attributeMatchType: rel.matchType,
+    identityScore: identity.identityScore,
+    identityReasons: identity.identityReasons,
+    missingCriticalAttributes: identity.missingCriticalAttributes,
     relevanceScore: rel.relevanceScore,
-    score: rel.relevanceScore,
-    relevanceReason: relevanceReasonLine(rel),
+    score: identity.identityScore,
+    relevanceReason: relevanceReasonLine(rel, identity),
     premiumCoupons,
     outboundIsStoreSearch: resolution.urlType === "search",
     resolvedProductUrl: resolution.resolvedProductUrl,
@@ -781,7 +832,8 @@ function toCompareApiCandidate(
 
 function toDeal(
   row: CompareApiCandidate,
-  rel: AttributeMatchResult
+  rel: AttributeMatchResult,
+  identity: ProductIdentityResult
 ): CompareProductDeal {
   return {
     store: row.store,
@@ -794,10 +846,14 @@ function toDeal(
     imageUrl: row.imageUrl,
     confidence: rel.confidence,
     matchConfidenceLabel: rel.matchConfidenceLabel,
-    matchType: rel.matchType,
+    matchType: identity.matchType,
+    attributeMatchType: rel.matchType,
+    identityScore: identity.identityScore,
+    identityReasons: identity.identityReasons,
+    missingCriticalAttributes: identity.missingCriticalAttributes,
     relevanceScore: rel.relevanceScore,
-    score: rel.relevanceScore,
-    relevanceReason: relevanceReasonLine(rel),
+    score: identity.identityScore,
+    relevanceReason: relevanceReasonLine(rel, identity),
     premiumCoupons: row.premiumCoupons,
     savingsVsReference: row.savingsVsReference,
     priceCompareSegment: row.priceCompareSegment,
@@ -812,8 +868,9 @@ function toDeal(
 
 function sortCandidatesForDisplay(rows: CompareApiCandidate[]): CompareApiCandidate[] {
   return [...rows].sort((a, b) => {
-    const t = rankMatchTypes(a.matchType, b.matchType);
+    const t = rankIdentityMatchTypes(a.matchType, b.matchType);
     if (t !== 0) return t;
+    if (b.identityScore !== a.identityScore) return b.identityScore - a.identityScore;
     if (b.confidence !== a.confidence) return b.confidence - a.confidence;
     const pa = a.price ?? Number.POSITIVE_INFINITY;
     const pb = b.price ?? Number.POSITIVE_INFINITY;
@@ -863,19 +920,21 @@ function annotateAndOrderCandidates(
     const pa = a.price ?? Number.POSITIVE_INFINITY;
     const pb = b.price ?? Number.POSITIVE_INFINITY;
     if (pa !== pb) return pa - pb;
-    return rankMatchTypes(a.matchType, b.matchType);
+    return rankIdentityMatchTypes(a.matchType, b.matchType);
   });
   notCheaper.sort((a, b) => {
-    const t = rankMatchTypes(a.matchType, b.matchType);
+    const t = rankIdentityMatchTypes(a.matchType, b.matchType);
     if (t !== 0) return t;
+    if (b.identityScore !== a.identityScore) return b.identityScore - a.identityScore;
     if (b.confidence !== a.confidence) return b.confidence - a.confidence;
     const pa = a.price ?? Number.POSITIVE_INFINITY;
     const pb = b.price ?? Number.POSITIVE_INFINITY;
     return pa - pb;
   });
   unknown.sort((a, b) => {
-    const t = rankMatchTypes(a.matchType, b.matchType);
+    const t = rankIdentityMatchTypes(a.matchType, b.matchType);
     if (t !== 0) return t;
+    if (b.identityScore !== a.identityScore) return b.identityScore - a.identityScore;
     if (b.confidence !== a.confidence) return b.confidence - a.confidence;
     const pa = a.price ?? Number.POSITIVE_INFINITY;
     const pb = b.price ?? Number.POSITIVE_INFINITY;
@@ -914,14 +973,8 @@ function overallConfidenceFromDeal(
   deal: CompareProductDeal | null
 ): CompareConfidence | null {
   if (!deal) return null;
-  if (deal.matchType === "high" && deal.confidence >= 0.6) return "high";
-  if (
-    deal.matchType === "high" ||
-    deal.matchType === "equivalent" ||
-    deal.matchType === "medium" ||
-    deal.matchType === "similar_product"
-  )
-    return "medium";
+  if (deal.matchType === "exact_match" && deal.identityScore >= 78) return "high";
+  if (deal.matchType === "exact_match" || deal.matchType === "close_match") return "medium";
   return "low";
 }
 
@@ -988,18 +1041,52 @@ export async function compareProduct(
 
   let scrapedSource: SourceProduct | null = null;
   let attemptedPdpExtract = false;
+  let referencePriceExtractionSource: string | null = null;
   if (parsed.inputUrl && !demoMode) {
     const urlProvider = findProductProviderForUrl(parsed.inputUrl);
     if (urlProvider) {
       attemptedPdpExtract = true;
       try {
         scrapedSource = await urlProvider.extractSourceProduct(parsed.inputUrl);
+        if (scrapedSource?.originalPrice != null) {
+          referencePriceExtractionSource = "provider_pdp";
+        }
       } catch (err) {
         pipelineLog("extract_source_failed", {
           inputUrl: parsed.inputUrl.slice(0, 200),
           error: err instanceof Error ? err.message : String(err),
         });
         scrapedSource = null;
+      }
+    } else {
+      attemptedPdpExtract = true;
+      try {
+        const scraped = await scrapeProduct(parsed.inputUrl);
+        const title =
+          scraped?.productName?.replace(/\s+/g, " ").trim() ||
+          parsed.productQuery.replace(/\s+/g, " ").trim();
+        if (scraped && title) {
+          const store = detectStoreFromProductUrl(parsed.inputUrl) ?? "unknown";
+          scrapedSource = {
+            sourceUrl: parsed.inputUrl,
+            store,
+            title,
+            originalPrice: scraped.price,
+            currency: scraped.currency ?? "USD",
+            normalized: buildNormalizedProduct(title, {
+              price: scraped.price,
+              currency: scraped.currency ?? "USD",
+              productUrl: parsed.inputUrl,
+            }),
+            scrapedHints: toSourceScrapedHints(scraped) ?? null,
+          };
+          referencePriceExtractionSource = scraped.priceSource ?? "generic_pdp_scrape";
+        }
+      } catch (err) {
+        pipelineLog("generic_pdp_scrape_failed", {
+          inputUrl: parsed.inputUrl.slice(0, 200),
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
   }
@@ -1279,9 +1366,35 @@ export async function compareProduct(
         ? priceFromManual
         : null;
 
+  const referencePriceUrl =
+    scrapedSource?.sourceUrl?.trim() || parsed.inputUrl?.trim() || null;
+  if (referenceListPrice != null) {
+    logReferencePriceOutcome({
+      url: referencePriceUrl,
+      price: referenceListPrice,
+      source:
+        priceFromManual != null && isValidComparablePrice(priceFromManual)
+          ? "manual_form"
+          : referencePriceExtractionSource ?? "scraped_pdp",
+    });
+  } else if (referencePriceUrl || useManualForm) {
+    logReferencePriceOutcome({
+      url: referencePriceUrl,
+      price: null,
+      reason: scrapeBotWalled
+        ? "bot_wall_or_unusable_pdp_title"
+        : attemptedPdpExtract
+          ? "pdp_price_not_found"
+          : useManualForm
+            ? "manual_price_missing_or_invalid"
+            : "no_reference_price_source",
+    });
+  }
+
   type Row = {
     api: CompareApiCandidate;
     rel: AttributeMatchResult;
+    identity: ProductIdentityResult;
   };
 
   const rows: Row[] = [];
@@ -1320,7 +1433,7 @@ export async function compareProduct(
       titlePreview: c.title.slice(0, 120),
     });
 
-    if (!isProductDetailStoreKey(c.store)) {
+    if (!isProductDetailStoreKey(c.store) && c.store !== "other") {
       candidateSteps.push({
         key: candidateKey(c, candidateSteps.length),
         store: c.store,
@@ -1451,8 +1564,18 @@ export async function compareProduct(
       rejectionSummary.urlRejected += 1;
     }
 
-    const api = toCompareApiCandidate(c, rel, resolution, coupons);
-    rows.push({ api, rel });
+    const identity = scoreProductIdentity(
+      referenceNormalized,
+      c.normalized,
+      c.title,
+      {
+        sourceTitle: referenceProductQuery,
+        sourceHints: scrapedSource?.scrapedHints ?? null,
+      }
+    );
+
+    const api = toCompareApiCandidate(c, rel, identity, resolution, coupons);
+    rows.push({ api, rel, identity });
     rejectionSummary.acceptedRows += 1;
 
     candidateSteps.push({
@@ -1463,18 +1586,19 @@ export async function compareProduct(
       productUrl: c.productUrl,
       outcome: "evaluated",
       matchConfidence: undefined,
-      matchScore: rel.relevanceScore,
-      matchReasons: rel.reasons,
+      matchScore: identity.identityScore,
+      matchReasons: [...identity.identityReasons, ...rel.reasons],
       eligibleForComparable:
-        rel.matchType === "high" ||
-        rel.matchType === "equivalent" ||
-        (rel.matchType === "similar_product" && rel.relevanceScore >= 23),
-      detail: `attribute_match:${rel.matchType}`,
+        identity.matchType === "exact_match" ||
+        identity.matchType === "close_match",
+      detail: `identity:${identity.matchType};attribute:${rel.matchType}`,
     });
 
     traceLog("candidate_attribute_match", {
       store: c.store,
-      matchType: rel.matchType,
+      identityMatchType: identity.matchType,
+      identityScore: identity.identityScore,
+      attributeMatchType: rel.matchType,
       confidence: rel.confidence,
       score: rel.relevanceScore,
     });
@@ -1485,7 +1609,7 @@ export async function compareProduct(
     .filter(
       (api) =>
         (api.urlType === "product" || api.urlType === "search") &&
-        isProductDetailStoreKey(api.store) &&
+        (isProductDetailStoreKey(api.store) || api.store === "other") &&
         Boolean(api.outboundUrl?.trim())
     );
 
@@ -1544,7 +1668,8 @@ export async function compareProduct(
   const selectionBase: SelectionTrace = {
     trustworthyCount: rows.filter(
       (r) =>
-        (r.rel.matchType === "high" || r.rel.matchType === "equivalent") &&
+        (r.identity.matchType === "exact_match" ||
+          r.identity.matchType === "close_match") &&
         !r.rel.rejected
     ).length,
     pickedStore: null,
@@ -1641,19 +1766,23 @@ export async function compareProduct(
       referenceListPrice != null && isValidComparablePrice(referenceListPrice);
     let bestApi: CompareApiCandidate | undefined;
     if (refOk) {
-      bestApi = orderedForDisplay.find((c) => c.priceCompareSegment === "cheaper");
+      bestApi = orderedForDisplay.find(
+        (c) =>
+          c.priceCompareSegment === "cheaper" && c.matchType === "exact_match"
+      );
     }
     if (!bestApi) {
-      bestApi = orderedForDisplay.find(
-        (c) => c.matchType === "high" || c.matchType === "equivalent"
-      );
+      bestApi = orderedForDisplay.find((c) => c.matchType === "exact_match");
+    }
+    if (!bestApi) {
+      bestApi = orderedForDisplay.find((c) => c.matchType === "close_match");
     }
     bestApi ??= orderedForDisplay[0];
 
     const bestRow = rowForApi(bestApi);
     if (bestRow) {
-      bestDeal = toDeal(bestApi, bestRow.rel);
-      showBestDeal = true;
+      bestDeal = toDeal(bestApi, bestRow.rel, bestRow.identity);
+      showBestDeal = bestRow.identity.matchType === "exact_match";
       alternatives = orderedForDisplay
         .filter(
           (c) =>
@@ -1662,7 +1791,7 @@ export async function compareProduct(
         .slice(0, Math.max(0, DISPLAY_LIMIT - 1))
         .map((c) => {
           const r = rowForApi(c);
-          return r ? toDeal(c, r.rel) : null;
+          return r ? toDeal(c, r.rel, r.identity) : null;
         })
         .filter((d): d is CompareProductDeal => d != null);
     }
@@ -1674,7 +1803,7 @@ export async function compareProduct(
 
     if (
       bestDeal &&
-      (!isProductDetailStoreKey(bestDeal.store) ||
+      ((!isProductDetailStoreKey(bestDeal.store) && bestDeal.store !== "other") ||
         bestDeal.urlType === "unknown" ||
         !bestDeal.outboundUrl?.trim())
     ) {

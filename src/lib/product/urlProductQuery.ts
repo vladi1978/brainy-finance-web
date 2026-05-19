@@ -400,6 +400,18 @@ function detectUrlStore(raw: string): StoreId | null {
   if (/bestbuy\.com/i.test(t)) return "bestbuy";
   if (/homedepot\.com/i.test(t)) return "homedepot";
   if (/lowes\.com/i.test(t)) return "lowes";
+  if (/costco\.com/i.test(t)) return "costco";
+  if (/samsclub\.com/i.test(t)) return "samsclub";
+  if (/ebay\.com/i.test(t)) return "ebay";
+  if (/macys\.com/i.test(t)) return "macys";
+  if (/kohls\.com/i.test(t)) return "kohls";
+  if (/wayfair\.com/i.test(t)) return "wayfair";
+  if (/overstock\.com/i.test(t)) return "overstock";
+  if (/chewy\.com/i.test(t)) return "chewy";
+  if (/academy\.com/i.test(t)) return "academy";
+  if (/tractorsupply\.com/i.test(t)) return "tractorsupply";
+  if (/nike\.com/i.test(t)) return "nike";
+  if (/adidas\.com/i.test(t) || /adidas\.us/i.test(t)) return "adidas";
   return null;
 }
 

@@ -11,6 +11,18 @@ const PDP_STORE_KEYS = new Set<string>([
   "bestbuy",
   "homedepot",
   "lowes",
+  "costco",
+  "samsclub",
+  "ebay",
+  "macys",
+  "kohls",
+  "wayfair",
+  "overstock",
+  "chewy",
+  "academy",
+  "tractorsupply",
+  "nike",
+  "adidas",
 ]);
 
 export function isProductDetailStoreKey(s: string): s is ProductDetailStoreKey {
@@ -54,6 +66,30 @@ function hostMatchesStoreKey(store: ProductDetailStoreKey, host: string): boolea
       return host.endsWith("homedepot.com");
     case "lowes":
       return host.endsWith("lowes.com");
+    case "costco":
+      return host.endsWith("costco.com");
+    case "samsclub":
+      return host.endsWith("samsclub.com");
+    case "ebay":
+      return host.endsWith("ebay.com");
+    case "macys":
+      return host.endsWith("macys.com");
+    case "kohls":
+      return host.endsWith("kohls.com");
+    case "wayfair":
+      return host.endsWith("wayfair.com");
+    case "overstock":
+      return host.endsWith("overstock.com");
+    case "chewy":
+      return host.endsWith("chewy.com");
+    case "academy":
+      return host.endsWith("academy.com");
+    case "tractorsupply":
+      return host.endsWith("tractorsupply.com");
+    case "nike":
+      return host.endsWith("nike.com");
+    case "adidas":
+      return host.endsWith("adidas.com") || host.endsWith("adidas.us");
     default:
       return false;
   }
@@ -112,6 +148,65 @@ export function isRetailerSearchLandingUrl(
       if (plNorm !== "/search" && !plNorm.startsWith("/search?")) return false;
       const term = searchParamValueInsensitive(u.searchParams, "searchterm");
       return Boolean(term?.trim());
+    }
+    case "costco": {
+      if (!pl.includes("catalogsearch")) return false;
+      const kw = searchParamValueInsensitive(u.searchParams, "keyword");
+      return Boolean(kw?.trim());
+    }
+    case "samsclub": {
+      if (!pl.includes("search")) return false;
+      const st = searchParamValueInsensitive(u.searchParams, "searchterm");
+      return Boolean(st?.trim());
+    }
+    case "ebay": {
+      if (!pl.includes("/sch/")) return false;
+      const nkw = searchParamValueInsensitive(u.searchParams, "_nkw");
+      return Boolean(nkw?.trim());
+    }
+    case "macys": {
+      if (!pl.includes("/shop/")) return false;
+      return path.length > 8;
+    }
+    case "kohls": {
+      if (!pl.includes("search")) return false;
+      const s = searchParamValueInsensitive(u.searchParams, "search");
+      return Boolean(s?.trim());
+    }
+    case "wayfair": {
+      if (!pl.includes("keyword.php")) return false;
+      const kw = searchParamValueInsensitive(u.searchParams, "keyword");
+      return Boolean(kw?.trim());
+    }
+    case "overstock": {
+      if (!pl.includes("search")) return false;
+      const kw = searchParamValueInsensitive(u.searchParams, "keywords");
+      return Boolean(kw?.trim());
+    }
+    case "chewy": {
+      if (pl !== "/s" && !pl.startsWith("/s/")) return false;
+      const q = searchParamValueInsensitive(u.searchParams, "query");
+      return Boolean(q?.trim());
+    }
+    case "academy": {
+      if (!pl.includes("search")) return false;
+      const q = searchParamValueInsensitive(u.searchParams, "q");
+      return Boolean(q?.trim());
+    }
+    case "tractorsupply": {
+      if (!pl.includes("/tsc/search")) return false;
+      const q = searchParamValueInsensitive(u.searchParams, "q");
+      return Boolean(q?.trim());
+    }
+    case "nike": {
+      if (pl !== "/w" && !pl.startsWith("/w/")) return false;
+      const q = searchParamValueInsensitive(u.searchParams, "q");
+      return Boolean(q?.trim());
+    }
+    case "adidas": {
+      if (!pl.includes("search")) return false;
+      const q = searchParamValueInsensitive(u.searchParams, "q");
+      return Boolean(q?.trim());
     }
     default:
       return false;

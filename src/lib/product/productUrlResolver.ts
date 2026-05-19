@@ -57,6 +57,30 @@ export function buildRetailerSearchUrlFromTitle(store: StoreId, title: string): 
       return `https://www.homedepot.com/s/${enc}`;
     case "lowes":
       return `https://www.lowes.com/search?searchTerm=${enc}`;
+    case "costco":
+      return `https://www.costco.com/CatalogSearch?keyword=${enc}`;
+    case "samsclub":
+      return `https://www.samsclub.com/search?searchTerm=${enc}`;
+    case "ebay":
+      return `https://www.ebay.com/sch/i.html?_nkw=${enc}`;
+    case "macys":
+      return `https://www.macys.com/shop/featured/${enc}`;
+    case "kohls":
+      return `https://www.kohls.com/search/results.jsp?search=${enc}`;
+    case "wayfair":
+      return `https://www.wayfair.com/keyword.php?keyword=${enc}`;
+    case "overstock":
+      return `https://www.overstock.com/search?keywords=${enc}`;
+    case "chewy":
+      return `https://www.chewy.com/s?query=${enc}`;
+    case "academy":
+      return `https://www.academy.com/search?q=${enc}`;
+    case "tractorsupply":
+      return `https://www.tractorsupply.com/tsc/search?q=${enc}`;
+    case "nike":
+      return `https://www.nike.com/w?q=${enc}`;
+    case "adidas":
+      return `https://www.adidas.com/us/search?q=${enc}`;
     default:
       return `https://www.google.com/search?q=${enc}`;
   }

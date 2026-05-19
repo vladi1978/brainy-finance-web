@@ -14,7 +14,19 @@ export type StoreId =
   | "temu"
   | "bestbuy"
   | "homedepot"
-  | "lowes";
+  | "lowes"
+  | "costco"
+  | "samsclub"
+  | "ebay"
+  | "macys"
+  | "kohls"
+  | "wayfair"
+  | "overstock"
+  | "chewy"
+  | "academy"
+  | "tractorsupply"
+  | "nike"
+  | "adidas";
 
 /**
  * Shopping pipeline id: known retailers plus `other` for merchants outside the PDP/affiliate set.
@@ -74,11 +86,14 @@ export type StructuredProduct = {
 export type MatchConfidenceLabel = "exact" | "equivalent" | "alternative";
 
 /**
- * Match tiers:
- * - `high`: same product line / strongest structured alignment
- * - `equivalent`: compatible core specs (Tier 2 alternatives)
- * - `similar_product`: weak similar — omitted when higher tiers exist for the same query
- * - `medium` / `low`: keyword-only tiers inside `scoreQueryRelevance` (internal / legacy)
+ * Universal product identity tier (post-search scoring).
+ * Drives UI copy: Best Deal / Similar Product / Alternative Option.
+ */
+export type ProductIdentityMatchType = "exact_match" | "close_match" | "alternative";
+
+/**
+ * Attribute / keyword tiers from structured + query relevance (internal).
+ * API `matchType` uses {@link ProductIdentityMatchType} after identity scoring.
  */
 export type SearchMatchType =
   | "high"
@@ -331,7 +346,14 @@ export type CompareProductDeal = {
   confidence: number;
   /** Qualitative tier (UI / API); pairs with numeric `confidence` */
   matchConfidenceLabel: CompareConfidence;
-  matchType: SearchMatchType;
+  /** Universal identity tier — only `exact_match` may be labeled “Best Deal”. */
+  matchType: ProductIdentityMatchType;
+  /** Structured + keyword tier from attribute matcher (diagnostics). */
+  attributeMatchType?: SearchMatchType;
+  /** 0–100 universal product identity score */
+  identityScore: number;
+  identityReasons: string[];
+  missingCriticalAttributes: string[];
   /** 0–100 attribute-heavy match score */
   relevanceScore: number;
   relevanceReason: string;
@@ -367,7 +389,14 @@ export type CompareApiCandidate = {
   confidence: number;
   /** Qualitative tier (UI / API); pairs with numeric `confidence` */
   matchConfidenceLabel: CompareConfidence;
-  matchType: SearchMatchType;
+  /** Universal identity tier — only `exact_match` may be labeled “Best Deal”. */
+  matchType: ProductIdentityMatchType;
+  /** Structured + keyword tier from attribute matcher (diagnostics). */
+  attributeMatchType?: SearchMatchType;
+  /** 0–100 universal product identity score */
+  identityScore: number;
+  identityReasons: string[];
+  missingCriticalAttributes: string[];
   /** 0–100 attribute-heavy match score */
   relevanceScore: number;
   relevanceReason: string;
