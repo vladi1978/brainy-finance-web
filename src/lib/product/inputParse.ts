@@ -60,7 +60,9 @@ export async function parseProductInput(
 
   const inputUrl = reconstructed.split("#")[0]?.trim() ?? reconstructed;
 
-  let { productQuery, store } = extractProductQueryFromRetailUrl(inputUrl);
+  const extracted = extractProductQueryFromRetailUrl(inputUrl);
+  let productQuery = extracted.productQuery;
+  const store = extracted.store;
   productQuery = productQuery.replace(/\s+/g, " ").trim();
 
   if (!productQuery || isGenericRetailProductQuery(productQuery)) {

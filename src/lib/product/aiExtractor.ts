@@ -497,7 +497,7 @@ function overlayNormalizedSnapshot(
     electric: u.flags.electric,
   };
 
-  let extraSpecs = [...u.keySpecsNorm];
+  const extraSpecs = [...u.keySpecsNorm];
   if (norm.sizeInches != null) {
     extraSpecs.push(`${norm.sizeInches}inch`);
   }

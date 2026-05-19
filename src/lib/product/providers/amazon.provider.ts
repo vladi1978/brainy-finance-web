@@ -160,10 +160,12 @@ export const amazonProvider: ProductProvider = {
   async extractSourceProduct(url: string): Promise<SourceProduct | null> {
     const slugLine = finalizedSlugShoppingLine(url);
     let scraped = await scrapeProduct(url);
-    let { primaryTitle, primarySource } = composeRetailShoppingTitleFromPdp({
+    const composed = composeRetailShoppingTitleFromPdp({
       scraped,
       slugDerivedQueryLine: slugLine,
     });
+    const { primaryTitle } = composed;
+    let { primarySource } = composed;
 
     let title = primaryTitle.trim();
 

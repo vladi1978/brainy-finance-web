@@ -649,7 +649,7 @@ function rowToCandidate(
     if (normalized.titleNorm.includes(w)) matchWords += 1;
   }
 
-  let sourceConfidence =
+  const sourceConfidence =
     qWords.length > 0
       ? Math.min(0.98, 0.45 + (matchWords / qWords.length) * 0.5)
       : 0.72;
