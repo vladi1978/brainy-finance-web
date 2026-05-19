@@ -1,3 +1,8 @@
+/**
+ * @deprecated Legacy per-retailer HTML SERP fetch/parse — not used by live `compareProduct`.
+ * Discovery is via `googleShoppingSearch.ts` (Serper/SerpAPI). This file is only referenced
+ * from unused `ProductProvider.searchCandidates` implementations. See `LEGACY.md`.
+ */
 import {
   fetchSearchPageHtml,
   fetchSearchPageHtmlDetailed,

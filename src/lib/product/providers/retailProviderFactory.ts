@@ -77,6 +77,7 @@ export function createBasicRetailProvider(config: {
       };
     },
 
+    /** @deprecated Unused by live compare — Google Shopping handles discovery. See `../LEGACY.md`. */
     async searchCandidates(ctx: ProviderSearchContext): Promise<ProviderResult> {
       const effectiveQuery =
         ctx.searchQuery?.trim() ||

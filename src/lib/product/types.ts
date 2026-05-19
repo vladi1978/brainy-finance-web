@@ -1,6 +1,7 @@
 /**
- * Shared types for the product comparison pipeline:
- * source → normalized source → provider search → candidate normalization → match scoring → API result.
+ * Shared types for the product comparison pipeline.
+ * Active flow: source (PDP via providers) → Google Shopping discovery → normalize → match → API.
+ * See `LEGACY.md` for architecture and dead paths (`searchCandidates`, etc.).
  */
 
 /**
@@ -250,7 +251,12 @@ export type ProviderResult = {
 export type ProductProvider = {
   id: StoreId;
   canHandleProductUrl(url: string): boolean;
+  /** Used in live compare when the user pastes a product URL. */
   extractSourceProduct(url: string): Promise<SourceProduct | null>;
+  /**
+   * @deprecated Not called by `compareProduct` — cross-store discovery uses Google Shopping
+   * (`googleShoppingSearch.ts`). Implementations remain for Phase 2 removal. See `LEGACY.md`.
+   */
   searchCandidates(ctx: ProviderSearchContext): Promise<ProviderResult>;
   toAffiliateUrl(productUrl: string): string;
 };

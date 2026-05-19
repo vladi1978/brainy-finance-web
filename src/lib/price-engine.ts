@@ -1,3 +1,8 @@
+/**
+ * @deprecated Legacy stub — not used by the app. Live compare uses
+ * `compareProduct` from `@/lib/product/engine` (see `src/lib/product/LEGACY.md`).
+ * Scheduled for removal in Phase 2; do not import from new code.
+ */
 // Price Engine - BrainyFinance
 
 export type ProductData = {

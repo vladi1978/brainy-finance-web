@@ -1,3 +1,8 @@
+/**
+ * Compare orchestrator — see `LEGACY.md` for the full active flow.
+ * Discovery: `fetchGoogleShoppingCandidatesWithDiagnostics` (not provider `searchCandidates`).
+ * Category-specific query rules (TV, pool, etc.) are inline technical debt → future category plugins.
+ */
 import {
   scoreAttributeMatch,
   type AttributeMatchResult,

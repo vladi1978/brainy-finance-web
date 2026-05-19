@@ -20,7 +20,9 @@ import { wayfairProvider } from "./providers/wayfair.provider";
 import type { ProductProvider } from "./types";
 
 /**
- * Central registry — add a provider module here to include it in compare runs.
+ * Central registry of per-retailer providers.
+ * Live compare uses `findProductProviderForUrl` → `extractSourceProduct` only.
+ * `searchCandidates` on each provider is legacy (unused). See `LEGACY.md`.
  */
 export const productProviderRegistry: readonly ProductProvider[] = [
   amazonProvider,

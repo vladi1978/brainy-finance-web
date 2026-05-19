@@ -1,6 +1,8 @@
 /**
- * Product comparison entry — search-first pipeline in `./compareEngine`.
- * Normalization lives in `./normalize`; attribute gates + scoring in `./attributeMatch` + `./match`.
+ * Product comparison public API — orchestration in `./compareEngine`.
+ * Discovery: Google Shopping (Serper/SerpAPI) via `./googleShoppingSearch`.
+ * PDP URLs: `./registry` providers `extractSourceProduct` (not `searchCandidates`).
+ * Architecture & legacy paths: `./LEGACY.md`.
  */
 
 export { compareProduct, DEMO_MODE, isCompareDemoMode } from "./compareEngine";
@@ -24,6 +26,13 @@ export {
   scoreQueryRelevance,
 } from "./searchRelevance";
 export type { QueryRelevanceResult } from "./searchRelevance";
+export {
+  extractUniversalProductIdentity,
+  identityMatchLabel,
+  rankIdentityMatchTypes,
+  scoreProductIdentity,
+} from "./matching/productIdentity";
+export type { ProductIdentityResult, UniversalProductIdentity } from "./matching/productIdentity";
 /** @deprecated Legacy structured evaluation helper — API uses `scoreAttributeMatch`. */
 export {
   attributeScoreForPair,
@@ -49,6 +58,7 @@ export type {
   CompareApiCandidate,
   CompareConfidence,
   ComparisonCategory,
+  ProductIdentityMatchType,
   SearchMatchType,
   StructuredProduct,
   UniversalStoreId,

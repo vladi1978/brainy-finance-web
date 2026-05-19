@@ -1,3 +1,4 @@
+/** Active cross-store discovery for compare — Serper or SerpAPI Google Shopping. See `LEGACY.md`. */
 import { buildNormalizedProduct, detectStoreFromProductUrl } from "./normalize";
 import {
   buildGoogleSearchUrlForRetailerListing,
