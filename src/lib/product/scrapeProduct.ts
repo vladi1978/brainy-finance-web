@@ -1,3 +1,4 @@
+import { detectStoreFromProductUrl } from "./normalize";
 import type { SourceScrapedHints, StoreId } from "./types";
 import {
   isGenericRetailProductQuery,
@@ -155,9 +156,90 @@ function isPlausibleProductPrice(n: number): boolean {
   return Number.isFinite(n) && n >= 0.01 && n < 1_000_000;
 }
 
+function isShoppingDebug(): boolean {
+  return process.env.PRODUCT_SHOPPING_DEBUG === "1";
+}
+
+function logReferencePriceExtracted(payload: {
+  price: number;
+  source: string;
+  store: string;
+  url: string;
+}): void {
+  if (!isShoppingDebug()) return;
+  console.log("[REFERENCE_PRICE_EXTRACTED]", JSON.stringify(payload));
+}
+
+function logReferencePriceRejected(payload: {
+  value: number;
+  reason: string;
+  source: string;
+  store: string;
+}): void {
+  if (!isShoppingDebug()) return;
+  console.log("[REFERENCE_PRICE_REJECTED]", JSON.stringify(payload));
+}
+
+function logReferencePriceMissing(payload: {
+  reason: string;
+  store: string;
+  url: string;
+}): void {
+  if (!isShoppingDebug()) return;
+  console.log("[REFERENCE_PRICE_MISSING]", JSON.stringify(payload));
+}
+
+/** When several PDP prices appear, prefer the main line item over accessory / promo noise. */
+function pickPrimaryPdpPriceFromCandidates(candidates: number[]): number | null {
+  const plausible = [...new Set(candidates.filter(isPlausibleProductPrice))];
+  if (plausible.length === 0) return null;
+  if (plausible.length === 1) return plausible[0]!;
+  plausible.sort((a, b) => a - b);
+  const min = plausible[0]!;
+  const max = plausible[plausible.length - 1]!;
+  if (min <= 0) return max;
+  if (max / min >= 5) return max;
+  return min;
+}
+
+const PRICE_NOISE_CONTEXT_RE =
+  /(?:save|savings|coupon|promo|promotion|rebate|%\s*off|percent\s+off|was\s+now|list\s+price|compare\s+at|per\s+month|\/mo\b|monthly\s+payment|financ|installment|gift\s+card|reward|points|credit|free\s+shipping|shipping\s+(?:by|on)|arrives|delivery|quantity|qty|rating|reviews?|stars|answered\s+questions|prime\s+visa|subscribe|subscription|with\s+coupon|clip\s+coupon|apply\s+coupon|\/\s*ea\b|\/\s*unit|each\s+when|count\s+only|off\s+with|you\s+save)/i;
+
+/** Reject prices embedded in coupon / financing / rating / shipping UI chrome. */
+function rejectPriceInContext(
+  html: string,
+  matchIndex: number,
+  matchText: string
+): string | null {
+  const window = html.slice(
+    Math.max(0, matchIndex - 160),
+    matchIndex + (matchText.length || 8) + 160
+  );
+  if (PRICE_NOISE_CONTEXT_RE.test(window)) return "noise_context";
+  if (/\b(?:from|as\s+low\s+as|starting\s+at)\b[\s\S]{0,48}\$/i.test(window))
+    return "promo_lead_in";
+  if (/\$\s*[\d,.]+\s*(?:\/|per)\s*(?:mo|month|wk|week)/i.test(window))
+    return "installment";
+  if (/\(\s*\d[\d,]*\s*(?:ratings?|reviews?)\s*\)/i.test(window))
+    return "rating_count";
+  return null;
+}
+
+function pushJsonLdPrice(out: JsonLdProductHints, raw: unknown): void {
+  if (raw == null) return;
+  const n =
+    typeof raw === "number"
+      ? raw
+      : parseFloat(String(raw).replace(/[^0-9.]/g, ""));
+  if (!Number.isFinite(n) || !isPlausibleProductPrice(n)) return;
+  if (!out.priceCandidates) out.priceCandidates = [];
+  if (!out.priceCandidates.includes(n)) out.priceCandidates.push(n);
+}
+
 type JsonLdProductHints = {
   name?: string;
   price?: number;
+  priceCandidates?: number[];
   currency?: string;
   brand?: string;
   sku?: string;
@@ -193,19 +275,12 @@ function visitJsonLdNode(node: unknown, out: JsonLdProductHints): void {
     (x) => x === "Offer" || x === "AggregateOffer" || x === "OfferForPurchase"
   );
 
-  if (isOffer && out.price == null) {
+  if (isOffer) {
     const raw =
       types.some((x) => x === "AggregateOffer") && (o.lowPrice ?? o.highPrice)
         ? (o.lowPrice ?? o.highPrice)
         : o.price;
-    if (raw != null) {
-      const p = raw;
-      const n =
-        typeof p === "number"
-          ? p
-          : parseFloat(String(p).replace(/[^0-9.]/g, ""));
-      if (Number.isFinite(n) && isPlausibleProductPrice(n)) out.price = n;
-    }
+    pushJsonLdPrice(out, raw);
     if (
       !out.currency &&
       typeof o.priceCurrency === "string" &&
@@ -270,15 +345,7 @@ function visitJsonLdNode(node: unknown, out: JsonLdProductHints): void {
           : [];
 
       if (offerTypes.some((t) => t === "AggregateOffer")) {
-        const aggPrice =
-          offer.lowPrice ?? offer.highPrice ?? offer.price ?? null;
-        if (out.price == null && aggPrice != null) {
-          const n =
-            typeof aggPrice === "number"
-              ? aggPrice
-              : parseFloat(String(aggPrice).replace(/[^0-9.]/g, ""));
-          if (Number.isFinite(n)) out.price = n;
-        }
+        pushJsonLdPrice(out, offer.lowPrice ?? offer.highPrice ?? offer.price);
         if (
           !out.currency &&
           typeof offer.priceCurrency === "string" &&
@@ -289,14 +356,7 @@ function visitJsonLdNode(node: unknown, out: JsonLdProductHints): void {
         continue;
       }
 
-      if (out.price == null && offer.price != null) {
-        const p = offer.price;
-        const n =
-          typeof p === "number"
-            ? p
-            : parseFloat(String(p).replace(/[^0-9.]/g, ""));
-        if (Number.isFinite(n)) out.price = n;
-      }
+      pushJsonLdPrice(out, offer.price);
       if (
         !out.currency &&
         typeof offer.priceCurrency === "string" &&
@@ -307,12 +367,7 @@ function visitJsonLdNode(node: unknown, out: JsonLdProductHints): void {
     }
   }
 
-  if (isProduct && out.price == null && o.price != null) {
-    const p = o.price;
-    const n =
-      typeof p === "number" ? p : parseFloat(String(p).replace(/[^0-9.]/g, ""));
-    if (Number.isFinite(n)) out.price = n;
-  }
+  if (isProduct) pushJsonLdPrice(out, o.price);
 
   if (Array.isArray(o["@graph"])) {
     for (const g of o["@graph"]) visitJsonLdNode(g, out);
@@ -341,6 +396,10 @@ function extractFromJsonLd(html: string): JsonLdProductHints {
     if (Array.isArray(g)) {
       for (const node of g) visitJsonLdNode(node, out);
     }
+  }
+
+  if (out.priceCandidates?.length) {
+    out.price = pickPrimaryPdpPriceFromCandidates(out.priceCandidates) ?? undefined;
   }
 
   return out;
@@ -431,13 +490,32 @@ function polishRetailerListingTitle(raw: string, host: string): string {
   return t.length > max ? `${t.slice(0, max - 3).trim()}...` : t;
 }
 
+function tryTwitterCardPrice(html: string): number | null {
+  const label =
+    getMetaProperty(html, "twitter:label1") ||
+    getMetaProperty(html, "twitter:label2") ||
+    "";
+  const data1 = getMetaProperty(html, "twitter:data1");
+  const data2 = getMetaProperty(html, "twitter:data2");
+  const labelLooksPrice = /\bprice\b/i.test(label);
+  for (const raw of [data1, labelLooksPrice ? null : data2]) {
+    if (!raw) continue;
+    if (!labelLooksPrice && !/^\s*\$?\s*\d/.test(raw)) continue;
+    const n = parsePriceFromString(raw);
+    if (n != null && isPlausibleProductPrice(n)) return n;
+  }
+  if (labelLooksPrice && data1) {
+    const n = parsePriceFromString(data1);
+    if (n != null && isPlausibleProductPrice(n)) return n;
+  }
+  return null;
+}
+
 /**
  * Meta tags and itemprop (any attribute order) for common retailer PDPs.
  */
 function tryMetaAndItempropPrice(html: string): number | null {
-  const metaPriceAmount =
-    getMetaProperty(html, "product:price:amount") ||
-    getMetaProperty(html, "og:price:amount");
+  const metaPriceAmount = getMetaProperty(html, "product:price:amount");
 
   let n = parsePriceFromString(metaPriceAmount);
   if (n != null && isPlausibleProductPrice(n)) return n;
@@ -480,27 +558,13 @@ function sliceAmazonBuybox(html: string): string {
   return html.slice(0, 120000);
 }
 
-/**
- * Amazon PDP: buybox a-offscreen, a-price-whole + fraction, itemprop, visible $x.xx
- */
-function extractAmazonPdpPrice(html: string): number | null {
-  const focus = sliceAmazonBuybox(html);
-
-  const offscreens = [
-    ...focus.matchAll(/class=["'][^"']*a-offscreen[^"']*["'][^>]*>\s*([^<]+)</gi),
-  ];
-  for (const m of offscreens) {
-    const n = parsePriceFromString(m[1]);
-    if (n != null && isPlausibleProductPrice(n)) return n;
-  }
-
+function readAmazonWholeFractionPrice(focus: string): number | null {
   const whole = focus.match(/class="[^"]*a-price-whole[^"]*"[^>]*>([0-9,]+)/i);
   const frac = focus.match(/class="[^"]*a-price-fraction[^"]*"[^>]*>([0-9]+)/i);
   if (whole?.[1] && frac?.[1]) {
     const n = parseFloat(`${whole[1].replace(/,/g, "")}.${frac[1]}`);
     if (isPlausibleProductPrice(n)) return n;
   }
-
   const twisterWhole = focus.match(
     /class="[^"]*a-price[^"]*"[^>]*>[\s\S]{0,400}?class="[^"]*a-price-whole[^"]*"[^>]*>([0-9,]+)/i
   );
@@ -513,15 +577,38 @@ function extractAmazonPdpPrice(html: string): number | null {
     );
     if (isPlausibleProductPrice(n)) return n;
   }
+  return null;
+}
+
+/**
+ * Amazon PDP: buybox a-price-whole + fraction, then current (non-list) a-offscreen prices.
+ */
+function extractAmazonPdpPrice(html: string): number | null {
+  const focus = sliceAmazonBuybox(html);
+
+  const wholeFrac = readAmazonWholeFractionPrice(focus);
+  if (wholeFrac != null) return wholeFrac;
+
+  const candidates: number[] = [];
+  for (const m of focus.matchAll(
+    /class=["'][^"']*a-offscreen[^"']*["'][^>]*>\s*([^<]+)</gi
+  )) {
+    const idx = m.index ?? 0;
+    const snippet = m[0] ?? "";
+    const before = focus.slice(Math.max(0, idx - 280), idx);
+    if (/a-text-price|listPrice|basisPrice|priceWas|strike/i.test(before)) continue;
+    if (rejectPriceInContext(focus, idx, snippet)) continue;
+    const n = parsePriceFromString(m[1]);
+    if (n != null && isPlausibleProductPrice(n)) candidates.push(n);
+  }
+
+  const picked = pickPrimaryPdpPriceFromCandidates(candidates);
+  if (picked != null) return picked;
 
   const ip = focus.match(
     /itemprop=["']price["'][^>]*content=["']([0-9]+(?:\.[0-9]+)?)["']/i
   );
-  let n = parsePriceFromString(ip?.[1]);
-  if (n != null && isPlausibleProductPrice(n)) return n;
-
-  const vis = focus.match(/\$\s*([0-9]{1,5}(?:\.[0-9]{2})?)/);
-  n = parsePriceFromString(vis?.[1]);
+  const n = parsePriceFromString(ip?.[1]);
   if (n != null && isPlausibleProductPrice(n)) return n;
 
   return null;
@@ -585,21 +672,18 @@ function tryNextDataScriptPrice(html: string): number | null {
     walkJsonForUsdPrices(data, 0, candidates);
     if (candidates.length === 0) return null;
     const plausible = candidates.filter((p) => p > 0.01 && p < 100_000);
-    if (plausible.length === 0) return null;
-    return Math.min(...plausible);
+    return pickPrimaryPdpPriceFromCandidates(plausible);
   } catch {
     return null;
   }
 }
 
 /**
- * Walmart PDP: meta, JSON-LD (caller), __NEXT_DATA__, aria, automation ids, visible text.
+ * Walmart PDP: __NEXT_DATA__, aria, automation ids, visible text in price region.
+ * (Meta / JSON-LD handled by universal {@link pickPrice} first.)
  */
 function extractWalmartPdpPrice(html: string): number | null {
-  let n = tryMetaAndItempropPrice(html);
-  if (n != null) return n;
-
-  n = tryNextDataScriptPrice(html);
+  let n = tryNextDataScriptPrice(html);
   if (n != null) return n;
 
   const aria = html.match(/aria-label=["'][^"']*\$\s*([0-9]+(?:\.[0-9]{2})?)/i);
@@ -630,18 +714,89 @@ function extractWalmartPdpPrice(html: string): number | null {
   n = parsePriceFromString(priceClass?.[1]);
   if (n != null && isPlausibleProductPrice(n)) return n;
 
-  const scan = html.slice(0, 200_000);
-  const dollars = [...scan.matchAll(/\$\s*([0-9]{1,5}\.[0-9]{2})\b/g)].map(
-    (x) => parseFloat(x[1]!)
-  );
-  const plausible = dollars.filter(
-    (p) => isPlausibleProductPrice(p) && p >= 1 && p <= 50_000
-  );
-  if (plausible.length > 0) {
-    return plausible[0]!;
+  return extractGenericVisiblePdpPrice(html);
+}
+
+/** Target PDP price containers (buybox / data-test product-price). */
+function extractTargetPdpPrice(html: string): number | null {
+  const region = slicePdpPriceRegion(html);
+  const patterns = [
+    /data-test=["']product-price["'][\s\S]{0,500}?\$\s*([0-9]{1,6}(?:,[0-9]{3})*(?:\.[0-9]{2})?)/i,
+    /data-test=["']product-price["'][\s\S]{0,500}?>\s*([0-9]{1,6}(?:\.[0-9]{2})?)/i,
+    /<span[^>]*data-test=["']product-price["'][^>]*>[\s\S]{0,200}?\$\s*([0-9]+(?:\.[0-9]{2})?)/i,
+    /class=["'][^"']*styles_price[^"']*["'][\s\S]{0,300}?\$\s*([0-9]+(?:\.[0-9]{2})?)/i,
+  ];
+  for (const re of patterns) {
+    const m = region.match(re);
+    const n = parsePriceFromString(m?.[1]);
+    if (n != null && isPlausibleProductPrice(n)) return n;
+  }
+  return extractGenericVisiblePdpPrice(region);
+}
+
+/** Home Depot / Lowe's / Best Buy visible price containers. */
+function extractBigBoxRetailerPdpPrice(html: string): number | null {
+  const region = slicePdpPriceRegion(html);
+  const patterns = [
+    /data-testid=["']customer-price["'][^>]*>[\s\S]{0,200}?\$\s*([0-9]+(?:\.[0-9]{2})?)/i,
+    /data-test=["']product-price["'][\s\S]{0,400}?\$\s*([0-9]+(?:\.[0-9]{2})?)/i,
+    /data-price=["']([0-9]+(?:\.[0-9]{2})?)["']/i,
+    /class=["'][^"']*(?:price__|price-format|pricing-price|product-price)[^"']*["'][\s\S]{0,300}?\$\s*([0-9]+(?:\.[0-9]{2})?)/i,
+    /itemprop=["']price["'][^>]*content=["']([0-9]+(?:\.[0-9]+)?)["']/i,
+  ];
+  for (const re of patterns) {
+    const m = region.match(re);
+    const n = parsePriceFromString(m?.[1]);
+    if (n != null && isPlausibleProductPrice(n)) return n;
+  }
+  return extractGenericVisiblePdpPrice(region);
+}
+
+function slicePdpPriceRegion(html: string): string {
+  let titleIndex = -1;
+  const titlePatterns = [
+    /id=["']productTitle["']/i,
+    /<h1[^>]*(?:itemprop=["']name["']|data-testid=["']product-title|data-test=["']product-title)[^>]*>/i,
+    /data-automation-id=["']product-title["']/i,
+    /id=["'](?:Heading|sku-title-heading|productHeading)["']/i,
+  ];
+  for (const re of titlePatterns) {
+    const m = re.exec(html);
+    if (m?.index != null) titleIndex = Math.max(titleIndex, m.index);
   }
 
-  return null;
+  const buyboxPatterns = [
+    /id=["'](?:corePrice|priceblock|buybox)[^"']*/i,
+    /data-test(?:id)?=["'][^"']*(?:product-price|customer-price|add-to-cart)/i,
+    /(?:add[\s-]*to[\s-]*cart|buy\s+now)/i,
+  ];
+  for (const re of buyboxPatterns) {
+    const m = re.exec(html);
+    if (m?.index != null) {
+      return html.slice(Math.max(0, m.index - 400), m.index + 18_000);
+    }
+  }
+
+  if (titleIndex >= 0) return html.slice(titleIndex, titleIndex + 24_000);
+  return html.slice(0, 80_000);
+}
+
+function extractGenericVisiblePdpPrice(html: string): number | null {
+  const region = slicePdpPriceRegion(html);
+  const candidates: number[] = [];
+  const patterns = [
+    /\$\s*([0-9]{1,6}(?:,[0-9]{3})*(?:\.[0-9]{2})?)/g,
+    /\bUSD\s*([0-9]{1,6}(?:,[0-9]{3})*(?:\.[0-9]{2})?)\b/gi,
+  ];
+  for (const re of patterns) {
+    for (const m of region.matchAll(re)) {
+      const idx = m.index ?? 0;
+      if (rejectPriceInContext(region, idx, m[0] ?? "")) continue;
+      const n = parsePriceFromString(m[1]);
+      if (n != null && isPlausibleProductPrice(n)) candidates.push(n);
+    }
+  }
+  return pickPrimaryPdpPriceFromCandidates(candidates);
 }
 
 function isAmazonHostname(host: string): boolean {
@@ -676,71 +831,127 @@ function pickTitle(
   return null;
 }
 
-function tryVisibleUsdPrice(html: string): number | null {
-  const scan = html.slice(0, 250_000);
-  const patterns = [
-    /\$\s*([0-9]{1,6}(?:\.[0-9]{2})?)/g,
-    /\bUSD\s*([0-9]{1,6}(?:\.[0-9]{2})?)\b/gi,
-  ];
-  for (const re of patterns) {
-    for (const m of scan.matchAll(re)) {
-      const n = parsePriceFromString(m[1]);
-      if (n != null && isPlausibleProductPrice(n)) return n;
-    }
+/** DOM-only retailer price peek — used to reject bad JSON-LD outliers. */
+function peekRetailerDomPrice(html: string, host: string): number | null {
+  if (isAmazonHostname(host)) return extractAmazonPdpPrice(html);
+  if (/walmart\.com/i.test(host)) return extractWalmartPdpPrice(html);
+  if (/target\.com/i.test(host)) return extractTargetPdpPrice(html);
+  if (
+    /homedepot\.com/i.test(host) ||
+    /lowes\.com/i.test(host) ||
+    /bestbuy\.com/i.test(host)
+  ) {
+    return extractBigBoxRetailerPdpPrice(html);
   }
-  return null;
+  return extractGenericVisiblePdpPrice(html);
 }
 
 function pickPrice(
   html: string,
   jsonLd: ReturnType<typeof extractFromJsonLd>,
-  host: string
+  url: string
 ): {
   price: number | null;
   currency: string;
   priceSource: PriceExtractionSource;
 } {
+  const store = detectStoreFromProductUrl(url) ?? "unknown";
+  const host = (() => {
+    try {
+      return new URL(url).hostname;
+    } catch {
+      return "";
+    }
+  })();
   const isWalmart = /walmart\.com/i.test(host);
   const isAmazon = isAmazonHostname(host);
+  const isTarget = /target\.com/i.test(host);
+  const isBigBox =
+    /homedepot\.com/i.test(host) ||
+    /lowes\.com/i.test(host) ||
+    /bestbuy\.com/i.test(host);
 
   let price: number | null = null;
   let priceSource: PriceExtractionSource = null;
 
-  const jp = jsonLd.price ?? null;
-  if (jp != null && isPlausibleProductPrice(jp)) {
-    price = jp;
-    priceSource = "json_ld";
-  }
-
-  if (price == null) {
-    const ogAmount = getMetaProperty(html, "og:price:amount");
-    const ogN = parsePriceFromString(ogAmount);
-    if (ogN != null && isPlausibleProductPrice(ogN)) {
-      price = ogN;
-      priceSource = "open_graph";
+  const accept = (
+    value: number | null,
+    source: PriceExtractionSource,
+    label: string
+  ): boolean => {
+    if (value == null) return false;
+    if (!isPlausibleProductPrice(value)) {
+      logReferencePriceRejected({
+        value,
+        reason: "implausible_range",
+        source: label,
+        store,
+      });
+      return false;
     }
+    price = value;
+    priceSource = source;
+    logReferencePriceExtracted({
+      price: value,
+      source: label,
+      store,
+      url,
+    });
+    return true;
+  };
+
+  const jsonLdPrice = jsonLd.price ?? null;
+  const domPeek = peekRetailerDomPrice(html, host);
+  const jsonLdUsable =
+    jsonLdPrice != null &&
+    isPlausibleProductPrice(jsonLdPrice) &&
+    !(
+      domPeek != null &&
+      domPeek > jsonLdPrice &&
+      domPeek / jsonLdPrice >= 5
+    );
+
+  if (!jsonLdUsable && jsonLdPrice != null && domPeek != null && domPeek > jsonLdPrice) {
+    logReferencePriceRejected({
+      value: jsonLdPrice,
+      reason: "json_ld_dom_mismatch",
+      source: "json_ld",
+      store,
+    });
+  }
+
+  if (
+    !(jsonLdUsable && accept(jsonLdPrice, "json_ld", "json_ld")) &&
+    !accept(
+      parsePriceFromString(getMetaProperty(html, "og:price:amount")),
+      "open_graph",
+      "og:price:amount"
+    ) &&
+    !accept(
+      parsePriceFromString(getMetaProperty(html, "product:price:amount")),
+      "open_graph",
+      "product:price:amount"
+    ) &&
+    !accept(tryTwitterCardPrice(html), "open_graph", "twitter:data1") &&
+    !accept(tryMetaAndItempropPrice(html), "meta_itemprop", "meta_itemprop") &&
+    !(isWalmart && accept(extractWalmartPdpPrice(html), "retailer_specific", "walmart_pdp")) &&
+    !(isAmazon && accept(extractAmazonPdpPrice(html), "retailer_specific", "amazon_pdp")) &&
+    !(isTarget && accept(extractTargetPdpPrice(html), "retailer_specific", "target_pdp")) &&
+    !(
+      isBigBox &&
+      accept(extractBigBoxRetailerPdpPrice(html), "retailer_specific", "bigbox_pdp")
+    ) &&
+    !accept(extractGenericVisiblePdpPrice(html), "visible_usd", "visible_pdp_region")
+  ) {
+    /* no confident price */
   }
 
   if (price == null) {
-    const meta = tryMetaAndItempropPrice(html);
-    if (meta != null) {
-      price = meta;
-      priceSource = "meta_itemprop";
-    }
-  }
-
-  if (price == null) {
-    if (isWalmart) {
-      price = extractWalmartPdpPrice(html);
-    } else if (isAmazon) {
-      price = extractAmazonPdpPrice(html);
-    }
-    if (price != null) priceSource = "retailer_specific";
-  }
-
-  if (price == null) {
-    price = tryVisibleUsdPrice(html);
-    if (price != null) priceSource = "visible_usd";
+    logReferencePriceMissing({
+      reason: "no_confident_pdp_price",
+      store,
+      url,
+    });
   }
 
   const currency =
@@ -784,7 +995,7 @@ export async function scrapeProduct(
 
   let productName = pickTitle(html, host, jsonLd) ?? null;
 
-  const { price, currency, priceSource } = pickPrice(html, jsonLd, host);
+  const { price, currency, priceSource } = pickPrice(html, jsonLd, url);
 
   if (!productName) {
     const ogTitle = getMetaProperty(html, "og:title");

@@ -539,15 +539,22 @@ function logReferencePriceOutcome(args: {
   url: string | null;
   price: number | null;
   source?: string | null;
+  store?: string | null;
   reason?: string;
 }): void {
-  const { url, price, source, reason } = args;
+  if (process.env.PRODUCT_SHOPPING_DEBUG !== "1") return;
+  const { url, price, source, store, reason } = args;
+  const storeId =
+    store ??
+    (url ? detectStoreFromProductUrl(url) : null) ??
+    "unknown";
   if (price != null && isValidComparablePrice(price)) {
     console.log(
       "[REFERENCE_PRICE_EXTRACTED]",
       JSON.stringify({
         price,
         source: source ?? "unknown",
+        store: storeId,
         url: url?.slice(0, 400) ?? null,
       })
     );
@@ -557,8 +564,9 @@ function logReferencePriceOutcome(args: {
     console.log(
       "[REFERENCE_PRICE_MISSING]",
       JSON.stringify({
-        url: url.slice(0, 400),
         reason: reason ?? "no_comparable_price",
+        store: storeId,
+        url: url.slice(0, 400),
       })
     );
   }

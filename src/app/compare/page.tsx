@@ -17,6 +17,11 @@ function formatPrice(n: number | null): string {
   return `$${n.toFixed(2)}`;
 }
 
+function formatReferencePrice(n: number | null): string {
+  if (n == null || !Number.isFinite(n)) return "Reference price unavailable";
+  return `$${n.toFixed(2)}`;
+}
+
 /** Prefer Google Shopping source label; fallback to branded id (e.g. `walmart` → Walmart). */
 function candidateRetailerName(c: { store: string; storeLabel?: string }): string {
   const label = c.storeLabel?.trim();
@@ -515,7 +520,7 @@ export default function ComparePage() {
                         {result.sourceProduct.title}
                       </p>
                       <p className="text-green-400 font-semibold mt-2">
-                        {formatPrice(result.sourceProduct.originalPrice)}
+                        {formatReferencePrice(result.sourceProduct.originalPrice)}
                       </p>
                       {result.sourceProduct.originalPrice != null &&
                       Number.isFinite(result.sourceProduct.originalPrice) ? (
