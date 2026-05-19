@@ -1,11 +1,9 @@
 /** Active cross-store discovery for compare — Serper or SerpAPI Google Shopping. See `LEGACY.md`. */
 import { buildNormalizedProduct, detectStoreFromProductUrl } from "./normalize";
-import {
-  buildGoogleSearchUrlForRetailerListing,
-  buildRetailerSearchUrlFromTitle,
-} from "./productUrlResolver";
+import { buildRetailerSearchUrlFromTitle } from "./productUrlResolver";
 import {
   isAcceptableUniversalShoppingOutboundUrl,
+  isBlockedUserFacingOutboundUrl,
   isValidStoreOutboundUrl,
 } from "./productDetailUrl";
 import { dedupeIdenticalListingUrls } from "./candidateDedupe";
@@ -552,23 +550,40 @@ function buildProductUrlForShoppingRow(args: {
   merchantUrl: string | null;
   sourceLabel: string | null;
 }): string | null {
-  const { store, title, merchantUrl, sourceLabel } = args;
+  const { store, title, merchantUrl } = args;
   if (store === "other") {
-    if (merchantUrl && isAcceptableUniversalShoppingOutboundUrl(merchantUrl)) {
+    if (
+      merchantUrl &&
+      isAcceptableUniversalShoppingOutboundUrl(merchantUrl) &&
+      !isBlockedUserFacingOutboundUrl(merchantUrl)
+    ) {
       return merchantUrl;
     }
-    const label = sourceLabel?.trim() ?? "";
-    return buildGoogleSearchUrlForRetailerListing(title, label || title);
+    return null;
   }
 
   let productUrl = merchantUrl ?? buildRetailerSearchUrlFromTitle(store, title);
+  if (productUrl && isBlockedUserFacingOutboundUrl(productUrl)) {
+    productUrl = buildRetailerSearchUrlFromTitle(store, title);
+  }
   if (!isValidStoreOutboundUrl(store, productUrl)) {
     const generated = buildRetailerSearchUrlFromTitle(store, title);
-    if (generated !== productUrl && isValidStoreOutboundUrl(store, generated)) {
+    if (
+      generated &&
+      !isBlockedUserFacingOutboundUrl(generated) &&
+      generated !== productUrl &&
+      isValidStoreOutboundUrl(store, generated)
+    ) {
       productUrl = generated;
     }
   }
-  if (!isValidStoreOutboundUrl(store, productUrl)) return null;
+  if (
+    !productUrl ||
+    isBlockedUserFacingOutboundUrl(productUrl) ||
+    !isValidStoreOutboundUrl(store, productUrl)
+  ) {
+    return null;
+  }
   return productUrl;
 }
 

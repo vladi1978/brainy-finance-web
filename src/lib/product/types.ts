@@ -181,6 +181,7 @@ export type SourceProduct = {
   title: string;
   originalPrice: number | null;
   currency: string;
+  imageUrl?: string | null;
   normalized: NormalizedProduct;
   scrapedHints?: SourceScrapedHints | null;
 };
@@ -459,6 +460,7 @@ export type CompareProductResponse = {
     title: string;
     originalPrice: number | null;
     currency: string;
+    imageUrl?: string | null;
     normalizedTitle: string;
   } | null;
   /** Other high-confidence listings when `showBestDeal` (excluding the chosen row) */

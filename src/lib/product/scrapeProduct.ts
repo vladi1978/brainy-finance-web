@@ -19,6 +19,8 @@ export type ScrapedProduct = {
   currency: string;
   /** How {@link ScrapedProduct.price} was resolved when present */
   priceSource?: PriceExtractionSource;
+  /** og:image / twitter:image when present */
+  imageUrl: string | null;
   brand: string | null;
   /** Retailer SKU when present */
   sku: string | null;
@@ -830,11 +832,19 @@ export async function scrapeProduct(
   const categoryTrail =
     ctTrail && ctTrail.length >= 4 ? ctTrail : null;
 
+  const ogImage =
+    getMetaProperty(html, "og:image") ||
+    getMetaProperty(html, "twitter:image") ||
+    null;
+  const imageUrl =
+    ogImage?.trim().startsWith("http") ? ogImage.trim() : null;
+
   return {
     productName: productName?.trim() || "",
     price,
     currency: currency || "USD",
     priceSource: price != null ? priceSource : null,
+    imageUrl,
     brand: brandLine,
     sku: skuLine,
     model: modelLine,

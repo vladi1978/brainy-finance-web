@@ -1,5 +1,6 @@
 import {
   isAcceptableUniversalShoppingOutboundUrl,
+  isBlockedUserFacingOutboundUrl,
   isProductDetailStoreKey,
   isStrictProductDetailUrl,
   isProductLikeRetailerUrl,
@@ -82,7 +83,7 @@ export function buildRetailerSearchUrlFromTitle(store: StoreId, title: string): 
     case "adidas":
       return `https://www.adidas.com/us/search?q=${enc}`;
     default:
-      return `https://www.google.com/search?q=${enc}`;
+      return "";
   }
 }
 
@@ -113,44 +114,29 @@ export function resolveCompareCandidateOutbound(args: {
   /** SERP merchant label — required for `other` Google-search fallbacks */
   sourceLabel?: string | null;
 }): ResolvedCompareCandidateOutbound {
-  const { store, listingProductUrl, title, sourceLabel } = args;
-  const listing = listingProductUrl.replace(/\s+/g, " ").trim();
-  const label = sourceLabel?.replace(/\s+/g, " ").trim() ?? "";
+  const { store, listingProductUrl, title } = args;
+  const listingRaw = listingProductUrl.replace(/\s+/g, " ").trim();
+  const listing =
+    listingRaw && !isBlockedUserFacingOutboundUrl(listingRaw) ? listingRaw : "";
 
   if (store === "other") {
     if (listing && isAcceptableUniversalShoppingOutboundUrl(listing)) {
-      let gSearch = false;
-      try {
-        const u = new URL(listing);
-        const host = u.hostname.replace(/^www\./i, "").toLowerCase();
-        gSearch =
-          (host === "google.com" || host.endsWith(".google.com")) &&
-          u.pathname.toLowerCase().startsWith("/search");
-      } catch {
-        gSearch = false;
-      }
+      const productLike = /\/(product|products|\/p\/|\/pd\/|\/item\/|\/dp\/|\/ip\/)/i.test(
+        listing
+      );
       return {
         outboundUrlRaw: listing,
-        urlType: "search",
-        urlConfidence: gSearch ? "low" : "medium",
-        urlResolutionReason: gSearch
-          ? "google_search_fallback"
-          : "merchant_outbound_unverified",
-      };
-    }
-    if (hasUsableListingTitle(title) && label.length > 0) {
-      return {
-        outboundUrlRaw: buildGoogleSearchUrlForRetailerListing(title, label),
-        urlType: "search",
-        urlConfidence: "low",
-        urlResolutionReason: "google_search_fallback_from_title_and_source",
+        resolvedProductUrl: productLike ? listing : undefined,
+        urlType: productLike ? "product" : "search",
+        urlConfidence: productLike ? "medium" : "low",
+        urlResolutionReason: "merchant_outbound_unverified",
       };
     }
     return {
       outboundUrlRaw: "",
       urlType: "unknown",
       urlConfidence: "low",
-      urlResolutionReason: "other_missing_outbound_and_source",
+      urlResolutionReason: "other_missing_clean_merchant_url",
     };
   }
 
@@ -203,6 +189,14 @@ export function resolveCompareCandidateOutbound(args: {
 
   if (hasUsableListingTitle(title)) {
     const generated = buildRetailerSearchUrlFromTitle(store, title);
+    if (!generated.trim() || isBlockedUserFacingOutboundUrl(generated)) {
+      return {
+        outboundUrlRaw: "",
+        urlType: "unknown",
+        urlConfidence: "low",
+        urlResolutionReason: "generated_search_blocked_or_empty",
+      };
+    }
     logOutboundResolution("URL_GENERATED_SEARCH", store, {
       url: truncateUrlForLog(generated),
       title_preview: truncateUrlForLog(title, 160),

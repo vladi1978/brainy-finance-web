@@ -208,6 +208,7 @@ export const amazonProvider: ProductProvider = {
       title,
       originalPrice: scraped?.price ?? null,
       currency: scraped?.currency ?? "USD",
+      imageUrl: scraped?.imageUrl ?? null,
       normalized: buildNormalizedProduct(title, {
         price: scraped?.price ?? null,
         currency: scraped?.currency ?? null,

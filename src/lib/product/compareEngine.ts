@@ -53,6 +53,7 @@ import {
 } from "./matching/productIdentity";
 import { getSimulatedStoreCoupons } from "../premium/couponOffers";
 import {
+  isBlockedUserFacingOutboundUrl,
   isProductDetailStoreKey,
   isStrictProductDetailUrl,
 } from "./productDetailUrl";
@@ -714,6 +715,7 @@ function extractedSourceSummary(
     title: sp.title,
     originalPrice: sp.originalPrice,
     currency: sp.currency,
+    imageUrl: sp.imageUrl ?? null,
     normalizedTitle: sp.normalized.titleNorm,
   };
 }
@@ -1078,6 +1080,7 @@ export async function compareProduct(
             title,
             originalPrice: scraped.price,
             currency: scraped.currency ?? "USD",
+            imageUrl: scraped.imageUrl ?? null,
             normalized: buildNormalizedProduct(title, {
               price: scraped.price,
               currency: scraped.currency ?? "USD",
@@ -1611,12 +1614,15 @@ export async function compareProduct(
 
   const baseFiltered = rows
     .map((r) => r.api)
-    .filter(
-      (api) =>
-        (api.urlType === "product" || api.urlType === "search") &&
-        (isProductDetailStoreKey(api.store) || api.store === "other") &&
-        Boolean(api.outboundUrl?.trim())
-    );
+    .filter((api) => {
+      if (api.urlType !== "product" && api.urlType !== "search") return false;
+      if (!isProductDetailStoreKey(api.store) && api.store !== "other") return false;
+      const outbound =
+        api.outboundUrl?.trim() || api.affiliateUrl?.trim() || api.productUrl?.trim() || "";
+      if (!outbound) return false;
+      if (isBlockedUserFacingOutboundUrl(outbound)) return false;
+      return true;
+    });
 
   const orderedAfterPriceAnnot = annotateAndOrderCandidates(
     baseFiltered,
@@ -1664,11 +1670,13 @@ export async function compareProduct(
   const sourceProduct =
     scrapedOk && scrapedSource
       ? extractedSourceSummary(scrapedSource, parsed.inputUrl)
-      : queryDerivedSourceSummary(
-          referenceProductQuery,
-          parsed.detectedStore,
-          referenceNormalized
-        );
+      : useManualForm || !parsed.inputUrl
+        ? queryDerivedSourceSummary(
+            referenceProductQuery,
+            parsed.detectedStore,
+            referenceNormalized
+          )
+        : null;
 
   const selectionBase: SelectionTrace = {
     trustworthyCount: rows.filter(

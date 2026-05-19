@@ -488,6 +488,54 @@ export default function ComparePage() {
                 </p>
               ) : null}
 
+              {result.sourceProduct?.sourceUrl && result.sourceProduct.title ? (
+                <div className="rounded-xl border border-white/15 bg-white/5 p-4">
+                  <h3 className="text-sm font-semibold uppercase tracking-wide text-white/60 mb-3">
+                    Original product
+                  </h3>
+                  <div className="flex gap-4">
+                    {result.sourceProduct.imageUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={result.sourceProduct.imageUrl}
+                        alt=""
+                        className="h-24 w-24 rounded-lg object-contain bg-white shrink-0"
+                      />
+                    ) : (
+                      <div className="h-24 w-24 rounded-lg bg-white/10 shrink-0" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2 mb-1">
+                        <StoreLogo store={result.sourceProduct.store} />
+                        <span className="text-white/70 text-sm font-medium">
+                          {storeDisplayLabel(result.sourceProduct.store)}
+                        </span>
+                      </div>
+                      <p className="font-medium text-white line-clamp-3">
+                        {result.sourceProduct.title}
+                      </p>
+                      <p className="text-green-400 font-semibold mt-2">
+                        {formatPrice(result.sourceProduct.originalPrice)}
+                      </p>
+                      {result.sourceProduct.originalPrice != null &&
+                      Number.isFinite(result.sourceProduct.originalPrice) ? (
+                        <p className="text-white/45 text-xs mt-1">
+                          Reference price for savings comparisons
+                        </p>
+                      ) : null}
+                      <a
+                        href={result.sourceProduct.sourceUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex mt-3 items-center rounded-lg border border-white/20 bg-white/5 px-3 py-1.5 text-xs font-medium text-white/90 hover:bg-white/10"
+                      >
+                        View original listing
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
               {showBest && best && (
                 <p className="text-green-400/95 text-sm font-medium">
                   Best deal (among{" "}
@@ -536,15 +584,18 @@ export default function ComparePage() {
                           c.productUrl === best.productUrl &&
                           c.store === best.store;
                         const outbound =
-                          (c.outboundUrl?.trim() || c.affiliateUrl || c.productUrl);
+                          c.outboundUrl?.trim() || c.affiliateUrl?.trim() || "";
                         const storeLabel = candidateRetailerName(c);
                         const showSearchDisclaimer = c.urlType === "search";
+                        const hasClickableRetailerUrl =
+                          outbound.length > 0 &&
+                          (c.urlType === "product" || c.urlType === "search");
                         const outboundButtonLabel =
                           c.urlType === "product"
-                            ? `Ver producto en ${storeLabel}`
+                            ? `View product at ${storeLabel}`
                             : c.urlType === "search"
-                              ? `Ver resultados en ${storeLabel}`
-                              : `Ver en ${storeLabel}`;
+                              ? `Search at ${storeLabel}`
+                              : "Retailer link unavailable";
                         const showSimilarBanner =
                           firstNotCheap >= 0 &&
                           idx === firstNotCheap &&
@@ -633,14 +684,23 @@ export default function ComparePage() {
                                   </p>
                                 ) : null}
                                 <div className="mt-3 flex flex-wrap gap-2">
-                                  <a
-                                    href={outbound}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="inline-flex items-center rounded-lg bg-green-500 px-4 py-2 text-sm font-semibold text-black hover:bg-green-400 transition"
-                                  >
-                                    {outboundButtonLabel}
-                                  </a>
+                                  {hasClickableRetailerUrl ? (
+                                    <a
+                                      href={outbound}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="inline-flex items-center rounded-lg bg-green-500 px-4 py-2 text-sm font-semibold text-black hover:bg-green-400 transition"
+                                    >
+                                      {outboundButtonLabel}
+                                    </a>
+                                  ) : (
+                                    <span
+                                      className="inline-flex items-center rounded-lg border border-white/15 bg-white/5 px-4 py-2 text-sm font-medium text-white/45 cursor-not-allowed"
+                                      title="No clean retailer product or search URL is available for this listing."
+                                    >
+                                      Retailer link unavailable
+                                    </span>
+                                  )}
                                   <button
                                     type="button"
                                     onClick={() => void trackPrice(c)}

@@ -33,6 +33,38 @@ function normHost(host: string): string {
   return host.replace(/^www\./i, "").toLowerCase();
 }
 
+/**
+ * URLs that must never be shown as clickable compare results (Google Shopping hops, redirects, etc.).
+ */
+export function isBlockedUserFacingOutboundUrl(url: string): boolean {
+  const trimmed = url.replace(/\s+/g, " ").trim();
+  if (!trimmed.startsWith("http")) return true;
+
+  let u: URL;
+  try {
+    u = new URL(trimmed);
+  } catch {
+    return true;
+  }
+
+  if (!/^https?:$/i.test(u.protocol)) return true;
+
+  const host = normHost(u.hostname);
+  const path = u.pathname.toLowerCase();
+  const href = u.href.toLowerCase();
+
+  if (host === "google.com" || host.endsWith(".google.com")) return true;
+  if (host === "googleusercontent.com" || host.endsWith(".googleusercontent.com"))
+    return true;
+  if (host === "gstatic.com" || host.endsWith(".gstatic.com")) return true;
+
+  if (path.includes("/shopping") || path === "/url" || path.startsWith("/imgres"))
+    return true;
+  if (href.includes("/gp/slredirect") || /slredirect/i.test(href)) return true;
+
+  return false;
+}
+
 function searchParamsHasInsensitive(sp: URLSearchParams, want: string): boolean {
   const w = want.toLowerCase();
   for (const k of sp.keys()) {
@@ -564,10 +596,7 @@ export function isAcceptableUniversalShoppingOutboundUrl(url: string): boolean {
   const host = normHost(u.hostname);
 
   if (host === "google.com" || host.endsWith(".google.com")) {
-    const pl = u.pathname.toLowerCase();
-    if (!pl.startsWith("/search")) return false;
-    const q = u.searchParams.get("q")?.trim();
-    return Boolean(q && q.length >= 2);
+    return false;
   }
 
   if (
