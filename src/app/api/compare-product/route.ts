@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { compareProduct } from "@/lib/product/engine";
 import {
+  isValidReferencePriceInput,
   manualFormHasSearchableCore,
   normalizeManualProductForm,
+  REFERENCE_PRICE_REQUIRED_MESSAGE,
 } from "@/lib/product/manualProductInput";
 
 export async function POST(req: Request) {
@@ -18,9 +20,19 @@ export async function POST(req: Request) {
 
     const manual = normalizeManualProductForm(body?.manualProduct);
     const linkFromForm = manual?.link?.trim();
+    const resolvedPricePaid =
+      pricePaid?.trim() || manual?.pricePaid?.trim() || "";
+
+    if (!isValidReferencePriceInput(resolvedPricePaid)) {
+      return NextResponse.json(
+        { error: REFERENCE_PRICE_REQUIRED_MESSAGE },
+        { status: 400 }
+      );
+    }
+
     const compareOpts = {
       debug,
-      pricePaid: pricePaid?.trim() || manual?.pricePaid || null,
+      pricePaid: resolvedPricePaid,
     };
 
     if (linkFromForm) {
@@ -49,6 +61,11 @@ export async function POST(req: Request) {
     return NextResponse.json(result);
   } catch (error) {
     console.error("COMPARE PRODUCT API ERROR:", error);
+    const message =
+      error instanceof Error ? error.message.trim() : "Failed to compare product";
+    if (message === REFERENCE_PRICE_REQUIRED_MESSAGE) {
+      return NextResponse.json({ error: message }, { status: 400 });
+    }
 
     return NextResponse.json(
       { error: "Failed to compare product" },

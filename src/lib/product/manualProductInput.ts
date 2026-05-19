@@ -80,11 +80,20 @@ export function buildManualNormalizationTitle(f: ManualProductFormFields): strin
   ]);
 }
 
+export const REFERENCE_PRICE_REQUIRED_MESSAGE =
+  "Enter the price you found so Brainy can compare cheaper options.";
+
 export function parsePricePaidRaw(raw: string | null | undefined): number | null {
   if (!raw?.trim()) return null;
   const n = parseFloat(raw.replace(/[$,]/g, "").trim());
   if (!Number.isFinite(n) || n <= 0) return null;
   return n;
+}
+
+export function isValidReferencePriceInput(
+  raw: string | null | undefined
+): boolean {
+  return parsePricePaidRaw(raw) != null;
 }
 
 type ManualQueryPack = {

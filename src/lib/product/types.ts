@@ -268,8 +268,8 @@ export type CompareProductOptions = {
   /** When true, attaches `comparisonTrace` and enables verbose console logs */
   debug?: boolean;
   /**
-   * Optional manual reference price (USD). Overrides PDP scrape when the user typed it;
-   * used as fallback when PDP price is missing.
+   * Required manual reference price (USD). Overrides PDP scrape when set;
+   * used as the sole reference for cheaper-than comparisons.
    */
   pricePaid?: string | null;
   /**
@@ -443,8 +443,10 @@ export type CompareProductResponse = {
   query: string;
   /** Normalized multi-field search string sent to stores */
   normalizedQuery: string;
-  /** All candidates (match-scored), ordered for display — up to ~14 rows; cheaper-than-reference only when a reference price exists */
+  /** Cheaper-than-reference matches for the main list (up to ~14 rows) */
   candidates: CompareApiCandidate[];
+  /** Similar matches that are not cheaper — collapsed in UI by default */
+  similarButNotCheaper?: CompareApiCandidate[];
   /** Same listings grouped by retailer */
   resultsByStore: { store: string; candidates: CompareApiCandidate[] }[];
   bestDeal: CompareProductDeal | null;

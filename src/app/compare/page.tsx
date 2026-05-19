@@ -3,10 +3,15 @@
 import { useCallback, useEffect, useState } from "react";
 import type {
   CompareApiCandidate,
+  CompareProductDeal,
   CompareProductResponse,
   PremiumCouponOffer,
 } from "@/lib/product/types";
-import { manualFormHasSearchableCore } from "@/lib/product/manualProductInput";
+import {
+  isValidReferencePriceInput,
+  manualFormHasSearchableCore,
+  REFERENCE_PRICE_REQUIRED_MESSAGE,
+} from "@/lib/product/manualProductInput";
 import type { PriceAlertSurfaceNotification } from "@/lib/premium/priceAlerts";
 import { storeDisplayLabel, storeLogoUrl } from "@/lib/premium/storeBranding";
 
@@ -20,6 +25,23 @@ function formatPrice(n: number | null): string {
 function formatReferencePrice(n: number | null): string {
   if (n == null || !Number.isFinite(n)) return "Reference price unavailable";
   return `$${n.toFixed(2)}`;
+}
+
+function listingNeedsRetailerVerification(c: CompareApiCandidate): boolean {
+  if (c.urlType === "search" || c.urlType === "unknown") return true;
+  if (c.outboundIsStoreSearch) return true;
+  if (c.urlConfidence === "low") return true;
+  const reason = c.urlResolutionReason ?? "";
+  if (/generated_search|fallback|unverified/i.test(reason)) return true;
+  const outbound = (c.outboundUrl || c.affiliateUrl || c.productUrl || "").trim();
+  if (!outbound) return true;
+  try {
+    const host = new URL(outbound).hostname.toLowerCase();
+    if (host === "google.com" || host.endsWith(".google.com")) return true;
+  } catch {
+    return true;
+  }
+  return false;
 }
 
 /** Prefer Google Shopping source label; fallback to branded id (e.g. `walmart` → Walmart). */
@@ -114,6 +136,124 @@ function CouponsPanel({ coupons }: { coupons: PremiumCouponOffer[] }) {
 
 type InputMode = "link" | "manual";
 
+function renderCandidateCard(
+  c: CompareApiCandidate,
+  opts: {
+    isWinner: boolean;
+    best: CompareProductDeal | null | undefined;
+    onTrack: (c: CompareApiCandidate) => void;
+  }
+) {
+  const { isWinner, best, onTrack } = opts;
+  const outbound = c.outboundUrl?.trim() || c.affiliateUrl?.trim() || "";
+  const storeLabel = candidateRetailerName(c);
+  const unverified = listingNeedsRetailerVerification(c);
+  const hasClickableRetailerUrl =
+    outbound.length > 0 && (c.urlType === "product" || c.urlType === "search");
+  const outboundButtonLabel = unverified
+    ? `Open at ${storeLabel}`
+    : c.urlType === "product"
+      ? `View product at ${storeLabel}`
+      : c.urlType === "search"
+        ? `Search at ${storeLabel}`
+        : "Retailer link unavailable";
+  const savingsVs = c.savingsVsReference;
+
+  return (
+    <li key={`${c.store}-${c.productUrl}-${c.title.slice(0, 24)}`}>
+      <div
+        className={`flex gap-4 rounded-xl border p-4 ${
+          isWinner
+            ? "border-green-500/50 bg-green-500/10"
+            : "border-white/10 bg-black/30"
+        }`}
+      >
+        {c.imageUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={c.imageUrl}
+            alt=""
+            className="h-20 w-20 rounded-lg object-contain bg-white/5 shrink-0"
+          />
+        ) : (
+          <div className="h-20 w-20 rounded-lg bg-white/5 shrink-0" />
+        )}
+        <div className="flex-1 min-w-0">
+          <div className="flex flex-wrap items-center gap-2 mb-2">
+            <StoreLogo store={c.store} displayName={storeLabel} />
+            <div className="flex flex-wrap items-center gap-2">
+              {isWinner && best?.matchType === "exact_match" && (
+                <span className="text-xs font-semibold text-green-400 uppercase">
+                  Best Deal
+                </span>
+              )}
+              <span className="text-white/80 text-sm font-medium">{storeLabel}</span>
+              {unverified ? (
+                <span
+                  className="text-[11px] font-medium uppercase tracking-wide rounded-md border border-amber-500/45 bg-amber-500/12 px-2 py-0.5 text-amber-200/95"
+                  title="Not a confirmed product listing — verify on the retailer site."
+                >
+                  Search result — verify on retailer site
+                </span>
+              ) : c.urlType === "product" ? (
+                <span
+                  className="text-[11px] font-medium uppercase tracking-wide rounded-md border border-emerald-500/35 bg-emerald-500/10 px-2 py-0.5 text-emerald-100/95"
+                  title="Direct link to the retailer listing."
+                >
+                  Store listing
+                </span>
+              ) : null}
+              <MatchBadge type={c.matchType} />
+              <span className="text-white/40 text-sm">{c.identityScore}/100</span>
+              {savingsVs != null && savingsVs > 0 ? (
+                <span className="text-xs font-semibold text-green-400 rounded-md border border-green-500/40 bg-green-500/15 px-2 py-0.5">
+                  Save {formatPrice(savingsVs)}
+                </span>
+              ) : null}
+            </div>
+          </div>
+          <p className="font-medium text-white line-clamp-2">{c.title}</p>
+          <p className="text-green-400 font-semibold mt-1">{formatPrice(c.price)}</p>
+          {unverified ? (
+            <p className="text-white/45 text-xs mt-2">
+              Search result — verify on retailer site before buying.
+            </p>
+          ) : null}
+          <div className="mt-3 flex flex-wrap gap-2">
+            {hasClickableRetailerUrl ? (
+              <a
+                href={outbound}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center rounded-lg bg-green-500 px-4 py-2 text-sm font-semibold text-black hover:bg-green-400 transition"
+              >
+                {outboundButtonLabel}
+              </a>
+            ) : (
+              <span
+                className="inline-flex items-center rounded-lg border border-white/15 bg-white/5 px-4 py-2 text-sm font-medium text-white/45 cursor-not-allowed"
+                title="No clean retailer product or search URL is available for this listing."
+              >
+                Retailer link unavailable
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => void onTrack(c)}
+              className="inline-flex items-center rounded-lg border border-white/20 bg-white/5 px-4 py-2 text-sm font-medium text-white/90 hover:bg-white/10"
+            >
+              Track price
+            </button>
+          </div>
+          <CouponsPanel coupons={c.premiumCoupons ?? []} />
+        </div>
+      </div>
+    </li>
+  );
+}
+
+
+
 export default function ComparePage() {
   const [inputMode, setInputMode] = useState<InputMode>("link");
   const [linkValue, setLinkValue] = useState("");
@@ -133,6 +273,27 @@ export default function ComparePage() {
     PriceAlertSurfaceNotification[]
   >([]);
   const [trackMessage, setTrackMessage] = useState<string | null>(null);
+  const [priceError, setPriceError] = useState("");
+
+  const currentPricePaid =
+    inputMode === "link" ? linkPricePaid : manualPricePaid;
+
+  const pricePaidValid = isValidReferencePriceInput(currentPricePaid);
+
+  const linkInputReady = inputMode !== "link" || linkValue.trim().length > 0;
+  const manualInputReady =
+    inputMode !== "manual" ||
+    manualFormHasSearchableCore({
+      brand: manualBrand.trim() || null,
+      productNameOrModel: manualProductName.trim() || null,
+      category: manualCategory.trim() || null,
+      sizeDimensionsCapacity: manualSize.trim() || null,
+      colorVariant: manualColor.trim() || null,
+      keyFeatures: manualFeatures.trim() || null,
+      pricePaid: manualPricePaid.trim() || null,
+    });
+
+  const canCompare = linkInputReady && manualInputReady && pricePaidValid && !loading;
 
   useEffect(() => {
     try {
@@ -227,16 +388,27 @@ export default function ComparePage() {
     void refreshPriceFeed();
   };
 
+  const validatePricePaid = (): boolean => {
+    if (!isValidReferencePriceInput(currentPricePaid)) {
+      setPriceError(REFERENCE_PRICE_REQUIRED_MESSAGE);
+      return false;
+    }
+    setPriceError("");
+    return true;
+  };
+
   const handleCompare = async () => {
     setErrorMessage("");
+    if (!validatePricePaid()) return;
 
+    const pricePaid = currentPricePaid.trim();
     let body: Record<string, unknown>;
 
     if (inputMode === "link") {
       if (!linkValue.trim()) return;
       body = {
         input: linkValue.trim(),
-        ...(linkPricePaid.trim() ? { pricePaid: linkPricePaid.trim() } : {}),
+        pricePaid,
       };
     } else {
       const manualProduct = {
@@ -246,7 +418,7 @@ export default function ComparePage() {
         sizeDimensionsCapacity: manualSize.trim() || null,
         colorVariant: manualColor.trim() || null,
         keyFeatures: manualFeatures.trim() || null,
-        pricePaid: manualPricePaid.trim() || null,
+        pricePaid,
       };
       if (!manualFormHasSearchableCore(manualProduct)) {
         setErrorMessage(
@@ -254,7 +426,7 @@ export default function ComparePage() {
         );
         return;
       }
-      body = { manualProduct };
+      body = { manualProduct, pricePaid };
     }
 
     setLoading(true);
@@ -274,7 +446,12 @@ export default function ComparePage() {
       };
 
       if (!response.ok) {
-        throw new Error(data?.error || "Failed to compare product");
+        const apiErr = data?.error?.trim();
+        if (response.status === 400 && apiErr) {
+          setPriceError(apiErr);
+          return;
+        }
+        throw new Error(apiErr || "Failed to compare product");
       }
 
       setResult(data);
@@ -295,22 +472,22 @@ export default function ComparePage() {
       <div className="mx-auto max-w-6xl">
         <h1 className="text-4xl font-bold mb-2">Compare Stores</h1>
         <p className="text-white/70 mb-8">
-          Listados directos en comercios — sin pasar por Google Shopping. Pega un enlace o
-          describe el producto.
+          Compare the same product across stores. Paste a product link or describe what you
+          are shopping for, and enter the price you found so we only surface cheaper matches.
         </p>
 
         {priceNotifications.length > 0 && (
           <div className="mb-6 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-sm font-medium text-cyan-100">
-                Alerta de precio (demo): {priceNotifications[0]?.message}
+                Price alert (demo): {priceNotifications[0]?.message}
               </p>
               <button
                 type="button"
                 onClick={() => void dismissNotifications()}
                 className="rounded-lg border border-cyan-400/40 px-3 py-1 text-xs text-cyan-100 hover:bg-white/5"
               >
-                Cerrar
+                Dismiss
               </button>
             </div>
           </div>
@@ -337,8 +514,8 @@ export default function ComparePage() {
                 <p className="text-green-400 font-semibold mt-1">{formatPrice(best.price)}</p>
                 {result!.savings != null && result!.savings > 0 && (
                   <p className="text-white/70 text-sm mt-2">
-                    Hasta {formatPrice(result!.savings)} menos vs tu precio de referencia entre opciones
-                    más baratas
+                    Save up to {formatPrice(result!.savings)} vs your reference price among cheaper
+                    options
                   </p>
                 )}
               </div>
@@ -392,27 +569,38 @@ export default function ComparePage() {
 
           {inputMode === "link" ? (
             <div className="space-y-3 mb-6">
-              <div className="flex flex-col md:flex-row gap-3">
-                <input
-                  value={linkValue}
-                  onChange={(e) => setLinkValue(e.target.value)}
-                  placeholder="Paste a store URL or type a product name"
-                  className="flex-1 rounded-xl bg-black border border-white/15 px-4 py-3 text-white outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={handleCompare}
-                  className="rounded-xl bg-green-500 px-6 py-3 font-semibold text-black hover:bg-green-400 transition shrink-0"
-                >
-                  {loading ? "Searching..." : "Compare Now"}
-                </button>
-              </div>
               <input
-                value={linkPricePaid}
-                onChange={(e) => setLinkPricePaid(e.target.value)}
-                placeholder="Price you found / paid (optional)"
-                className="w-full max-w-md rounded-xl bg-black border border-white/15 px-4 py-3 text-white outline-none"
+                value={linkValue}
+                onChange={(e) => setLinkValue(e.target.value)}
+                placeholder="Paste a store URL or type a product name"
+                className="w-full rounded-xl bg-black border border-white/15 px-4 py-3 text-white outline-none"
               />
+              <div>
+                <input
+                  value={linkPricePaid}
+                  onChange={(e) => {
+                    setLinkPricePaid(e.target.value);
+                    if (priceError) setPriceError("");
+                  }}
+                  onBlur={validatePricePaid}
+                  placeholder="Price you found / paid"
+                  aria-required
+                  className={`w-full max-w-md rounded-xl bg-black border px-4 py-3 text-white outline-none ${
+                    priceError ? "border-red-500/50" : "border-white/15"
+                  }`}
+                />
+                {priceError ? (
+                  <p className="mt-2 text-sm text-red-300">{priceError}</p>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={handleCompare}
+                disabled={!canCompare}
+                className="rounded-xl bg-green-500 px-6 py-3 font-semibold text-black hover:bg-green-400 transition shrink-0 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-green-500"
+              >
+                {loading ? "Searching..." : "Compare Now"}
+              </button>
             </div>
           ) : (
             <div className="space-y-4 mb-6">
@@ -449,9 +637,16 @@ export default function ComparePage() {
                 />
                 <input
                   value={manualPricePaid}
-                  onChange={(e) => setManualPricePaid(e.target.value)}
-                  placeholder="Price you found / paid (optional)"
-                  className="rounded-xl bg-black border border-white/15 px-4 py-3 text-white outline-none"
+                  onChange={(e) => {
+                    setManualPricePaid(e.target.value);
+                    if (priceError) setPriceError("");
+                  }}
+                  onBlur={validatePricePaid}
+                  placeholder="Price you found / paid"
+                  aria-required
+                  className={`rounded-xl bg-black border px-4 py-3 text-white outline-none ${
+                    priceError ? "border-red-500/50" : "border-white/15"
+                  }`}
                 />
               </div>
               <textarea
@@ -461,10 +656,14 @@ export default function ComparePage() {
                 rows={3}
                 className="w-full rounded-xl bg-black border border-white/15 px-4 py-3 text-white outline-none resize-y min-h-[5rem]"
               />
+              {priceError && inputMode === "manual" ? (
+                <p className="text-sm text-red-300">{priceError}</p>
+              ) : null}
               <button
                 type="button"
                 onClick={handleCompare}
-                className="rounded-xl bg-green-500 px-6 py-3 font-semibold text-black hover:bg-green-400 transition"
+                disabled={!canCompare}
+                className="rounded-xl bg-green-500 px-6 py-3 font-semibold text-black hover:bg-green-400 transition disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-green-500"
               >
                 {loading ? "Searching..." : "Compare Now"}
               </button>
@@ -500,7 +699,7 @@ export default function ComparePage() {
 
               {result.aiProductSummary ? (
                 <p className="text-cyan-100/90 text-sm rounded-lg border border-cyan-500/25 bg-cyan-500/10 px-3 py-2">
-                  <span className="font-semibold text-cyan-200/95">Brainy (IA): </span>
+                  <span className="font-semibold text-cyan-200/95">Brainy AI: </span>
                   {result.aiProductSummary}
                 </p>
               ) : null}
@@ -570,169 +769,64 @@ export default function ComparePage() {
                 </div>
               )}
 
-              {result.candidates.length > 0 && (
+              {(result.candidates.length > 0 ||
+                (result.similarButNotCheaper?.length ?? 0) > 0 ||
+                result.comparisonMessage ||
+                result.message) && (
                 <div>
                   <h3 className="text-xl font-semibold text-white mb-1">
-                    {result.comparisonMessage ?? "Matches"}
+                    {result.candidates.length > 0
+                      ? result.comparisonMessage ?? "Cheaper matches"
+                      : result.comparisonMessage ??
+                        result.message ??
+                        "No cheaper matching products found yet."}
                   </h3>
-                  <p className="text-white/50 text-sm mb-2">
-                    Full list for this result:{" "}
-                    <span className="text-white/75 font-medium">
-                      {result.candidates.length}{" "}
-                      {result.candidates.length === 1 ? "candidate" : "candidates"}
-                    </span>
-                    . Rows labeled{" "}
-                    <span className="text-white/75">Search result</span> open a store
-                    search — confirm the exact product on the retailer site before buying.
-                  </p>
-                  <h4 className="text-lg font-semibold mb-3 text-white/90">
-                    All listed matches ({result.candidates.length})
-                  </h4>
-                  <ul className="space-y-3">
-                    {(() => {
-                      const firstNotCheap = result.candidates.findIndex(
-                        (c) => c.priceCompareSegment === "not_cheaper"
-                      );
-                      return result.candidates.map((c, idx) => {
-                        const isWinner =
-                          showBest &&
-                          best &&
-                          c.productUrl === best.productUrl &&
-                          c.store === best.store;
-                        const outbound =
-                          c.outboundUrl?.trim() || c.affiliateUrl?.trim() || "";
-                        const storeLabel = candidateRetailerName(c);
-                        const showSearchDisclaimer = c.urlType === "search";
-                        const hasClickableRetailerUrl =
-                          outbound.length > 0 &&
-                          (c.urlType === "product" || c.urlType === "search");
-                        const outboundButtonLabel =
-                          c.urlType === "product"
-                            ? `View product at ${storeLabel}`
-                            : c.urlType === "search"
-                              ? `Search at ${storeLabel}`
-                              : "Retailer link unavailable";
-                        const showSimilarBanner =
-                          firstNotCheap >= 0 &&
-                          idx === firstNotCheap &&
-                          firstNotCheap > 0;
-                        const savingsVs = c.savingsVsReference;
-                        return (
-                          <li key={`${c.store}-${c.productUrl}-${idx}`}>
-                            {showSimilarBanner && (
-                              <p className="text-sm text-amber-200/95 mb-3 rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2">
-                                Not cheaper, but similar
-                              </p>
-                            )}
-                            <div
-                              className={`flex gap-4 rounded-xl border p-4 ${
-                                isWinner
-                                  ? "border-green-500/50 bg-green-500/10"
-                                  : "border-white/10 bg-black/30"
-                              }`}
-                            >
-                              {c.imageUrl ? (
-                                // eslint-disable-next-line @next/next/no-img-element
-                                <img
-                                  src={c.imageUrl}
-                                  alt=""
-                                  className="h-20 w-20 rounded-lg object-contain bg-white/5 shrink-0"
-                                />
-                              ) : (
-                                <div className="h-20 w-20 rounded-lg bg-white/5 shrink-0" />
-                              )}
-                              <div className="flex-1 min-w-0">
-                                <div className="flex flex-wrap items-center gap-2 mb-2">
-                                  <StoreLogo store={c.store} displayName={storeLabel} />
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    {isWinner && best?.matchType === "exact_match" && (
-                                      <span className="text-xs font-semibold text-green-400 uppercase">
-                                        Best Deal
-                                      </span>
-                                    )}
-                                    <span className="text-white/80 text-sm font-medium">
-                                      {storeLabel}
-                                    </span>
-                                    {c.urlType === "search" ? (
-                                      <span
-                                        className="text-[11px] font-medium uppercase tracking-wide rounded-md border border-amber-500/45 bg-amber-500/12 px-2 py-0.5 text-amber-200/95"
-                                        title="Opens a store search, not a fixed product page."
-                                      >
-                                        Search result
-                                      </span>
-                                    ) : c.urlType === "product" ? (
-                                      <span
-                                        className="text-[11px] font-medium uppercase tracking-wide rounded-md border border-emerald-500/35 bg-emerald-500/10 px-2 py-0.5 text-emerald-100/95"
-                                        title="Direct link to the retailer listing."
-                                      >
-                                        Store listing
-                                      </span>
-                                    ) : (
-                                      <span
-                                        className="text-[11px] font-medium uppercase tracking-wide rounded-md border border-white/20 bg-white/5 px-2 py-0.5 text-white/55"
-                                        title="Unclassified URL type."
-                                      >
-                                        External link
-                                      </span>
-                                    )}
-                                    <MatchBadge type={c.matchType} />
-                                    <span className="text-white/40 text-sm">
-                                      {c.identityScore}/100
-                                    </span>
-                                    {savingsVs != null && savingsVs > 0 ? (
-                                      <span className="text-xs font-semibold text-green-400 rounded-md border border-green-500/40 bg-green-500/15 px-2 py-0.5">
-                                        Save {formatPrice(savingsVs)}
-                                      </span>
-                                    ) : null}
-                                  </div>
-                                </div>
-                                <p className="font-medium text-white line-clamp-2">
-                                  {c.title}
-                                </p>
-                                <p className="text-green-400 font-semibold mt-1">
-                                  {formatPrice(c.price)}
-                                </p>
-                                {showSearchDisclaimer ? (
-                                  <p className="text-white/45 text-xs mt-2 space-y-1">
-                                    <span className="block">
-                                      Search result — verify the product before buying.
-                                    </span>
-                                  </p>
-                                ) : null}
-                                <div className="mt-3 flex flex-wrap gap-2">
-                                  {hasClickableRetailerUrl ? (
-                                    <a
-                                      href={outbound}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="inline-flex items-center rounded-lg bg-green-500 px-4 py-2 text-sm font-semibold text-black hover:bg-green-400 transition"
-                                    >
-                                      {outboundButtonLabel}
-                                    </a>
-                                  ) : (
-                                    <span
-                                      className="inline-flex items-center rounded-lg border border-white/15 bg-white/5 px-4 py-2 text-sm font-medium text-white/45 cursor-not-allowed"
-                                      title="No clean retailer product or search URL is available for this listing."
-                                    >
-                                      Retailer link unavailable
-                                    </span>
-                                  )}
-                                  <button
-                                    type="button"
-                                    onClick={() => void trackPrice(c)}
-                                    className="inline-flex items-center rounded-lg border border-white/20 bg-white/5 px-4 py-2 text-sm font-medium text-white/90 hover:bg-white/10"
-                                  >
-                                    Track price
-                                  </button>
-                                </div>
-                                <CouponsPanel coupons={c.premiumCoupons ?? []} />
-                              </div>
-                            </div>
-                          </li>
-                        );
-                      });
-                    })()}
-                  </ul>
+                  {result.candidates.length === 0 ? (
+                    <p className="text-amber-100/90 text-sm mb-4 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2">
+                      No cheaper matching products found yet.
+                    </p>
+                  ) : (
+                    <>
+                      <p className="text-white/50 text-sm mb-2">
+                        {result.candidates.length}{" "}
+                        {result.candidates.length === 1
+                          ? "listing"
+                          : "listings"}{" "}
+                        cheaper than your reference price.
+                      </p>
+                      <h4 className="text-lg font-semibold mb-3 text-white/90">
+                        Cheaper matches ({result.candidates.length})
+                      </h4>
+                      <ul className="space-y-3">
+                        {result.candidates.map((c) =>
+                          renderCandidateCard(c, {
+                            isWinner:
+                              Boolean(showBest && best) &&
+                              c.productUrl === best!.productUrl &&
+                              c.store === best!.store,
+                            best,
+                            onTrack: trackPrice,
+                          })
+                        )}
+                      </ul>
+                    </>
+                  )}
+                  {(result.similarButNotCheaper?.length ?? 0) > 0 ? (
+                    <details className="mt-6 rounded-xl border border-white/10 bg-white/5 p-4">
+                      <summary className="cursor-pointer text-sm font-semibold text-white/80">
+                        Similar but not cheaper ({result.similarButNotCheaper!.length})
+                      </summary>
+                      <ul className="space-y-3 mt-4">
+                        {result.similarButNotCheaper!.map((c) =>
+                          renderCandidateCard(c, {
+                            isWinner: false,
+                            best: null,
+                            onTrack: trackPrice,
+                          })
+                        )}
+                      </ul>
+                    </details>
+                  ) : null}
                 </div>
               )}
 

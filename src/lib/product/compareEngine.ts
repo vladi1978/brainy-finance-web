@@ -27,8 +27,10 @@ import { parseProductInput } from "./inputParse";
 import {
   buildManualNormalizationTitle,
   buildUniversalManualQueryPack,
+  isValidReferencePriceInput,
   manualFormHasSearchableCore,
   parsePricePaidRaw,
+  REFERENCE_PRICE_REQUIRED_MESSAGE,
   truncateFeatures,
 } from "./manualProductInput";
 import {
@@ -1012,6 +1014,14 @@ export async function compareProduct(
     throw new Error("Missing product input");
   }
 
+  const rawPricePaid =
+    options.pricePaid?.trim() ||
+    (useManualForm && manual ? manual.pricePaid?.trim() : null) ||
+    "";
+  if (!isValidReferencePriceInput(rawPricePaid)) {
+    throw new Error(REFERENCE_PRICE_REQUIRED_MESSAGE);
+  }
+
   const debug = Boolean(options.debug);
   const demoMode = DEMO_MODE;
 
@@ -1376,16 +1386,10 @@ export async function compareProduct(
   const candidateSteps: CandidateStepTrace[] = [];
   const queryForMatch = `${referenceProductQuery} ${normalizedQuery}`.trim();
 
-  const pdpListPrice =
-    scrapedOk &&
-    scrapedSource &&
-    isValidComparablePrice(scrapedSource.originalPrice)
-      ? scrapedSource.originalPrice
-      : null;
   const referenceListPrice: number | null =
     priceFromManual != null && isValidComparablePrice(priceFromManual)
       ? priceFromManual
-      : pdpListPrice;
+      : null;
 
   const referencePriceUrl =
     scrapedSource?.sourceUrl?.trim() || parsed.inputUrl?.trim() || null;
@@ -1647,19 +1651,15 @@ export async function compareProduct(
   const referencePriceComparable =
     referenceListPrice != null && isValidComparablePrice(referenceListPrice);
 
-  const cheaperPool = referencePriceComparable
-    ? orderedAfterPriceAnnot.filter((c) => c.priceCompareSegment === "cheaper")
-    : [];
+  const cheaperPool = orderedAfterPriceAnnot.filter(
+    (c) => c.priceCompareSegment === "cheaper"
+  );
+  const notCheaperPool = orderedAfterPriceAnnot.filter(
+    (c) => c.priceCompareSegment === "not_cheaper"
+  );
 
-  let orderedForDisplay = (() => {
-    if (!referencePriceComparable) {
-      return orderedAfterPriceAnnot.slice(0, DISPLAY_LIMIT);
-    }
-    if (cheaperPool.length > 0) {
-      return cheaperPool.slice(0, DISPLAY_LIMIT);
-    }
-    return orderedAfterPriceAnnot.slice(0, DISPLAY_LIMIT);
-  })();
+  let orderedForDisplay = cheaperPool.slice(0, DISPLAY_LIMIT);
+  const similarButNotCheaper = notCheaperPool.slice(0, DISPLAY_LIMIT);
 
   if (!demoMode) {
     try {
@@ -1748,35 +1748,44 @@ export async function compareProduct(
 
   if (orderedForDisplay.length === 0) {
     const allFilteredByAttributes = deduped.length > 0 && rows.length === 0;
+    const hadMatchesButNoneCheaper =
+      baseFiltered.length > 0 && referencePriceComparable;
     pipelineLog("selection_final", {
       bestDeal: null,
       reason: allFilteredByAttributes
         ? "all_candidates_failed_attribute_gates"
-        : deduped.length === 0
-          ? "no_shopping_candidates"
-          : "no_results_after_post_processing",
+        : hadMatchesButNoneCheaper
+          ? "no_cheaper_than_reference"
+          : deduped.length === 0
+            ? "no_shopping_candidates"
+            : "no_results_after_post_processing",
     });
     return {
       query: referenceProductQuery,
       normalizedQuery,
       candidates: [],
+      similarButNotCheaper,
       resultsByStore: [],
       bestDeal: null,
       showBestDeal: false,
       confidence: null,
-      message: allFilteredByAttributes
-        ? "No listings matched closely enough after attribute checks. Try adding more specific size, model, or accessory details."
-        : shoppingApiMissing
-          ? "Live shopping search is not configured. Add SERPER_API_KEY or SERPAPI_API_KEY on the server."
-          : "No search results with prices yet. Try a different product description.",
+      message: hadMatchesButNoneCheaper
+        ? "No cheaper matching products found yet."
+        : allFilteredByAttributes
+          ? "No listings matched closely enough after attribute checks. Try adding more specific size, model, or accessory details."
+          : shoppingApiMissing
+            ? "Live shopping search is not configured. Add SERPER_API_KEY or SERPAPI_API_KEY on the server."
+            : "No search results with prices yet. Try a different product description.",
       sourceProduct,
       alternatives: [],
       savings: null,
-      comparisonMessage: allFilteredByAttributes
-        ? "No close matches passed filters."
-        : shoppingApiMissing
-          ? "Shopping API credentials missing."
-          : "No priced listings found for that search.",
+      comparisonMessage: hadMatchesButNoneCheaper
+        ? "No cheaper matching products found yet."
+        : allFilteredByAttributes
+          ? "No close matches passed filters."
+          : shoppingApiMissing
+            ? "Shopping API credentials missing."
+            : "No priced listings found for that search.",
       scrapeBotWalled,
       aiProductSummary: aiCompareEnrichment.summaryOneLine,
       ...(tracePayload() ? { comparisonTrace: tracePayload()! } : {}),
@@ -1849,7 +1858,7 @@ export async function compareProduct(
       alternatives = [];
       showBestDeal = false;
       savings = null;
-      comparisonMessage = "Coincidencias cercanas encontradas";
+      comparisonMessage = "Closest matches found — verify retailer links before buying.";
       message = null;
       selectionBase.pickedStore = null;
       selectionBase.reasonNoDeal = "invalid_outbound_url";
@@ -1867,18 +1876,13 @@ export async function compareProduct(
   }
 
   if (!comparisonMessage) {
-    const refOk =
-      referenceListPrice != null && isValidComparablePrice(referenceListPrice);
-    if (refOk && cheaperPool.length > 0) {
+    if (cheaperPool.length > 0) {
       comparisonMessage =
         orderedForDisplay.length >= MIN_CHEAPER_RESULTS_TARGET
-          ? `${orderedForDisplay.length} opciones más baratas que tu referencia — cada tarjeta enlaza al listado del comercio (ideal para afiliados).`
-          : `${orderedForDisplay.length} opción(es) más barata(s). Buscamos hasta ${MIN_CHEAPER_RESULTS_TARGET}; si faltan resultados, refina el nombre o el tamaño en el formulario.`;
-    } else if (refOk) {
-      comparisonMessage =
-        "No aparecieron listados más baratos que tu precio de referencia con estos criterios; mostramos las coincidencias más cercanas.";
+          ? `${orderedForDisplay.length} cheaper options than your reference price.`
+          : `${orderedForDisplay.length} cheaper option(s) than your reference. Add size or model details if you expected more results.`;
     } else {
-      comparisonMessage = "Sorted by match, then price.";
+      comparisonMessage = "No cheaper matching products found yet.";
     }
   }
 
@@ -1888,6 +1892,7 @@ export async function compareProduct(
     query: referenceProductQuery,
     normalizedQuery,
     candidates: orderedForDisplay,
+    similarButNotCheaper,
     resultsByStore: groupByStore(orderedForDisplay),
     bestDeal,
     showBestDeal,
