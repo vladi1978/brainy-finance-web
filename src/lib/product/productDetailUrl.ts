@@ -1,4 +1,5 @@
 import type { StoreId, UniversalStoreId } from "./types";
+import { getOutboundUrlBlockReason } from "./outboundUrlValidation";
 
 /** Retailers with PDP heuristics — mirrors {@link StoreId}. */
 export type ProductDetailStoreKey = StoreId;
@@ -35,42 +36,10 @@ function normHost(host: string): string {
 
 /**
  * URLs that must never be shown as clickable compare results (Google Shopping hops, redirects, etc.).
+ * Delegates to {@link getOutboundUrlBlockReason} (shared with `/redirect` validation).
  */
 export function isBlockedUserFacingOutboundUrl(url: string): boolean {
-  const trimmed = url.replace(/\s+/g, " ").trim();
-  if (!trimmed.startsWith("http")) return true;
-  if (/\s/.test(trimmed)) return true;
-
-  let u: URL;
-  try {
-    u = new URL(trimmed);
-  } catch {
-    return true;
-  }
-
-  if (!/^https?:$/i.test(u.protocol)) return true;
-
-  const host = normHost(u.hostname);
-  const path = u.pathname.toLowerCase();
-  const href = u.href.toLowerCase();
-
-  if (host === "google.com" || host.endsWith(".google.com")) return true;
-  if (host === "googleadservices.com" || host.endsWith(".googleadservices.com"))
-    return true;
-  if (host.includes("doubleclick.net") || host.includes("googlesyndication.com"))
-    return true;
-  if (host === "googleusercontent.com" || host.endsWith(".googleusercontent.com"))
-    return true;
-  if (host === "gstatic.com" || host.endsWith(".gstatic.com")) return true;
-
-  if (path.includes("/shopping") || path === "/url" || path.startsWith("/imgres"))
-    return true;
-  if (href.includes("/gp/slredirect") || /slredirect/i.test(href)) return true;
-
-  const segs = u.pathname.split("/").filter(Boolean);
-  if (segs.some((s) => s.toLowerCase() === "redirect")) return true;
-
-  return false;
+  return getOutboundUrlBlockReason(url) !== null;
 }
 
 function searchParamsHasInsensitive(sp: URLSearchParams, want: string): boolean {
