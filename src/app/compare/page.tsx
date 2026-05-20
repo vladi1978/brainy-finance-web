@@ -46,20 +46,6 @@ function sourceListingRedirectHref(sp: {
   });
 }
 
-function listingNeedsRetailerVerification(c: CompareApiCandidate): boolean {
-  if (c.urlType === "search" || c.urlType === "unknown") return true;
-  if (c.outboundIsStoreSearch) return true;
-  const outbound = (c.outboundUrl || c.affiliateUrl || c.productUrl || "").trim();
-  if (!outbound) return true;
-  try {
-    const host = new URL(outbound).hostname.toLowerCase();
-    if (host === "google.com" || host.endsWith(".google.com")) return true;
-  } catch {
-    return true;
-  }
-  return false;
-}
-
 /** Prefer Google Shopping source label; fallback to branded id (e.g. `walmart` → Walmart). */
 function candidateRetailerName(c: { store: string; storeLabel?: string }): string {
   const label = c.storeLabel?.trim();
@@ -167,7 +153,6 @@ function renderCandidateCard(
     c.productUrl?.trim() ||
     "";
   const storeLabel = candidateRetailerName(c);
-  const unverified = listingNeedsRetailerVerification(c);
   const redirectHref =
     outbound &&
     isOutboundRedirectTargetValid(outbound) &&
@@ -177,11 +162,12 @@ function renderCandidateCard(
           store: c.store,
           title: c.title,
           source: "compare_candidate",
+          urlType: c.urlType,
         })
       : null;
   const outboundButtonLabel =
     c.urlType === "product"
-      ? `Open product listing at ${storeLabel}`
+      ? `Open product at ${storeLabel}`
       : c.urlType === "search"
         ? `Open search at ${storeLabel}`
         : "Retailer link unavailable";
@@ -216,7 +202,7 @@ function renderCandidateCard(
                 </span>
               )}
               <span className="text-white/80 text-sm font-medium">{storeLabel}</span>
-              {c.urlType === "search" || unverified ? (
+              {c.urlType === "search" ? (
                 <span
                   className="text-[11px] font-medium uppercase tracking-wide rounded-md border border-amber-500/45 bg-amber-500/12 px-2 py-0.5 text-amber-200/95"
                   title="Retailer search — confirm the listing matches this product before buying."
@@ -226,7 +212,7 @@ function renderCandidateCard(
               ) : c.urlType === "product" ? (
                 <span
                   className="text-[11px] font-medium uppercase tracking-wide rounded-md border border-emerald-500/35 bg-emerald-500/10 px-2 py-0.5 text-emerald-100/95"
-                  title="Direct link to the retailer product listing."
+                  title="Direct link to the retailer product page."
                 >
                   Product listing
                 </span>
@@ -242,11 +228,6 @@ function renderCandidateCard(
           </div>
           <p className="font-medium text-white line-clamp-2">{c.title}</p>
           <p className="text-green-400 font-semibold mt-1">{formatPrice(c.price)}</p>
-          {c.urlType === "search" || unverified ? (
-            <p className="text-white/45 text-xs mt-2">
-              Search result — verify product before buying.
-            </p>
-          ) : null}
           <div className="mt-3 flex flex-wrap gap-2">
             {redirectHref ? (
               <a
@@ -516,6 +497,19 @@ export default function ComparePage() {
       }
 
       setResult(data);
+      for (const c of [
+        ...data.candidates,
+        ...(data.similarButNotCheaper ?? []),
+      ]) {
+        console.log("[compare-ui] candidate outbound", {
+          store: c.store,
+          title: c.title,
+          urlType: c.urlType,
+          urlConfidence: c.urlConfidence,
+          urlResolutionReason: c.urlResolutionReason ?? null,
+          outboundUrl: c.outboundUrl,
+        });
+      }
       void runSweepAndRefresh();
     } catch (error) {
       console.error("Compare error:", error);

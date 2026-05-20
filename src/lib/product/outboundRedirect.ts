@@ -11,6 +11,7 @@ export type BuildBrainyRedirectUrlInput = {
   store: string;
   title?: string | null;
   source?: string | null;
+  urlType?: "product" | "search" | "unknown" | null;
 };
 
 /**
@@ -27,5 +28,7 @@ export function buildBrainyRedirectUrl(input: BuildBrainyRedirectUrlInput): stri
   if (title) q.set("title", title);
   const source = input.source?.replace(/\s+/g, " ").trim();
   if (source) q.set("source", source);
+  const urlType = input.urlType?.trim();
+  if (urlType === "product" || urlType === "search") q.set("urlType", urlType);
   return `/redirect?${q.toString()}`;
 }

@@ -804,6 +804,22 @@ function relevanceReasonLine(
   return `${uiLabel} — identity ${identity.identityScore}/100 (attribute ${rel.matchType}, relevance ${rel.relevanceScore})${missing}`;
 }
 
+function logCompareCandidateOutbound(candidates: CompareApiCandidate[]): void {
+  for (const c of candidates) {
+    const outbound = (c.outboundUrl ?? "").replace(/\s+/g, " ").trim();
+    const outboundPreview =
+      outbound.length > 240 ? `${outbound.slice(0, 240)}…` : outbound;
+    console.log("[COMPARE_CANDIDATE_OUTBOUND]", {
+      store: c.store,
+      title: c.title.replace(/\s+/g, " ").trim().slice(0, 160),
+      urlType: c.urlType,
+      urlConfidence: c.urlConfidence,
+      urlResolutionReason: c.urlResolutionReason ?? null,
+      outboundUrl: outboundPreview,
+    });
+  }
+}
+
 function toCompareApiCandidate(
   c: CandidateProduct,
   rel: AttributeMatchResult,
@@ -1777,6 +1793,7 @@ export async function compareProduct(
             ? "no_shopping_candidates"
             : "no_results_after_post_processing",
     });
+    logCompareCandidateOutbound(similarButNotCheaper);
     return {
       query: referenceProductQuery,
       normalizedQuery,
@@ -1904,6 +1921,11 @@ export async function compareProduct(
   }
 
   const confidenceOut = overallConfidenceFromDeal(bestDeal);
+
+  logCompareCandidateOutbound([
+    ...orderedForDisplay,
+    ...similarButNotCheaper,
+  ]);
 
   return {
     query: referenceProductQuery,
