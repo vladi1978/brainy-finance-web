@@ -1,4 +1,4 @@
-import type { StoreId } from "./types";
+import type { StoreId, UniversalStoreId } from "./types";
 
 /** Retailers with PDP heuristics — mirrors {@link StoreId}. */
 export type ProductDetailStoreKey = StoreId;
@@ -39,6 +39,7 @@ function normHost(host: string): string {
 export function isBlockedUserFacingOutboundUrl(url: string): boolean {
   const trimmed = url.replace(/\s+/g, " ").trim();
   if (!trimmed.startsWith("http")) return true;
+  if (/\s/.test(trimmed)) return true;
 
   let u: URL;
   try {
@@ -54,6 +55,10 @@ export function isBlockedUserFacingOutboundUrl(url: string): boolean {
   const href = u.href.toLowerCase();
 
   if (host === "google.com" || host.endsWith(".google.com")) return true;
+  if (host === "googleadservices.com" || host.endsWith(".googleadservices.com"))
+    return true;
+  if (host.includes("doubleclick.net") || host.includes("googlesyndication.com"))
+    return true;
   if (host === "googleusercontent.com" || host.endsWith(".googleusercontent.com"))
     return true;
   if (host === "gstatic.com" || host.endsWith(".gstatic.com")) return true;
@@ -61,6 +66,9 @@ export function isBlockedUserFacingOutboundUrl(url: string): boolean {
   if (path.includes("/shopping") || path === "/url" || path.startsWith("/imgres"))
     return true;
   if (href.includes("/gp/slredirect") || /slredirect/i.test(href)) return true;
+
+  const segs = u.pathname.split("/").filter(Boolean);
+  if (segs.some((s) => s.toLowerCase() === "redirect")) return true;
 
   return false;
 }
@@ -577,12 +585,40 @@ export function isValidStoreOutboundUrl(
 }
 
 /**
+ * True when a compare candidate URL is safe to show as a clickable outbound link.
+ */
+export function isValidUserFacingCompareOutbound(params: {
+  store: UniversalStoreId;
+  url: string;
+  urlType: "product" | "search" | "unknown";
+}): boolean {
+  const { store, url, urlType } = params;
+  if (urlType === "unknown") return false;
+  const trimmed = url.replace(/\s+/g, " ").trim();
+  if (!trimmed) return false;
+  if (isBlockedUserFacingOutboundUrl(trimmed)) return false;
+  try {
+    new URL(trimmed);
+  } catch {
+    return false;
+  }
+  if (isProductDetailStoreKey(store)) {
+    return isValidStoreOutboundUrl(store, trimmed);
+  }
+  if (store === "other") {
+    return isAcceptableUniversalShoppingOutboundUrl(trimmed);
+  }
+  return false;
+}
+
+/**
  * Outbound URLs for Google Shopping rows tied to merchants we do not map to {@link StoreId}:
  * HTTPS links with a non-root path, or `google.com/search?q=` fallbacks (never Shopping surfaces).
  */
 export function isAcceptableUniversalShoppingOutboundUrl(url: string): boolean {
   const trimmed = url.trim();
   if (!trimmed) return false;
+  if (isBlockedUserFacingOutboundUrl(trimmed)) return false;
 
   let u: URL;
   try {
@@ -594,10 +630,7 @@ export function isAcceptableUniversalShoppingOutboundUrl(url: string): boolean {
   if (!/^https?:$/i.test(u.protocol)) return false;
 
   const host = normHost(u.hostname);
-
-  if (host === "google.com" || host.endsWith(".google.com")) {
-    return false;
-  }
+  if (!host.includes(".")) return false;
 
   if (
     host === "googleusercontent.com" ||
@@ -612,6 +645,9 @@ export function isAcceptableUniversalShoppingOutboundUrl(url: string): boolean {
   const path = u.pathname.replace(/\/+$/, "");
   if (path === "" || path === "/") return false;
 
+  const segs = u.pathname.split("/").filter(Boolean);
+  if (segs.some((s) => s.toLowerCase() === "redirect")) return false;
+
   const plower = u.pathname.toLowerCase();
   if (
     plower.includes("/cart") ||
@@ -620,6 +656,9 @@ export function isAcceptableUniversalShoppingOutboundUrl(url: string): boolean {
   ) {
     return false;
   }
+
+  const tld = host.split(".").pop() ?? "";
+  if (tld.length < 2 || !/^[a-z]+$/i.test(tld)) return false;
 
   return true;
 }

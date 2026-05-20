@@ -25,6 +25,9 @@ const DISALLOW_HOST_SUBSTR = [
   "googleusercontent.com",
   "gstatic.com",
   "schema.org",
+  "googleadservices.com",
+  "doubleclick.net",
+  "googlesyndication.com",
 ];
 
 function parsePriceLoose(raw: string | null | undefined): number | null {
@@ -245,6 +248,7 @@ export function finalizeMerchantProductUrl(rawLink: string): string | null {
   try {
     const host = new URL(resolved).hostname.replace(/^www\./i, "").toLowerCase();
     if (host === "google.com" || host.endsWith(".google.com")) return null;
+    if (isBlockedUserFacingOutboundUrl(resolved)) return null;
     return resolved;
   } catch {
     return null;

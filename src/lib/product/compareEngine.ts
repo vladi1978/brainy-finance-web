@@ -58,6 +58,7 @@ import {
   isBlockedUserFacingOutboundUrl,
   isProductDetailStoreKey,
   isStrictProductDetailUrl,
+  isValidUserFacingCompareOutbound,
 } from "./productDetailUrl";
 import { resolveCompareCandidateOutbound } from "./productUrlResolver";
 import { resolveDisplayedSearchPdps } from "./searchPdpResolve";
@@ -1640,7 +1641,11 @@ export async function compareProduct(
         api.outboundUrl?.trim() || api.affiliateUrl?.trim() || api.productUrl?.trim() || "";
       if (!outbound) return false;
       if (isBlockedUserFacingOutboundUrl(outbound)) return false;
-      return true;
+      return isValidUserFacingCompareOutbound({
+        store: api.store,
+        url: outbound,
+        urlType: api.urlType,
+      });
     });
 
   const orderedAfterPriceAnnot = annotateAndOrderCandidates(

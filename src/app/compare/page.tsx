@@ -30,9 +30,6 @@ function formatReferencePrice(n: number | null): string {
 function listingNeedsRetailerVerification(c: CompareApiCandidate): boolean {
   if (c.urlType === "search" || c.urlType === "unknown") return true;
   if (c.outboundIsStoreSearch) return true;
-  if (c.urlConfidence === "low") return true;
-  const reason = c.urlResolutionReason ?? "";
-  if (/generated_search|fallback|unverified/i.test(reason)) return true;
   const outbound = (c.outboundUrl || c.affiliateUrl || c.productUrl || "").trim();
   if (!outbound) return true;
   try {
@@ -191,16 +188,16 @@ function renderCandidateCard(
               {unverified ? (
                 <span
                   className="text-[11px] font-medium uppercase tracking-wide rounded-md border border-amber-500/45 bg-amber-500/12 px-2 py-0.5 text-amber-200/95"
-                  title="Not a confirmed product listing — verify on the retailer site."
+                  title="Retailer search — confirm the listing matches this product before buying."
                 >
-                  Search result — verify on retailer site
+                  Search result — verify product before buying
                 </span>
               ) : c.urlType === "product" ? (
                 <span
                   className="text-[11px] font-medium uppercase tracking-wide rounded-md border border-emerald-500/35 bg-emerald-500/10 px-2 py-0.5 text-emerald-100/95"
-                  title="Direct link to the retailer listing."
+                  title="Direct link to the retailer product listing."
                 >
-                  Store listing
+                  Product listing
                 </span>
               ) : null}
               <MatchBadge type={c.matchType} />
@@ -216,7 +213,7 @@ function renderCandidateCard(
           <p className="text-green-400 font-semibold mt-1">{formatPrice(c.price)}</p>
           {unverified ? (
             <p className="text-white/45 text-xs mt-2">
-              Search result — verify on retailer site before buying.
+              Search result — verify product before buying.
             </p>
           ) : null}
           <div className="mt-3 flex flex-wrap gap-2">
@@ -776,7 +773,7 @@ export default function ComparePage() {
                 <div>
                   <h3 className="text-xl font-semibold text-white mb-1">
                     {result.candidates.length > 0
-                      ? result.comparisonMessage ?? "Cheaper matches"
+                      ? result.comparisonMessage ?? "Best savings"
                       : result.comparisonMessage ??
                         result.message ??
                         "No cheaper matching products found yet."}
@@ -795,7 +792,7 @@ export default function ComparePage() {
                         cheaper than your reference price.
                       </p>
                       <h4 className="text-lg font-semibold mb-3 text-white/90">
-                        Cheaper matches ({result.candidates.length})
+                        Best savings ({result.candidates.length})
                       </h4>
                       <ul className="space-y-3">
                         {result.candidates.map((c) =>
@@ -814,7 +811,7 @@ export default function ComparePage() {
                   {(result.similarButNotCheaper?.length ?? 0) > 0 ? (
                     <details className="mt-6 rounded-xl border border-white/10 bg-white/5 p-4">
                       <summary className="cursor-pointer text-sm font-semibold text-white/80">
-                        Similar but not cheaper ({result.similarButNotCheaper!.length})
+                        Other similar products ({result.similarButNotCheaper!.length})
                       </summary>
                       <ul className="space-y-3 mt-4">
                         {result.similarButNotCheaper!.map((c) =>

@@ -6,6 +6,7 @@ import {
   isProductLikeRetailerUrl,
   isRetailerSearchUrl,
 } from "./productDetailUrl";
+import { shortenSearchQuery, truncateAtWordBoundary } from "./shortenSearchQuery";
 import type { StoreId, UniversalStoreId } from "./types";
 
 function truncateUrlForLog(url: string, max = 240): string {
@@ -38,10 +39,21 @@ export type ResolvedCompareCandidateOutbound = {
 };
 
 /**
- * Retailer search URL using the listing title (honest fallback when PDP/affiliate links are unreliable).
+ * Retailer search URL using a shortened listing title (honest fallback when PDP/affiliate links are unreliable).
  */
 export function buildRetailerSearchUrlFromTitle(store: StoreId, title: string): string {
-  const q = title.replace(/\s+/g, " ").trim();
+  const maxDecoded = store === "bestbuy" ? 50 : 60;
+  let q = shortenSearchQuery(title, maxDecoded);
+  if (store === "bestbuy") {
+    q = q.replace(/["'`]/g, "");
+    q = truncateAtWordBoundary(q.replace(/\s+/g, " ").trim(), maxDecoded);
+  }
+  if (!q.trim()) {
+    q = truncateAtWordBoundary(
+      title.replace(/\s+/g, " ").trim().replace(/["'`]/g, ""),
+      maxDecoded
+    );
+  }
   const enc = encodeURIComponent(q || " ");
   switch (store) {
     case "amazon":
@@ -85,18 +97,6 @@ export function buildRetailerSearchUrlFromTitle(store: StoreId, title: string): 
     default:
       return "";
   }
-}
-
-/** Google web search — honest fallback when the merchant has no mapped host patterns. */
-export function buildGoogleSearchUrlForRetailerListing(
-  title: string,
-  sourceLabel: string
-): string {
-  const q = [title, sourceLabel]
-    .map((s) => s.replace(/\s+/g, " ").trim())
-    .filter(Boolean)
-    .join(" ");
-  return `https://www.google.com/search?q=${encodeURIComponent(q)}`;
 }
 
 function hasUsableListingTitle(title: string): boolean {
