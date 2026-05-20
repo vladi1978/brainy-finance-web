@@ -469,17 +469,50 @@ export default function ComparePage() {
         body: JSON.stringify(body),
       });
 
-      const data = (await response.json()) as CompareProductResponse & {
+      const text = await response.text();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text) as unknown;
+      } catch {
+        setErrorMessage(
+          "Brainy could not compare this product right now."
+        );
+        return;
+      }
+
+      if (
+        parsed === null ||
+        typeof parsed !== "object" ||
+        Array.isArray(parsed)
+      ) {
+        setErrorMessage(
+          "Brainy could not compare this product right now."
+        );
+        return;
+      }
+
+      const data = parsed as CompareProductResponse & {
         error?: string;
+        message?: string;
       };
 
       if (!response.ok) {
-        const apiErr = data?.error?.trim();
+        const apiErr = (data.error ?? "").trim();
+        const apiMsg = (data.message ?? "").trim();
+
         if (response.status === 400 && apiErr) {
           setPriceError(apiErr);
           return;
         }
-        throw new Error(apiErr || "Failed to compare product");
+
+        setErrorMessage(
+          apiMsg ||
+            (apiErr === "compare_failed"
+              ? "Brainy could not compare this product right now."
+              : apiErr) ||
+            "Brainy could not compare this product right now."
+        );
+        return;
       }
 
       setResult(data);

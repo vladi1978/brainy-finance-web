@@ -90,18 +90,21 @@ export async function POST(req: Request) {
     return NextResponse.json({ success: true, ...result });
   } catch (error) {
     console.error("[COMPARE_API_ERROR]", error);
-    const message =
+    const thrownMessage =
       error instanceof Error ? error.message.trim() : "";
 
-    if (message === REFERENCE_PRICE_REQUIRED_MESSAGE) {
+    if (thrownMessage === REFERENCE_PRICE_REQUIRED_MESSAGE) {
       return NextResponse.json(
         { success: false, error: REFERENCE_PRICE_REQUIRED_MESSAGE },
         { status: 400 }
       );
     }
 
+    const safeMessage =
+      "We could not compare this product right now. Please try again in a moment.";
+
     return NextResponse.json(
-      { success: false, error: "Compare failed" },
+      { error: "compare_failed", message: safeMessage },
       { status: 500 }
     );
   }
