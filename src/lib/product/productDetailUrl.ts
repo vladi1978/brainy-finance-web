@@ -289,6 +289,7 @@ function amazonPdpPath(path: string): boolean {
   return (
     /\/dp\/[a-z0-9]{10}\b/i.test(path) ||
     /\/gp\/product\/[a-z0-9]{10}\b/i.test(path) ||
+    /\/gp\/aw\/d\/[a-z0-9]{10}\b/i.test(path) ||
     /\/exec\/obidos\/asin\/[a-z0-9]{10}\b/i.test(path)
   );
 }
@@ -310,8 +311,18 @@ function temuPdpPath(path: string): boolean {
   return leaf.length > 5 && !/search/i.test(leaf);
 }
 
-function bestbuyPdpPath(path: string): boolean {
-  return /^\/site\/[^/]+\/\d+\.p\b/i.test(path);
+function bestbuyPdpPath(path: string, sp?: URLSearchParams): boolean {
+  if (/^\/site\/[^/]+\/\d+\.p\b/i.test(path)) return true;
+  if (path.toLowerCase().includes("searchpage.jsp")) return false;
+  if (!/^\/site\//i.test(path)) return false;
+  if (sp && searchParamValueInsensitive(sp, "skuid")?.trim()) return true;
+  if (/\/skuid\/\d+/i.test(path)) return true;
+  const segs = path.replace(/\/+$/, "").split("/").filter(Boolean);
+  return segs.length >= 3 && segs[0]?.toLowerCase() === "site";
+}
+
+function ebayPdpPath(path: string): boolean {
+  return /\/itm\/\d+/i.test(path);
 }
 
 function homedepotPdpPath(path: string): boolean {
@@ -325,6 +336,35 @@ function lowesPdpPath(path: string): boolean {
 function isHomepageOnlyRetailPath(u: URL): boolean {
   const p = u.pathname.replace(/\/+$/, "");
   return p === "" || p === "/";
+}
+
+/**
+ * Bare homepage or obvious category/browse landing — safe to replace with title search.
+ */
+export function isClearlyHomepageOrCategoryOnly(
+  store: ProductDetailStoreKey,
+  url: string
+): boolean {
+  let u: URL;
+  try {
+    u = new URL(url.trim());
+  } catch {
+    return true;
+  }
+
+  if (!/^https?:$/i.test(u.protocol)) return true;
+
+  const host = normHost(u.hostname);
+  if (!hostMatchesStoreKey(store, host)) return true;
+
+  if (isHomepageOnlyRetailPath(u)) return true;
+
+  const path = u.pathname.toLowerCase();
+  if (path.startsWith("/gp/browse")) return true;
+  if ((path.startsWith("/b/") || path === "/b") && u.searchParams.has("node")) return true;
+  if (path.includes("/category")) return true;
+
+  return false;
 }
 
 /** True only for retailer-hosted product detail paths (never search/category landing pages). */
@@ -363,11 +403,13 @@ export function isStrictProductDetailUrl(
     case "temu":
       return temuPdpPath(path);
     case "bestbuy":
-      return bestbuyPdpPath(path);
+      return bestbuyPdpPath(path, u.searchParams);
     case "homedepot":
       return homedepotPdpPath(path);
     case "lowes":
       return lowesPdpPath(path);
+    case "ebay":
+      return ebayPdpPath(path);
     default:
       return false;
   }

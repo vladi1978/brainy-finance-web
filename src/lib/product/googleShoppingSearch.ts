@@ -1,11 +1,7 @@
 /** Active cross-store discovery for compare — Serper or SerpAPI Google Shopping. See `LEGACY.md`. */
 import { buildNormalizedProduct, detectStoreFromProductUrl } from "./normalize";
-import { buildRetailerSearchUrlFromTitle } from "./productUrlResolver";
-import {
-  isAcceptableUniversalShoppingOutboundUrl,
-  isBlockedUserFacingOutboundUrl,
-  isValidStoreOutboundUrl,
-} from "./productDetailUrl";
+import { resolveShoppingRowProductUrl } from "./productUrlResolver";
+import { isBlockedUserFacingOutboundUrl } from "./productDetailUrl";
 import { dedupeIdenticalListingUrls } from "./candidateDedupe";
 import type {
   CandidateProduct,
@@ -564,41 +560,11 @@ function buildProductUrlForShoppingRow(args: {
   merchantUrl: string | null;
   sourceLabel: string | null;
 }): string | null {
-  const { store, title, merchantUrl } = args;
-  if (store === "other") {
-    if (
-      merchantUrl &&
-      isAcceptableUniversalShoppingOutboundUrl(merchantUrl) &&
-      !isBlockedUserFacingOutboundUrl(merchantUrl)
-    ) {
-      return merchantUrl;
-    }
-    return null;
-  }
-
-  let productUrl = merchantUrl ?? buildRetailerSearchUrlFromTitle(store, title);
-  if (productUrl && isBlockedUserFacingOutboundUrl(productUrl)) {
-    productUrl = buildRetailerSearchUrlFromTitle(store, title);
-  }
-  if (!isValidStoreOutboundUrl(store, productUrl)) {
-    const generated = buildRetailerSearchUrlFromTitle(store, title);
-    if (
-      generated &&
-      !isBlockedUserFacingOutboundUrl(generated) &&
-      generated !== productUrl &&
-      isValidStoreOutboundUrl(store, generated)
-    ) {
-      productUrl = generated;
-    }
-  }
-  if (
-    !productUrl ||
-    isBlockedUserFacingOutboundUrl(productUrl) ||
-    !isValidStoreOutboundUrl(store, productUrl)
-  ) {
-    return null;
-  }
-  return productUrl;
+  return resolveShoppingRowProductUrl({
+    store: args.store,
+    title: args.title,
+    merchantUrl: args.merchantUrl,
+  });
 }
 
 function rowToCandidate(
