@@ -295,14 +295,22 @@ function amazonPdpPath(path: string): boolean {
 }
 
 function walmartPdpPath(path: string): boolean {
-  if (!/^\/ip\//i.test(path)) return false;
   if (/^\/ip\/search/i.test(path)) return false;
-  const rest = path.slice(4);
-  return rest.length >= 3;
+  if (/^\/ip\//i.test(path)) {
+    const rest = path.slice(4);
+    return rest.length >= 3;
+  }
+  if (/^\/product\//i.test(path)) {
+    const rest = path.slice(9);
+    return rest.length >= 3 && !/^search/i.test(rest);
+  }
+  return false;
 }
 
 function targetPdpPath(path: string): boolean {
-  return /\/p\/[^/]+\/-\/a-\d+/i.test(path);
+  if (!/^\/p\//i.test(path)) return false;
+  const rest = path.slice(3).replace(/\/+$/, "");
+  return rest.length >= 2 && !/^search/i.test(rest);
 }
 
 function temuPdpPath(path: string): boolean {
@@ -330,7 +338,9 @@ function homedepotPdpPath(path: string): boolean {
 }
 
 function lowesPdpPath(path: string): boolean {
-  return /^\/pd\/[^/]+\/\d+/i.test(path);
+  if (!/^\/pd\//i.test(path)) return false;
+  const rest = path.slice(4).replace(/\/+$/, "");
+  return rest.length >= 3 && !/^search/i.test(rest);
 }
 
 function isHomepageOnlyRetailPath(u: URL): boolean {

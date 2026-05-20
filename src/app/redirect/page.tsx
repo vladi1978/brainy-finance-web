@@ -2,6 +2,8 @@
 
 import { Suspense, useEffect, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
+import { unwrapMerchantUrl } from "@/lib/product/googleShoppingSearch";
+import { isOutboundRedirectTargetValid } from "@/lib/product/outboundUrlValidation";
 
 /*
  * TODO — Phase 2 affiliate program wrapping on validated targets (examples):
@@ -17,21 +19,6 @@ import { useSearchParams } from "next/navigation";
 type RedirectValidation =
   | { valid: true; href: string }
   | { valid: false; reason: string };
-
-function normalizeHostname(host: string): string {
-  return host.replace(/^www\./i, "").toLowerCase();
-}
-
-function hostIsGoogleDomain(host: string): boolean {
-  const h = normalizeHostname(host);
-  if (h === "google.com" || h.endsWith(".google.com")) return true;
-  return h.split(".").includes("google");
-}
-
-function hostIsGoogleAdServices(host: string): boolean {
-  const h = normalizeHostname(host);
-  return h === "googleadservices.com" || h.endsWith(".googleadservices.com");
-}
 
 /**
  * Decode percent-escapes only when they remain after `useSearchParams` decoding.
@@ -86,30 +73,31 @@ function parseRedirectTarget(raw: string): URL | null {
   }
 }
 
+function resolveRedirectHref(decodedTarget: string): string | null {
+  const trimmed = decodedTarget.trim();
+  if (!trimmed) return null;
+
+  const unwrapped = unwrapMerchantUrl(trimmed);
+  const candidate = (unwrapped ?? trimmed).trim();
+  if (!candidate.startsWith("http")) return null;
+
+  const parsed = parseRedirectTarget(candidate);
+  if (!parsed) return null;
+
+  return parsed.href;
+}
+
 function validateRedirectTarget(decodedTarget: string): RedirectValidation {
-  const url = parseRedirectTarget(decodedTarget);
-  if (!url) {
+  const href = resolveRedirectHref(decodedTarget);
+  if (!href) {
     return { valid: false, reason: decodedTarget.trim() ? "malformed" : "empty" };
   }
 
-  if (!/^https?:$/i.test(url.protocol)) {
-    return { valid: false, reason: "invalid_protocol" };
+  if (!isOutboundRedirectTargetValid(href)) {
+    return { valid: false, reason: "blocked_outbound" };
   }
 
-  const host = url.hostname.trim();
-  if (!host) {
-    return { valid: false, reason: "missing_host" };
-  }
-
-  if (hostIsGoogleDomain(host)) {
-    return { valid: false, reason: "google_domain" };
-  }
-
-  if (hostIsGoogleAdServices(host)) {
-    return { valid: false, reason: "googleadservices" };
-  }
-
-  return { valid: true, href: url.href };
+  return { valid: true, href };
 }
 
 function RedirectClient() {

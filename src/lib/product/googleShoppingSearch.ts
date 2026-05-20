@@ -32,6 +32,61 @@ const DISALLOW_HOST_SUBSTR = [
   "googlesyndication.com",
 ];
 
+const REDIRECT_PARAM_KEYS = ["url", "adurl", "q", "u"] as const;
+
+function normUnwrapHost(host: string): string {
+  return host.replace(/^www\./i, "").toLowerCase();
+}
+
+function hostIsGoogleOrShoppingRedirect(host: string): boolean {
+  const h = normUnwrapHost(host);
+  if (h === "google.com" || h.endsWith(".google.com")) return true;
+  if (h === "shopping.google.com" || h.endsWith(".shopping.google.com")) return true;
+  return false;
+}
+
+function hostIsGoogleAdsOrTrackingRedirect(host: string): boolean {
+  const h = normUnwrapHost(host);
+  if (h === "googleadservices.com" || h.endsWith(".googleadservices.com")) return true;
+  if (h === "googlesyndication.com" || h.endsWith(".googlesyndication.com")) return true;
+  if (h.includes("doubleclick.net")) return true;
+  return false;
+}
+
+function hostIsBlockedOutboundSurface(host: string): boolean {
+  const h = normUnwrapHost(host);
+  if (hostIsGoogleOrShoppingRedirect(h) || hostIsGoogleAdsOrTrackingRedirect(h)) return true;
+  for (const bad of DISALLOW_HOST_SUBSTR) {
+    if (h === bad || h.endsWith(`.${bad}`)) return true;
+  }
+  return false;
+}
+
+function safeDecodeUrlParam(value: string): string {
+  let s = value.trim();
+  for (let i = 0; i < 3; i++) {
+    if (!/%[0-9A-Fa-f]{2}/.test(s)) break;
+    try {
+      const next = decodeURIComponent(s);
+      if (next === s) break;
+      s = next;
+    } catch {
+      break;
+    }
+  }
+  return s;
+}
+
+function pickNestedHttpTarget(u: URL): string | null {
+  for (const key of REDIRECT_PARAM_KEYS) {
+    const raw = u.searchParams.get(key);
+    if (!raw?.trim()) continue;
+    const decoded = safeDecodeUrlParam(raw);
+    if (decoded.startsWith("http://") || decoded.startsWith("https://")) return decoded;
+  }
+  return null;
+}
+
 function parsePriceLoose(raw: string | null | undefined): number | null {
   if (raw == null || raw === "") return null;
   const cleaned = String(raw).replace(/[^0-9.]/g, "");
@@ -198,7 +253,7 @@ function dedupeShoppingRowKey(row: Record<string, unknown>): string {
 }
 
 /**
- * Unwrap nested Google redirect URLs and decode common `url` / `q` parameters.
+ * Unwrap nested Google / ad redirect URLs (`url`, `adurl`, `q`, `u`) to a merchant PDP.
  */
 export function unwrapMerchantUrl(raw: string, depth = 0): string | null {
   if (depth > 6) return null;
@@ -207,28 +262,16 @@ export function unwrapMerchantUrl(raw: string, depth = 0): string | null {
 
   try {
     const u = new URL(t);
-    const host = u.hostname.replace(/^www\./i, "").toLowerCase();
+    const host = normUnwrapHost(u.hostname);
 
-    if (host === "google.com" || host.endsWith(".google.com")) {
-      const nested =
-        u.searchParams.get("url") ||
-        u.searchParams.get("q") ||
-        u.searchParams.get("adurl");
-      if (nested?.startsWith("http")) {
-        try {
-          return unwrapMerchantUrl(decodeURIComponent(nested), depth + 1);
-        } catch {
-          return unwrapMerchantUrl(nested, depth + 1);
-        }
-      }
-      /** Pure Shopping product pages are not merchant PDPs — drop them. */
+    if (hostIsGoogleOrShoppingRedirect(host) || hostIsGoogleAdsOrTrackingRedirect(host)) {
+      const nested = pickNestedHttpTarget(u);
+      if (nested) return unwrapMerchantUrl(nested, depth + 1);
       if (u.pathname.includes("/shopping")) return null;
       return null;
     }
 
-    for (const bad of DISALLOW_HOST_SUBSTR) {
-      if (host === bad || host.endsWith(`.${bad}`)) return null;
-    }
+    if (hostIsBlockedOutboundSurface(host)) return null;
 
     return u.toString();
   } catch {
@@ -237,8 +280,8 @@ export function unwrapMerchantUrl(raw: string, depth = 0): string | null {
 }
 
 /**
- * Resolve any Google Shopping / Serp row link to a **merchant PDP** only.
- * Never returns google.com shopping or redirect surfaces — those leak users to Google.
+ * Resolve any Google Shopping / Serp row link to a merchant URL.
+ * Never returns Google Shopping hops, ad redirects, or malformed links.
  */
 export function finalizeMerchantProductUrl(rawLink: string): string | null {
   const trimmed = rawLink.trim();
@@ -248,8 +291,8 @@ export function finalizeMerchantProductUrl(rawLink: string): string | null {
   if (!resolved) return null;
 
   try {
-    const host = new URL(resolved).hostname.replace(/^www\./i, "").toLowerCase();
-    if (host === "google.com" || host.endsWith(".google.com")) return null;
+    const host = normUnwrapHost(new URL(resolved).hostname);
+    if (hostIsBlockedOutboundSurface(host)) return null;
     if (isBlockedUserFacingOutboundUrl(resolved)) return null;
     return resolved;
   } catch {

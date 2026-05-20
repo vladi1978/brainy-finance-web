@@ -65,6 +65,8 @@ function shouldGenerateSearchFallback(
   if (!listingRaw.trim()) return true;
   if (isMalformedHttpUrl(listingRaw)) return true;
   if (isBlockedUserFacingOutboundUrl(listingRaw)) return true;
+  if (isStrictProductDetailUrl(store, listingRaw)) return false;
+  if (isProductLikeRetailerUrl(store, listingRaw)) return false;
   return isClearlyHomepageOrCategoryOnly(store, listingRaw);
 }
 
@@ -164,6 +166,28 @@ function hasUsableListingTitle(title: string): boolean {
   return title.replace(/\s+/g, " ").trim().length >= 2;
 }
 
+function isUniversalMerchantProductLikeUrl(url: string): boolean {
+  const trimmed = url.trim();
+  if (!trimmed || isBlockedUserFacingOutboundUrl(trimmed)) return false;
+  try {
+    const u = new URL(trimmed);
+    const pathLower = u.pathname.toLowerCase();
+    if (pathLower.includes("/search") || pathLower === "/s" || pathLower.startsWith("/s/")) {
+      return false;
+    }
+    if (
+      /\/(?:product|products|item|items|dp|ip|itm|pd|sku)(?:\/|$)/i.test(pathLower) ||
+      /^\/p\/[^/]/i.test(pathLower)
+    ) {
+      return true;
+    }
+    const segs = u.pathname.split("/").filter(Boolean);
+    return segs.length >= 2;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Decide what URL Brainy opens for a Shopping candidate row after attribute gates pass:
  * PDP (high trust), retailer search listing (medium), or title-derived search (low).
@@ -184,15 +208,15 @@ export function resolveCompareCandidateOutbound(args: {
         url: truncateUrlForLog(listingRaw),
       });
     } else if (listingRaw && isAcceptableUniversalShoppingOutboundUrl(listingRaw)) {
-      const productLike = /\/(product|products|\/p\/|\/pd\/|\/item\/|\/dp\/|\/ip\/|\/itm\/)/i.test(
-        listingRaw
-      );
+      const productLike = isUniversalMerchantProductLikeUrl(listingRaw);
       return {
         outboundUrlRaw: listingRaw,
         resolvedProductUrl: productLike ? listingRaw : undefined,
         urlType: productLike ? "product" : "search",
         urlConfidence: productLike ? "medium" : "low",
-        urlResolutionReason: "merchant_outbound_unverified",
+        urlResolutionReason: productLike
+          ? "merchant_product_like_url"
+          : "merchant_outbound_unverified",
       };
     }
     return {
