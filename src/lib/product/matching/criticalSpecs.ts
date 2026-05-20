@@ -184,10 +184,15 @@ function pairsConflict(source: DimensionPair[], candidate: DimensionPair[]): boo
   return false;
 }
 
+function pairPresentInBlob(pair: DimensionPair, blob: string): boolean {
+  if (blob.includes(pair.key)) return true;
+  const aRe = new RegExp(`\\b${pair.a}\\b`);
+  const bRe = new RegExp(`\\b${pair.b}\\b`);
+  return aRe.test(blob) && bRe.test(blob);
+}
+
 /**
  * Hard gate for universal critical specs: dimensions, size, capacity, pack, model, condition.
- *
- * Missing candidate critical specs are not a hard reject because many retailer search results omit full specs.
  */
 export function checkUniversalCriticalSpecsGate(
   source: NormalizedProduct,
@@ -197,13 +202,23 @@ export function checkUniversalCriticalSpecsGate(
   const sourceTitle = source.structured.title;
   const src = buildCriticalSpecsSnapshot(source, sourceTitle);
   const cand = buildCriticalSpecsSnapshot(candidate, candidateTitle);
+  const candBlob = normalizeTitle(
+    `${candidateTitle} ${candidate.structured.title}`
+  );
 
-  if (
-    src.dimensionPairs.length > 0 &&
-    cand.dimensionPairs.length > 0 &&
-    pairsConflict(src.dimensionPairs, cand.dimensionPairs)
-  ) {
-    return fail("dimension_pair_mismatch", src, cand);
+  if (src.dimensionPairs.length > 0) {
+    const primary = src.dimensionPairs[0]!;
+    if (cand.dimensionPairs.length > 0) {
+      const exact = cand.dimensionPairs.some((p) => pairsEquivalent(p, primary));
+      if (!exact) {
+        if (pairsConflict(src.dimensionPairs, cand.dimensionPairs)) {
+          return fail("dimension_pair_mismatch", src, cand);
+        }
+        return fail("dimension_pair_missing", src, cand);
+      }
+    } else if (!pairPresentInBlob(primary, candBlob)) {
+      return fail("dimension_pair_unconfirmed", src, cand);
+    }
   }
 
   if (src.diagonalInches != null && cand.diagonalInches != null) {
