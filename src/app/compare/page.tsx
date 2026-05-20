@@ -14,6 +14,10 @@ import {
 } from "@/lib/product/manualProductInput";
 import type { PriceAlertSurfaceNotification } from "@/lib/premium/priceAlerts";
 import { storeDisplayLabel, storeLogoUrl } from "@/lib/premium/storeBranding";
+import {
+  buildBrainyRedirectUrl,
+  isOutboundRedirectTargetValid,
+} from "@/lib/product/outboundRedirect";
 
 const USER_STORAGE_KEY = "brainy_finance_uid";
 
@@ -25,6 +29,21 @@ function formatPrice(n: number | null): string {
 function formatReferencePrice(n: number | null): string {
   if (n == null || !Number.isFinite(n)) return "Reference price unavailable";
   return `$${n.toFixed(2)}`;
+}
+
+function sourceListingRedirectHref(sp: {
+  sourceUrl?: string | null;
+  store: string;
+  title: string;
+}): string | null {
+  const srcUrl = (sp.sourceUrl ?? "").replace(/\s+/g, " ").trim();
+  if (!srcUrl || !isOutboundRedirectTargetValid(srcUrl)) return null;
+  return buildBrainyRedirectUrl({
+    targetUrl: srcUrl,
+    store: sp.store,
+    title: sp.title,
+    source: "compare_source_listing",
+  });
 }
 
 function listingNeedsRetailerVerification(c: CompareApiCandidate): boolean {
@@ -142,17 +161,29 @@ function renderCandidateCard(
   }
 ) {
   const { isWinner, best, onTrack } = opts;
-  const outbound = c.outboundUrl?.trim() || c.affiliateUrl?.trim() || "";
+  const outbound =
+    c.outboundUrl?.trim() ||
+    c.affiliateUrl?.trim() ||
+    c.productUrl?.trim() ||
+    "";
   const storeLabel = candidateRetailerName(c);
   const unverified = listingNeedsRetailerVerification(c);
-  const hasClickableRetailerUrl =
-    outbound.length > 0 && (c.urlType === "product" || c.urlType === "search");
-  const outboundButtonLabel = unverified
-    ? `Open at ${storeLabel}`
-    : c.urlType === "product"
-      ? `View product at ${storeLabel}`
+  const redirectHref =
+    outbound &&
+    isOutboundRedirectTargetValid(outbound) &&
+    (c.urlType === "product" || c.urlType === "search")
+      ? buildBrainyRedirectUrl({
+          targetUrl: outbound,
+          store: c.store,
+          title: c.title,
+          source: "compare_candidate",
+        })
+      : null;
+  const outboundButtonLabel =
+    c.urlType === "product"
+      ? `Open product listing at ${storeLabel}`
       : c.urlType === "search"
-        ? `Search at ${storeLabel}`
+        ? `Open search at ${storeLabel}`
         : "Retailer link unavailable";
   const savingsVs = c.savingsVsReference;
 
@@ -185,7 +216,7 @@ function renderCandidateCard(
                 </span>
               )}
               <span className="text-white/80 text-sm font-medium">{storeLabel}</span>
-              {unverified ? (
+              {c.urlType === "search" || unverified ? (
                 <span
                   className="text-[11px] font-medium uppercase tracking-wide rounded-md border border-amber-500/45 bg-amber-500/12 px-2 py-0.5 text-amber-200/95"
                   title="Retailer search — confirm the listing matches this product before buying."
@@ -211,15 +242,15 @@ function renderCandidateCard(
           </div>
           <p className="font-medium text-white line-clamp-2">{c.title}</p>
           <p className="text-green-400 font-semibold mt-1">{formatPrice(c.price)}</p>
-          {unverified ? (
+          {c.urlType === "search" || unverified ? (
             <p className="text-white/45 text-xs mt-2">
               Search result — verify product before buying.
             </p>
           ) : null}
           <div className="mt-3 flex flex-wrap gap-2">
-            {hasClickableRetailerUrl ? (
+            {redirectHref ? (
               <a
-                href={outbound}
+                href={redirectHref}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center rounded-lg bg-green-500 px-4 py-2 text-sm font-semibold text-black hover:bg-green-400 transition"
@@ -736,14 +767,26 @@ export default function ComparePage() {
                           Reference price for savings comparisons
                         </p>
                       ) : null}
-                      <a
-                        href={result.sourceProduct.sourceUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex mt-3 items-center rounded-lg border border-white/20 bg-white/5 px-3 py-1.5 text-xs font-medium text-white/90 hover:bg-white/10"
-                      >
-                        View original listing
-                      </a>
+                      {(() => {
+                        const sp = result.sourceProduct;
+                        if (!sp) return null;
+                        const href = sourceListingRedirectHref({
+                          sourceUrl: sp.sourceUrl,
+                          store: sp.store,
+                          title: sp.title,
+                        });
+                        if (!href) return null;
+                        return (
+                          <a
+                            href={href}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex mt-3 items-center rounded-lg border border-white/20 bg-white/5 px-3 py-1.5 text-xs font-medium text-white/90 hover:bg-white/10"
+                          >
+                            View original listing
+                          </a>
+                        );
+                      })()}
                     </div>
                   </div>
                 </div>
