@@ -20,6 +20,12 @@ function shoppingLog(payload: Record<string, unknown>): void {
   console.log("[google-shopping]", payload);
 }
 
+const SHOPPING_ROW_VERBOSE =
+  process.env.PRODUCT_SHOPPING_DEBUG === "1" ||
+  process.env.DEBUG_COMPARE === "true";
+
+type ShoppingJsonOk = { payload: unknown; rawTextLength: number };
+
 const DISALLOW_HOST_SUBSTR = [
   "google.com",
   "googleusercontent.com",
@@ -460,7 +466,7 @@ function parsedItemFromShoppingRow(row: Record<string, unknown>): ParsedSerpShop
 }
 
 
-async function fetchSerperShoppingJson(query: string): Promise<unknown | null> {
+async function fetchSerperShoppingJson(query: string): Promise<ShoppingJsonOk | null> {
   const apiKey = process.env.SERPER_API_KEY?.trim();
   if (!apiKey) return null;
 
@@ -491,13 +497,14 @@ async function fetchSerperShoppingJson(query: string): Promise<unknown | null> {
 
   if (!res.ok) return null;
   try {
-    return JSON.parse(text) as unknown;
+    const payload = JSON.parse(text) as unknown;
+    return { payload, rawTextLength: text.length };
   } catch {
     return null;
   }
 }
 
-async function fetchSerpApiShoppingJson(query: string): Promise<unknown | null> {
+async function fetchSerpApiShoppingJson(query: string): Promise<ShoppingJsonOk | null> {
   const apiKey = process.env.SERPAPI_API_KEY?.trim();
   if (!apiKey) return null;
 
@@ -520,18 +527,21 @@ async function fetchSerpApiShoppingJson(query: string): Promise<unknown | null> 
 
   if (!res.ok) return null;
   try {
-    return JSON.parse(text) as unknown;
+    const payload = JSON.parse(text) as unknown;
+    return { payload, rawTextLength: text.length };
   } catch {
     return null;
   }
 }
 
 function logShoppingRowSkip(reason: string, detail: Record<string, unknown>): void {
-  console.log("[google-shopping-row-skip]", JSON.stringify({ reason, ...detail }));
+  if (!SHOPPING_ROW_VERBOSE) return;
+  console.log("[google-shopping-row-skip]", { reason, ...detail });
 }
 
 function logUnknownStoreKept(detail: Record<string, unknown>): void {
-  console.log("[UNKNOWN_STORE_KEPT]", JSON.stringify(detail));
+  if (!SHOPPING_ROW_VERBOSE) return;
+  console.log("[UNKNOWN_STORE_KEPT]", detail);
 }
 
 function resolveStoreForShoppingRow(
@@ -703,12 +713,16 @@ async function fetchShoppingForQuery(
   query: string,
   limit: number
 ): Promise<FetchOutcome> {
-  let payload = await fetchSerperShoppingJson(query);
+  const serperRes = await fetchSerperShoppingJson(query);
   let hints: string[] = ["serper"];
+  let payload: unknown | null = serperRes?.payload ?? null;
+  let rawResponseByteLength = serperRes?.rawTextLength ?? 0;
 
   if (payload == null) {
-    payload = await fetchSerpApiShoppingJson(query);
+    const serpapiRes = await fetchSerpApiShoppingJson(query);
     hints = ["serpapi"];
+    payload = serpapiRes?.payload ?? null;
+    rawResponseByteLength = serpapiRes?.rawTextLength ?? 0;
   }
 
   if (payload == null) {
@@ -729,24 +743,41 @@ async function fetchShoppingForQuery(
   const data = typeof payload === "object" && payload !== null ? payload : null;
   const rows = normalizeShoppingRows(payload);
 
-  if (hints[0] === "serper") {
+  if (process.env.DEBUG_COMPARE === "true" && hints[0] === "serper") {
     const items = extractRawSerperShoppingItems(payload);
     console.log("[SERPER_TOTAL_ITEMS]", items.length);
     const firstItem = items[0];
     if (firstItem != null && typeof firstItem === "object" && !Array.isArray(firstItem)) {
       console.log("[SERPER_ROW_KEYS]", Object.keys(firstItem as Record<string, unknown>));
     }
-    console.log("[SERPER_RAW_ITEMS]", JSON.stringify(items.slice(0, 5), null, 2));
+    const preview = items.slice(0, 3).map((it) =>
+      typeof it === "object" && it !== null && !Array.isArray(it)
+        ? Object.fromEntries(
+            Object.entries(it as Record<string, unknown>).map(([k, v]) => [
+              k,
+              typeof v === "string" ? v.slice(0, 120) : v,
+            ])
+          )
+        : it
+    );
+    console.log("[SERPER_RAW_ITEMS_PREVIEW]", preview);
   }
 
   const parsedItems = rows
     .map(parsedItemFromShoppingRow)
     .filter((x): x is ParsedSerpShoppingItem => x != null);
 
-  if (hints[0] === "serpapi") {
+  if (process.env.DEBUG_COMPARE === "true" && hints[0] === "serpapi") {
     console.log("[serpapi_raw_keys]", Object.keys(data ?? {}));
     console.log("[serpapi_items_found]", parsedItems.length);
-    console.log("[serpapi_first_item]", parsedItems[0]);
+    const first = parsedItems[0];
+    console.log("[serpapi_first_item]", first
+      ? {
+          title: first.title?.slice(0, 100),
+          price: first.price,
+          link: typeof first.link === "string" ? first.link.slice(0, 120) : first.link,
+        }
+      : null);
   }
 
   const out: CandidateProduct[] = [];
@@ -766,7 +797,7 @@ async function fetchShoppingForQuery(
       query,
       fetchOk: true,
       httpStatus: 200,
-      byteLength: JSON.stringify(payload).length,
+      byteLength: rawResponseByteLength,
       candidateCount: deduped.length,
       hints,
     },

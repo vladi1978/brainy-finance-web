@@ -25,6 +25,8 @@ const MAX_QUERIES = 5;
 const MAX_SPEC_TOKENS = 24;
 const MAX_EXCLUSIONS = 12;
 
+const AI_COMPARE_VERBOSE_LOGS = process.env.DEBUG_COMPARE === "true";
+
 function parseJsonFromAssistant(text: string): unknown {
   const trimmed = text.trim();
   const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -77,13 +79,17 @@ export async function fetchAiCompareEnrichment(args: {
   skipAi: boolean;
 }): Promise<AiCompareEnrichment> {
   if (args.skipAi) {
-    console.log("[AI_COMPARE]", { skipped: true, reason: "skipAi_flag" });
+    if (AI_COMPARE_VERBOSE_LOGS) {
+      console.log("[AI_COMPARE]", { skipped: true, reason: "skipAi_flag" });
+    }
     return { ...EMPTY };
   }
 
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) {
-    console.log("[AI_COMPARE]", { skipped: true, reason: "missing_OPENAI_API_KEY" });
+    if (AI_COMPARE_VERBOSE_LOGS) {
+      console.log("[AI_COMPARE]", { skipped: true, reason: "missing_OPENAI_API_KEY" });
+    }
     return { ...EMPTY };
   }
 
@@ -109,11 +115,13 @@ excludePhrases: only strong mismatches vs the reference.`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  console.log("[AI_COMPARE]", {
-    model,
-    timeoutMs,
-    titleChars: args.primaryTitle.length,
-  });
+  if (AI_COMPARE_VERBOSE_LOGS) {
+    console.log("[AI_COMPARE]", {
+      model,
+      timeoutMs,
+      titleChars: args.primaryTitle.length,
+    });
+  }
 
   try {
     const client = new OpenAI({
@@ -153,15 +161,17 @@ excludePhrases: only strong mismatches vs the reference.`;
     const specTokens = coerceStringArray(o.specTokens, MAX_SPEC_TOKENS);
     const excludePhrases = coerceStringArray(o.excludePhrases, MAX_EXCLUSIONS);
 
-    console.log("[AI_QUERY_PLAN]", {
-      count: shoppingQueries.length,
-      preview: shoppingQueries.map((q) => q.slice(0, 80)),
-    });
-    console.log("[AI_EXTRACTION]", {
-      specTokens: specTokens.length,
-      excludePhrases: excludePhrases.length,
-      brandSubstitutable: o.brandSubstitutable !== false,
-    });
+    if (AI_COMPARE_VERBOSE_LOGS) {
+      console.log("[AI_QUERY_PLAN]", {
+        count: shoppingQueries.length,
+        preview: shoppingQueries.map((q) => q.slice(0, 80)),
+      });
+      console.log("[AI_EXTRACTION]", {
+        specTokens: specTokens.length,
+        excludePhrases: excludePhrases.length,
+        brandSubstitutable: o.brandSubstitutable !== false,
+      });
+    }
 
     return {
       shoppingQueries,

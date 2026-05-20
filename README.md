@@ -26,6 +26,7 @@ Store price comparison lives at `/compare` (API: `POST /api/compare-product`).
 - **Discovery:** Google Shopping via `SERPER_API_KEY` and/or `SERPAPI_API_KEY` (set in `.env.local`)
 - **Demo mode (no shopping API):** `PRODUCT_COMPARE_DEMO_MODE=true`
 - **Optional AI enrichment:** `OPENAI_API_KEY`
+- **Verbose compare logs / debug traces (default off):** `DEBUG_COMPARE=true` — leave unset or `false` in production
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 

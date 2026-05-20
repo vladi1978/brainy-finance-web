@@ -88,6 +88,9 @@ import type {
  */
 export const DEMO_MODE = process.env.PRODUCT_COMPARE_DEMO_MODE === "true";
 
+/** Server-only verbose logs + `options.debug` traces. Default off (set DEBUG_COMPARE=true to enable). */
+const COMPARE_VERBOSE = process.env.DEBUG_COMPARE === "true";
+
 export function isCompareDemoMode(): boolean {
   return DEMO_MODE;
 }
@@ -576,6 +579,7 @@ function logReferencePriceOutcome(args: {
 }
 
 function pipelineLog(phase: string, data?: Record<string, unknown>) {
+  if (!COMPARE_VERBOSE) return;
   console.log("[compare-product]", phase, data ?? {});
 }
 
@@ -667,16 +671,13 @@ function dedupeByStoreAndUrl(items: CandidateProduct[]): CandidateProduct[] {
     const prev = map.get(key);
     if (!prev) {
       map.set(key, item);
-      if (searchStyle) {
-        console.log(
-          "[SEARCH_URL_DEDUPE_KEEP]",
-          JSON.stringify({
-            store: item.store,
-            titlePreview: item.title.slice(0, 100),
-            price: item.price,
-            hasImage: Boolean(item.imageUrl?.trim()),
-          })
-        );
+      if (searchStyle && COMPARE_VERBOSE) {
+        console.log("[SEARCH_URL_DEDUPE_KEEP]", {
+          store: item.store,
+          titlePreview: item.title.slice(0, 100),
+          price: item.price,
+          hasImage: Boolean(item.imageUrl?.trim()),
+        });
       }
       continue;
     }
@@ -684,17 +685,14 @@ function dedupeByStoreAndUrl(items: CandidateProduct[]): CandidateProduct[] {
     const winner = pickBetterDuplicateListing(prev, item);
     const loser = winner === prev ? item : prev;
 
-    if (searchStyle) {
-      console.log(
-        "[SEARCH_URL_DEDUPE_DROP]",
-        JSON.stringify({
-          store: loser.store,
-          droppedTitlePreview: loser.title.slice(0, 100),
-          keptTitlePreview: winner.title.slice(0, 100),
-          droppedPrice: loser.price,
-          keptPrice: winner.price,
-        })
-      );
+    if (searchStyle && COMPARE_VERBOSE) {
+      console.log("[SEARCH_URL_DEDUPE_DROP]", {
+        store: loser.store,
+        droppedTitlePreview: loser.title.slice(0, 100),
+        keptTitlePreview: winner.title.slice(0, 100),
+        droppedPrice: loser.price,
+        keptPrice: winner.price,
+      });
     }
 
     map.set(key, winner);
@@ -1023,11 +1021,13 @@ export async function compareProduct(
     throw new Error(REFERENCE_PRICE_REQUIRED_MESSAGE);
   }
 
-  const debug = Boolean(options.debug);
+  const debug = Boolean(options.debug) && COMPARE_VERBOSE;
   const demoMode = DEMO_MODE;
 
   const traceLog = (...args: unknown[]) => {
-    if (debug) console.log("[compare-product:debug]", ...args);
+    if (!debug) return;
+    const [first, ...rest] = args;
+    console.log("[compare-product:debug]", first, ...rest);
   };
 
   pipelineLog("input_received", {
@@ -1051,18 +1051,19 @@ export async function compareProduct(
       keyFeaturesPreview: truncateFeatures(manual!.keyFeatures ?? "", 100),
       hasPricePaid: Boolean(parsePricePaidRaw(manual!.pricePaid)),
     };
-    console.log("[MANUAL_PRODUCT_INPUT]", JSON.stringify(safeLog));
+    if (COMPARE_VERBOSE) {
+      console.log("[MANUAL_PRODUCT_INPUT]", safeLog);
+    }
 
     explicitQueryPack = buildUniversalManualQueryPack(manual!);
     explicitReferenceQuery = explicitQueryPack.primaryQuery;
-    console.log(
-      "[QUERY_PACK_FROM_FORM]",
-      JSON.stringify({
-        primaryQuery: explicitQueryPack.primaryQuery,
-        simplifiedQuery: explicitQueryPack.simplifiedQuery,
-        specsQuery: explicitQueryPack.specsQuery,
-      })
-    );
+    if (COMPARE_VERBOSE) {
+      console.log("[QUERY_PACK_FROM_FORM]", {
+        primaryQuery: explicitQueryPack.primaryQuery.slice(0, 120),
+        simplifiedQuery: explicitQueryPack.simplifiedQuery.slice(0, 120),
+        specsQuery: explicitQueryPack.specsQuery.slice(0, 120),
+      });
+    }
   }
 
   let scrapedSource: SourceProduct | null = null;
@@ -1267,19 +1268,16 @@ export async function compareProduct(
     10
   );
 
-  console.log(
-    "[QUERY_PACK]",
-    JSON.stringify({
-      primaryQuery: searchQueryPack.primaryQuery,
-      simplifiedQuery: searchQueryPack.simplifiedQuery,
-      specsQuery: searchQueryPack.specsQuery,
-      shoppingPlan: shoppingQueryPlan,
-      aiQueriesPrepended: [
-        ...aiCompareEnrichment.shoppingQueries,
-        ...aiMetadataSearchQueries,
-      ],
-    })
-  );
+  if (COMPARE_VERBOSE) {
+    console.log("[QUERY_PACK]", {
+      primaryPreview: searchQueryPack.primaryQuery.slice(0, 100),
+      simplifiedPreview: searchQueryPack.simplifiedQuery.slice(0, 80),
+      specsPreview: searchQueryPack.specsQuery.slice(0, 80),
+      shoppingPlanQueries: shoppingQueryPlan.length,
+      aiPrependedCount:
+        aiCompareEnrichment.shoppingQueries.length + aiMetadataSearchQueries.length,
+    });
+  }
 
   pipelineLog("derived_search_query", {
     productQuery: referenceProductQuery.slice(0, 200),
@@ -1299,10 +1297,10 @@ export async function compareProduct(
     query: q,
   }));
   traceLog("provider_query_used", {
-    normalizedQuery,
-    searchQueryPack,
-    shoppingQueryPlan,
-    providerQueries,
+    normalizedQueryPreview: normalizedQuery.slice(0, 160),
+    shoppingPlanLen: shoppingQueryPlan.length,
+    primaryQueryPreview: searchQueryPack.primaryQuery.slice(0, 100),
+    providerQueriesLen: providerQueries.length,
   });
 
   let allCandidates: CandidateProduct[] = [];
@@ -1347,15 +1345,19 @@ export async function compareProduct(
         query: d.query,
         fetchOk: d.fetchOk,
       });
-      traceLog("provider_search_diagnostics", d);
+      traceLog("provider_search_diagnostics", {
+        queryPreview: d.query.slice(0, 120),
+        fetchOk: d.fetchOk,
+        candidateCount: d.candidateCount,
+        byteLength: d.byteLength,
+        hints: d.hints.slice(0, 6),
+      });
     }
     candidatesPerProvider.push({
       store: "google_shopping",
       count: allCandidates.length,
     });
   }
-
-  console.log("[CANDIDATES_TOTAL]", JSON.stringify({ total: allCandidates.length }));
 
   pipelineLog("candidates_total", {
     total: allCandidates.length,
@@ -1365,7 +1367,7 @@ export async function compareProduct(
   const inputUrl = parsed.inputUrl?.trim();
   const deduped = dedupeByStoreAndUrl(allCandidates);
 
-  console.log("[DEDUPE_SUMMARY]", {
+  pipelineLog("dedupe_summary", {
     before: allCandidates.length,
     after: deduped.length,
     removed: allCandidates.length - deduped.length,
@@ -1673,19 +1675,29 @@ export async function compareProduct(
         demoMode
       );
     } catch (err) {
-      console.log(
-        "[PDP_RESOLVE_BATCH_FAIL]",
-        JSON.stringify({
-          reason: err instanceof Error ? err.message : String(err),
-        })
-      );
+      console.error("[PDP_RESOLVE_BATCH_FAIL]", {
+        reason: err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200),
+      });
     }
   }
 
   rejectionSummary.baseFilteredCount = baseFiltered.length;
   rejectionSummary.orderedForDisplayCount = orderedForDisplay.length;
 
-  console.log("[REJECTION_SUMMARY]", JSON.stringify(rejectionSummary));
+  if (COMPARE_VERBOSE) {
+    console.log("[REJECTION_SUMMARY]", {
+      totalCandidates: rejectionSummary.totalCandidates,
+      afterDeduped: rejectionSummary.afterDeduped,
+      invalidStore: rejectionSummary.invalidStore,
+      sameAsInput: rejectionSummary.sameAsInput,
+      noPrice: rejectionSummary.noPrice,
+      urlRejected: rejectionSummary.urlRejected,
+      acceptedRows: rejectionSummary.acceptedRows,
+      baseFilteredCount: rejectionSummary.baseFilteredCount,
+      orderedForDisplayCount: rejectionSummary.orderedForDisplayCount,
+      attributeRejectReasons: Object.keys(rejectionSummary.attributeRejected).length,
+    });
+  }
 
   const sourceProduct =
     scrapedOk && scrapedSource

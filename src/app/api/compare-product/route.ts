@@ -7,25 +7,50 @@ import {
   REFERENCE_PRICE_REQUIRED_MESSAGE,
 } from "@/lib/product/manualProductInput";
 
+/** When false (default), ignore client `debug` and keep compare logs quiet. Set DEBUG_COMPARE=true to enable. */
+const COMPARE_DEBUG = process.env.DEBUG_COMPARE === "true";
+
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const debug = Boolean(body?.debug);
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json(
+        { success: false, error: "Invalid JSON body" },
+        { status: 400 }
+      );
+    }
+
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      return NextResponse.json(
+        { success: false, error: "Invalid request body" },
+        { status: 400 }
+      );
+    }
+
+    const record = body as Record<string, unknown>;
+    const debug = Boolean(record.debug) && COMPARE_DEBUG;
     const pricePaid =
-      typeof body?.pricePaid === "string"
-        ? body.pricePaid
-        : typeof body?.referencePrice === "string"
-          ? body.referencePrice
+      typeof record.pricePaid === "string"
+        ? record.pricePaid
+        : typeof record.referencePrice === "string"
+          ? record.referencePrice
           : null;
 
-    const manual = normalizeManualProductForm(body?.manualProduct);
+    const manual = normalizeManualProductForm(record.manualProduct);
     const linkFromForm = manual?.link?.trim();
     const resolvedPricePaid =
-      pricePaid?.trim() || manual?.pricePaid?.trim() || "";
+      (typeof pricePaid === "string" ? pricePaid : "").trim() ||
+      manual?.pricePaid?.trim() ||
+      "";
 
     if (!isValidReferencePriceInput(resolvedPricePaid)) {
       return NextResponse.json(
-        { error: REFERENCE_PRICE_REQUIRED_MESSAGE },
+        {
+          success: false,
+          error: REFERENCE_PRICE_REQUIRED_MESSAGE,
+        },
         { status: 400 }
       );
     }
@@ -35,40 +60,48 @@ export async function POST(req: Request) {
       pricePaid: resolvedPricePaid,
     };
 
+    let result;
     if (linkFromForm) {
-      const result = await compareProduct(linkFromForm, compareOpts);
-      return NextResponse.json(result);
-    }
-
-    if (manual && manualFormHasSearchableCore(manual)) {
-      const result = await compareProduct("", {
+      result = await compareProduct(linkFromForm, compareOpts);
+    } else if (manual && manualFormHasSearchableCore(manual)) {
+      result = await compareProduct("", {
         ...compareOpts,
         manualProduct: manual,
       });
-      return NextResponse.json(result);
+    } else {
+      const input =
+        typeof record.input === "string" ? record.input.trim() : "";
+      if (!input) {
+        return NextResponse.json(
+          { success: false, error: "Missing product input" },
+          { status: 400 }
+        );
+      }
+      result = await compareProduct(input, compareOpts);
     }
 
-    const input = body?.input?.trim();
-    if (!input) {
+    if (result == null || typeof result !== "object") {
       return NextResponse.json(
-        { error: "Missing product input" },
+        { success: false, error: "Compare failed" },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ success: true, ...result });
+  } catch (error) {
+    console.error("[COMPARE_API_ERROR]", error);
+    const message =
+      error instanceof Error ? error.message.trim() : "";
+
+    if (message === REFERENCE_PRICE_REQUIRED_MESSAGE) {
+      return NextResponse.json(
+        { success: false, error: REFERENCE_PRICE_REQUIRED_MESSAGE },
         { status: 400 }
       );
     }
 
-    const result = await compareProduct(input, compareOpts);
-
-    return NextResponse.json(result);
-  } catch (error) {
-    console.error("COMPARE PRODUCT API ERROR:", error);
-    const message =
-      error instanceof Error ? error.message.trim() : "Failed to compare product";
-    if (message === REFERENCE_PRICE_REQUIRED_MESSAGE) {
-      return NextResponse.json({ error: message }, { status: 400 });
-    }
-
     return NextResponse.json(
-      { error: "Failed to compare product" },
+      { success: false, error: "Compare failed" },
       { status: 500 }
     );
   }

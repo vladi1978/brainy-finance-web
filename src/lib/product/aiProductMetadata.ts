@@ -53,6 +53,8 @@ const DEFAULT_MODEL = "gpt-4o-mini";
 const MAX_KEY_SPECS = 16;
 const MAX_SEARCH_QUERIES = 5;
 
+const AI_COMPARE_VERBOSE_LOGS = process.env.DEBUG_COMPARE === "true";
+
 function parseJsonFromAssistant(text: string): unknown {
   const trimmed = text.trim();
   const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -205,34 +207,39 @@ export async function fetchAiProductMetadata(
   const title = input.rawTitle.replace(/\s+/g, " ").trim();
   const url = input.url.replace(/\s+/g, " ").trim();
 
-  console.log(
-    "[AI_METADATA_INPUT]",
-    JSON.stringify({
+  if (AI_COMPARE_VERBOSE_LOGS) {
+    console.log("[AI_METADATA_INPUT]", {
       rawTitle: title.slice(0, 200),
       url: url.slice(0, 200),
       hasPageText: Boolean(input.pageText?.trim()),
       hasMetaDescription: Boolean(input.metaDescription?.trim()),
       hasOgTitle: Boolean(input.ogTitle?.trim()),
       hasOgDescription: Boolean(input.ogDescription?.trim()),
-    })
-  );
+    });
+  }
 
   if (input.skipAi) {
-    console.log("[AI_METADATA_RESULT]", JSON.stringify({ skipped: true, reason: "skipAi_flag" }));
+    if (AI_COMPARE_VERBOSE_LOGS) {
+      console.log("[AI_METADATA_RESULT]", { skipped: true, reason: "skipAi_flag" });
+    }
     return { ...EMPTY };
   }
 
   if (!title && !url) {
-    console.log("[AI_METADATA_RESULT]", JSON.stringify({ skipped: true, reason: "empty_input" }));
+    if (AI_COMPARE_VERBOSE_LOGS) {
+      console.log("[AI_METADATA_RESULT]", { skipped: true, reason: "empty_input" });
+    }
     return { ...EMPTY };
   }
 
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) {
-    console.log(
-      "[AI_METADATA_RESULT]",
-      JSON.stringify({ skipped: true, reason: "missing_OPENAI_API_KEY" })
-    );
+    if (AI_COMPARE_VERBOSE_LOGS) {
+      console.log("[AI_METADATA_RESULT]", {
+        skipped: true,
+        reason: "missing_OPENAI_API_KEY",
+      });
+    }
     return { ...EMPTY };
   }
 
@@ -266,30 +273,39 @@ export async function fetchAiProductMetadata(
 
     const text = resp.choices[0]?.message?.content?.trim();
     if (!text) {
-      console.log("[AI_METADATA_RESULT]", JSON.stringify({ ok: false, reason: "empty_completion" }));
+      if (AI_COMPARE_VERBOSE_LOGS) {
+        console.log("[AI_METADATA_RESULT]", { ok: false, reason: "empty_completion" });
+      }
       return { ...EMPTY };
     }
 
     const parsed = parseJsonFromAssistant(text);
     if (!parsed || typeof parsed !== "object") {
-      console.log("[AI_METADATA_RESULT]", JSON.stringify({ ok: false, reason: "json_parse_failed" }));
+      if (AI_COMPARE_VERBOSE_LOGS) {
+        console.log("[AI_METADATA_RESULT]", { ok: false, reason: "json_parse_failed" });
+      }
       return { ...EMPTY };
     }
 
     const metadata = parseMetadataObject(parsed as Record<string, unknown>);
 
-    console.log("[AI_METADATA_RESULT]", JSON.stringify(metadata));
+    if (AI_COMPARE_VERBOSE_LOGS) {
+      console.log("[AI_METADATA_RESULT]", {
+        ok: true,
+        hasBrand: Boolean(metadata.brand),
+        hasModel: Boolean(metadata.model),
+        keySpecsCount: metadata.keySpecs?.length ?? 0,
+        searchQueriesCount: metadata.searchQueries?.length ?? 0,
+      });
+    }
 
-    if (metadata.searchQueries) {
-      console.log(
-        "[AI_SEARCH_QUERIES]",
-        JSON.stringify({
-          count: metadata.searchQueries.length,
-          queries: metadata.searchQueries.map((q) => q.slice(0, 100)),
-        })
-      );
-    } else {
-      console.log("[AI_SEARCH_QUERIES]", JSON.stringify({ count: 0, queries: null }));
+    if (AI_COMPARE_VERBOSE_LOGS && metadata.searchQueries) {
+      console.log("[AI_SEARCH_QUERIES]", {
+        count: metadata.searchQueries.length,
+        previews: metadata.searchQueries.map((q) => q.slice(0, 80)),
+      });
+    } else if (AI_COMPARE_VERBOSE_LOGS) {
+      console.log("[AI_SEARCH_QUERIES]", { count: 0, previews: null });
     }
 
     return metadata;
@@ -299,14 +315,13 @@ export async function fetchAiProductMetadata(
       (typeof e === "object" &&
         e !== null &&
         String((e as { code?: unknown }).code) === "ECONNABORTED");
-    console.log(
-      "[AI_METADATA_RESULT]",
-      JSON.stringify({
+    if (AI_COMPARE_VERBOSE_LOGS) {
+      console.warn("[AI_METADATA_RESULT]", {
         ok: false,
         reason: isAbort ? "timeout" : "error",
-        message: e instanceof Error ? e.message : String(e),
-      })
-    );
+        message: (e instanceof Error ? e.message : String(e)).slice(0, 200),
+      });
+    }
     return { ...EMPTY };
   } finally {
     clearTimeout(timer);

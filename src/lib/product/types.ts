@@ -439,6 +439,8 @@ export type CompareApiCandidate = {
 
 /** API payload — dashboard reads `bestDeal`, `candidates`, `comparisonMessage`. */
 export type CompareProductResponse = {
+  /** Present on `/api/compare-product` responses when wrapped by the route handler */
+  success?: boolean;
   /** Original product query (text or URL-derived) */
   query: string;
   /** Normalized multi-field search string sent to stores */

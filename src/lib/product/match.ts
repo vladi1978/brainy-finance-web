@@ -87,7 +87,14 @@ export function logComparisonCandidateDebug(payload: {
   finalScore: number;
   scoreReasons: string[];
 }): void {
-  console.log("[compare-candidate]", JSON.stringify(payload));
+  if (process.env.DEBUG_COMPARE !== "true") return;
+  console.log("[compare-candidate]", {
+    candidateStore: payload.candidateStore,
+    rejectionReason: payload.rejectionReason,
+    finalScore: payload.finalScore,
+    scoreReasonsPreview: payload.scoreReasons.slice(0, 5),
+    scoreReasonsCount: payload.scoreReasons.length,
+  });
 }
 
 export function classifyMatchConfidence(score: number): MatchConfidenceLabel | "none" {
