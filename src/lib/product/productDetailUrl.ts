@@ -204,6 +204,8 @@ export function isRetailerSearchLandingUrl(
     }
     case "tractorsupply": {
       if (!pl.includes("/tsc/search")) return false;
+      const keyword = searchParamValueInsensitive(u.searchParams, "keyword");
+      if (keyword?.trim()) return true;
       const q = searchParamValueInsensitive(u.searchParams, "q");
       return Boolean(q?.trim());
     }

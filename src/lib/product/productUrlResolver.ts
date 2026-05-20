@@ -91,7 +91,7 @@ function generatedSearchFallback(
     prior_listing_present: priorListing ? "yes" : "no",
   });
 
-  return withTractorSupplySearchCanonical(store, {
+  return finalizeOutboundResolution(store, {
     outboundUrlRaw: generated,
     urlType: "search",
     urlConfidence: "low",
@@ -104,19 +104,22 @@ function generatedSearchFallback(
 /**
  * Retailer search URL using a shortened listing title (honest fallback when PDP/affiliate links are unreliable).
  */
-export function buildRetailerSearchUrlFromTitle(store: StoreId, title: string): string {
-  const maxDecoded = store === "bestbuy" ? 50 : 60;
+function prepareRetailerSearchQuery(title: string, maxDecoded: number): string {
   let q = shortenSearchQuery(title, maxDecoded);
-  if (store === "bestbuy") {
-    q = q.replace(/["'`]/g, "");
-    q = truncateAtWordBoundary(q.replace(/\s+/g, " ").trim(), maxDecoded);
-  }
+  q = q.replace(/["'`]/g, "");
+  q = truncateAtWordBoundary(q.replace(/\s+/g, " ").trim(), maxDecoded);
   if (!q.trim()) {
     q = truncateAtWordBoundary(
       title.replace(/\s+/g, " ").trim().replace(/["'`]/g, ""),
-      maxDecoded
+      maxDecoded,
     );
   }
+  return q;
+}
+
+export function buildRetailerSearchUrlFromTitle(store: StoreId, title: string): string {
+  const maxDecoded = store === "bestbuy" ? 50 : 60;
+  const q = prepareRetailerSearchQuery(title, maxDecoded);
   const enc = encodeURIComponent(q || " ");
   switch (store) {
     case "amazon":
@@ -152,7 +155,7 @@ export function buildRetailerSearchUrlFromTitle(store: StoreId, title: string): 
     case "academy":
       return `https://www.academy.com/search?q=${enc}`;
     case "tractorsupply":
-      return `https://www.tractorsupply.com/tsc/search?q=${enc}`;
+      return `https://www.tractorsupply.com/tsc/search?keyword=${enc}`;
     case "nike":
       return `https://www.nike.com/w?q=${enc}`;
     case "adidas":
@@ -171,7 +174,7 @@ function tractorSupplySearchQuery(url: string): string | null {
   try {
     const u = new URL(url.trim());
     if (!u.hostname.toLowerCase().includes("tractorsupply.com")) return null;
-    for (const key of ["q", "searchTerm", "Ntt", "ntt", "query"]) {
+    for (const key of ["keyword", "q", "searchTerm", "Ntt", "ntt", "query"]) {
       const v = u.searchParams.get(key)?.trim();
       if (v) return v;
     }
@@ -197,14 +200,15 @@ function isTractorSupplySearchPath(url: string): boolean {
   }
 }
 
-/** Canonical Tractor Supply search URL: https://www.tractorsupply.com/tsc/search?q=QUERY */
+/** Canonical Tractor Supply search URL: https://www.tractorsupply.com/tsc/search?keyword=QUERY */
 export function canonicalizeTractorSupplySearchUrl(
   url: string,
   queryFallback?: string
 ): string {
   const q = tractorSupplySearchQuery(url) ?? queryFallback?.trim();
   if (!q) return url.trim();
-  return `https://www.tractorsupply.com/tsc/search?q=${encodeURIComponent(q)}`;
+  const prepared = prepareRetailerSearchQuery(q, 60);
+  return `https://www.tractorsupply.com/tsc/search?keyword=${encodeURIComponent(prepared || q)}`;
 }
 
 function withTractorSupplySearchCanonical(
@@ -217,6 +221,29 @@ function withTractorSupplySearchCanonical(
   const canonical = canonicalizeTractorSupplySearchUrl(raw);
   if (canonical === raw) return resolution;
   return { ...resolution, outboundUrlRaw: canonical };
+}
+
+function logOutboundUrlDebug(
+  store: UniversalStoreId,
+  resolution: ResolvedCompareCandidateOutbound,
+): void {
+  const outboundUrl = resolution.outboundUrlRaw.trim();
+  if (!outboundUrl) return;
+  console.log("[OUTBOUND_URL_DEBUG]", {
+    store,
+    urlType: resolution.urlType,
+    urlResolutionReason: resolution.urlResolutionReason ?? null,
+    outboundUrl: truncateUrlForLog(outboundUrl),
+  });
+}
+
+function finalizeOutboundResolution(
+  store: UniversalStoreId,
+  resolution: ResolvedCompareCandidateOutbound,
+): ResolvedCompareCandidateOutbound {
+  const finalized = withTractorSupplySearchCanonical(store, resolution);
+  logOutboundUrlDebug(store, finalized);
+  return finalized;
 }
 
 function isUniversalMerchantProductLikeUrl(url: string): boolean {
@@ -262,7 +289,7 @@ export function resolveCompareCandidateOutbound(args: {
       });
     } else if (listingRaw && isAcceptableUniversalShoppingOutboundUrl(listingRaw)) {
       const productLike = isUniversalMerchantProductLikeUrl(listingRaw);
-      return {
+      return finalizeOutboundResolution(store, {
         outboundUrlRaw: listingRaw,
         resolvedProductUrl: productLike ? listingRaw : undefined,
         urlType: productLike ? "product" : "search",
@@ -270,7 +297,7 @@ export function resolveCompareCandidateOutbound(args: {
         urlResolutionReason: productLike
           ? "merchant_product_like_url"
           : "merchant_outbound_unverified",
-      };
+      });
     }
     return {
       outboundUrlRaw: "",
@@ -313,7 +340,7 @@ export function resolveCompareCandidateOutbound(args: {
       logOutboundResolution("URL_SEARCH", store, {
         url: truncateUrlForLog(canonical),
       });
-      return withTractorSupplySearchCanonical(store, {
+      return finalizeOutboundResolution(store, {
         outboundUrlRaw: canonical,
         urlType: "search",
         urlConfidence: tractorSupplySearchQuery(listingRaw) ? "medium" : "low",
@@ -325,33 +352,33 @@ export function resolveCompareCandidateOutbound(args: {
       logOutboundResolution("URL_STRICT_PRODUCT", store, {
         url: truncateUrlForLog(listingRaw),
       });
-      return {
+      return finalizeOutboundResolution(store, {
         outboundUrlRaw: listingRaw,
         resolvedProductUrl: listingRaw,
         urlType: "product",
         urlConfidence: "high",
         urlResolutionReason: "merchant_strict_product_url",
-      };
+      });
     }
 
     if (isProductLikeRetailerUrl(store, listingRaw)) {
       logOutboundResolution("URL_KEPT_PRODUCT_LIKE", store, {
         url: truncateUrlForLog(listingRaw),
       });
-      return {
+      return finalizeOutboundResolution(store, {
         outboundUrlRaw: listingRaw,
         resolvedProductUrl: listingRaw,
         urlType: "product",
         urlConfidence: "medium",
         urlResolutionReason: "merchant_product_like_url",
-      };
+      });
     }
 
     if (isRetailerSearchUrl(store, listingRaw)) {
       logOutboundResolution("URL_SEARCH", store, {
         url: truncateUrlForLog(listingRaw),
       });
-      return withTractorSupplySearchCanonical(store, {
+      return finalizeOutboundResolution(store, {
         outboundUrlRaw: listingRaw,
         urlType: "search",
         urlConfidence: "medium",
@@ -360,13 +387,13 @@ export function resolveCompareCandidateOutbound(args: {
     }
 
     if (!shouldGenerateSearchFallback(store, listingRaw)) {
-      return {
+      return finalizeOutboundResolution(store, {
         outboundUrlRaw: listingRaw,
         resolvedProductUrl: listingRaw,
         urlType: "product",
         urlConfidence: "medium",
         urlResolutionReason: "merchant_outbound_preserved",
-      };
+      });
     }
   }
 
