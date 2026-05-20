@@ -14,99 +14,48 @@ import { useSearchParams } from "next/navigation";
  * Phase 1 only logs and performs a plain retailer redirect.
  */
 
-/** Hosts that must never receive shopper redirects (shorteners / affiliate hubs). */
-const TRACKING_OR_REDIRECT_HOSTS = new Set([
-  "bit.ly",
-  "j.mp",
-  "goo.gl",
-  "t.co",
-  "tinyurl.com",
-  "ow.ly",
-  "buff.ly",
-  "rebrand.ly",
-  "cutt.ly",
-  "is.gd",
-  "adf.ly",
-  "g.co",
-  "youtu.be",
-  "bity.ly",
-  "rb.gy",
-  "short.link",
-  "click.linksynergy.com",
-  "linksynergy.com",
-  "anrdoezrs.net",
-  "dpbolvw.net",
-  "kqzyfj.com",
-  "awin1.com",
-  "shareasale.com",
-  "pjtra.com",
-  "pjatr.com",
-  "pntra.com",
-  "pntrac.com",
-  "pntrs.com",
-  "amzn.to",
-]);
+type RedirectValidation =
+  | { valid: true; href: string }
+  | { valid: false; reason: string };
 
 function normalizeHostname(host: string): string {
   return host.replace(/^www\./i, "").toLowerCase();
 }
 
-function hostIsTrackingOrRedirectHub(host: string): boolean {
+function hostIsGoogleDomain(host: string): boolean {
   const h = normalizeHostname(host);
-  if (TRACKING_OR_REDIRECT_HOSTS.has(h)) return true;
-  for (const blocked of TRACKING_OR_REDIRECT_HOSTS) {
-    if (h.endsWith(`.${blocked}`)) return true;
-  }
-  return false;
-}
-
-function hostHasGoogleLabel(host: string): boolean {
-  const h = normalizeHostname(host);
+  if (h === "google.com" || h.endsWith(".google.com")) return true;
   return h.split(".").includes("google");
 }
 
-/** Google-owned / ad / syndication surfaces that must never receive shopper redirects. */
-function hostIsGoogleOwnedOrAdsSurface(host: string): boolean {
+function hostIsGoogleAdServices(host: string): boolean {
   const h = normalizeHostname(host);
-  if (h === "g.co" || h.endsWith(".g.co")) return true;
-  if (h === "youtu.be" || h.endsWith(".youtu.be")) return true;
-  if (h.endsWith(".googleusercontent.com") || h === "googleusercontent.com") return true;
-  if (h.endsWith(".gstatic.com") || h === "gstatic.com") return true;
-  if (h.endsWith(".googleapis.com") || h === "googleapis.com") return true;
-  if (h.endsWith(".googleadservices.com") || h === "googleadservices.com") return true;
-  if (h.endsWith(".googlesyndication.com") || h === "googlesyndication.com") return true;
-  if (h.endsWith(".doubleclick.net") || h.includes("doubleclick.net")) return true;
-  if (hostHasGoogleLabel(h)) return true;
-  return false;
-}
-
-function hostLooksLikeFacebookRedirect(host: string): boolean {
-  const h = normalizeHostname(host);
-  return h === "l.facebook.com" || h === "lm.facebook.com" || h === "m.me";
-}
-
-function decodeTargetParam(raw: string | null): string {
-  if (raw == null) return "";
-  let s = raw.replace(/\+/g, " ");
-  for (let i = 0; i < 5; i++) {
-    try {
-      const next = decodeURIComponent(s);
-      if (next === s) break;
-      s = next;
-    } catch {
-      break;
-    }
-  }
-  return s.replace(/\s+/g, " ").trim();
+  return h === "googleadservices.com" || h.endsWith(".googleadservices.com");
 }
 
 /**
- * Parse absolute http(s) URL for redirect validation.
- * Accepts protocol-relative `//host/...` and bare `www.host/...` style strings.
+ * Decode percent-escapes only when they remain after `useSearchParams` decoding.
  */
-function parseRedirectTarget(trimmed: string): { url: URL } | { error: string } {
-  if (!trimmed) return { error: "empty" };
-  if (/\s/.test(trimmed)) return { error: "contains_whitespace" };
+function safeDecodeTarget(raw: string | null): string {
+  if (raw == null) return "";
+  let s = raw.trim();
+  if (!s) return "";
+
+  if (/%[0-9A-Fa-f]{2}/.test(s)) {
+    try {
+      const decoded = decodeURIComponent(s);
+      if (decoded !== s) s = decoded;
+    } catch {
+      /* keep raw */
+    }
+  }
+
+  return s.trim();
+}
+
+function parseRedirectTarget(raw: string): URL | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
 
   const lower = trimmed.toLowerCase();
   if (
@@ -115,7 +64,7 @@ function parseRedirectTarget(trimmed: string): { url: URL } | { error: string } 
     lower.startsWith("file:") ||
     lower.startsWith("vbscript:")
   ) {
-    return { error: "dangerous_scheme" };
+    return null;
   }
 
   let candidate = trimmed;
@@ -124,78 +73,78 @@ function parseRedirectTarget(trimmed: string): { url: URL } | { error: string } 
   }
 
   try {
-    const u = new URL(candidate);
-    return { url: u };
+    return new URL(candidate);
   } catch {
-    // continue
-  }
-
-  if (!trimmed.includes("://")) {
-    try {
-      return { url: new URL(`https://${trimmed}`) };
-    } catch {
-      return { error: "malformed" };
+    if (!trimmed.includes("://")) {
+      try {
+        return new URL(`https://${trimmed}`);
+      } catch {
+        return null;
+      }
     }
+    return null;
   }
-
-  return { error: "malformed" };
 }
 
-type RedirectEval = { ok: true; href: string } | { ok: false; reason: string };
-
-function evaluateRedirectTarget(decodedTarget: string): RedirectEval {
-  const parsed = parseRedirectTarget(decodedTarget);
-  if ("error" in parsed) return { ok: false, reason: parsed.error };
-
-  const u = parsed.url;
-  if (!/^https?:$/i.test(u.protocol)) return { ok: false, reason: "invalid_protocol" };
-
-  const hostRaw = u.hostname.trim();
-  if (!hostRaw) return { ok: false, reason: "missing_host" };
-
-  const hostNorm = normalizeHostname(hostRaw);
-  if (!hostNorm.includes(".") && hostNorm !== "localhost") {
-    return { ok: false, reason: "non_public_host" };
+function validateRedirectTarget(decodedTarget: string): RedirectValidation {
+  const url = parseRedirectTarget(decodedTarget);
+  if (!url) {
+    return { valid: false, reason: decodedTarget.trim() ? "malformed" : "empty" };
   }
 
-  if (hostIsGoogleOwnedOrAdsSurface(hostNorm)) {
-    return { ok: false, reason: "google_or_ads_surface" };
-  }
-  if (hostIsTrackingOrRedirectHub(hostNorm)) {
-    return { ok: false, reason: "tracking_or_redirect_hub" };
-  }
-  if (hostLooksLikeFacebookRedirect(hostNorm)) {
-    return { ok: false, reason: "facebook_redirect_shell" };
+  if (!/^https?:$/i.test(url.protocol)) {
+    return { valid: false, reason: "invalid_protocol" };
   }
 
-  return { ok: true, href: u.href };
+  const host = url.hostname.trim();
+  if (!host) {
+    return { valid: false, reason: "missing_host" };
+  }
+
+  if (hostIsGoogleDomain(host)) {
+    return { valid: false, reason: "google_domain" };
+  }
+
+  if (hostIsGoogleAdServices(host)) {
+    return { valid: false, reason: "googleadservices" };
+  }
+
+  return { valid: true, href: url.href };
 }
 
 function RedirectClient() {
   const searchParams = useSearchParams();
   const rawTarget = searchParams.get("target");
-  const decodedTarget = useMemo(() => decodeTargetParam(rawTarget), [rawTarget]);
+  const decodedTarget = useMemo(() => safeDecodeTarget(rawTarget), [rawTarget]);
   const store = searchParams.get("store")?.trim() ?? "";
   const title = searchParams.get("title")?.trim() ?? "";
   const source = searchParams.get("source")?.trim() ?? "";
+  const urlType = searchParams.get("urlType")?.trim() ?? "";
 
-  const evalResult = useMemo(() => evaluateRedirectTarget(decodedTarget), [decodedTarget]);
-  const invalid = !evalResult.ok;
-  const rejectReason = evalResult.ok ? null : evalResult.reason;
-
-  useEffect(() => {
-    console.log("REDIRECT_TARGET_RAW", rawTarget);
-    console.log("REDIRECT_TARGET_DECODED", decodedTarget);
-    console.log("REDIRECT_REJECT_REASON", rejectReason);
-  }, [rawTarget, decodedTarget, rejectReason]);
+  const validation = useMemo(
+    () => validateRedirectTarget(decodedTarget),
+    [decodedTarget]
+  );
 
   useEffect(() => {
-    if (!evalResult.ok) return;
-    console.log("[OUTBOUND_CLICK]", { store, target: evalResult.href, title, source });
-    window.location.replace(evalResult.href);
-  }, [evalResult, store, title, source]);
+    console.log("[redirect] raw target", rawTarget);
+    console.log("[redirect] decoded target", decodedTarget);
+    console.log("[redirect] validation result", validation);
+  }, [rawTarget, decodedTarget, validation]);
 
-  if (invalid) {
+  useEffect(() => {
+    if (!validation.valid) return;
+    console.log("[OUTBOUND_CLICK]", {
+      store,
+      target: validation.href,
+      title,
+      source,
+      urlType: urlType || undefined,
+    });
+    window.location.replace(validation.href);
+  }, [validation, store, title, source, urlType]);
+
+  if (!validation.valid) {
     return (
       <main className="min-h-screen flex items-center justify-center bg-black text-white px-6">
         <p className="text-center text-lg text-white/90 max-w-md">
