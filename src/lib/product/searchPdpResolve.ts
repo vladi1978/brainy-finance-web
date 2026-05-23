@@ -1,4 +1,4 @@
-import { tokenizeSignificant } from "./normalize";
+import { toAffiliateUrl } from "./affiliateUrl";
 import { isStrictProductDetailUrl } from "./productDetailUrl";
 import { fetchSearchPageHtml } from "./scrapeProduct";
 import {
@@ -6,16 +6,30 @@ import {
   parseTargetSearchHtml,
   parseWalmartSearchHtml,
 } from "./searchParse";
-import type { CompareApiCandidate, StoreId } from "./types";
+import type {
+  CompareApiCandidate,
+  StoreId,
+  UniversalStoreId,
+} from "./types";
 
-/** Stores where we may later attach affiliate PDP resolution (was SERP second-pass). */
+function asUniversalStoreId(store: string): UniversalStoreId {
+  return store as UniversalStoreId;
+}
+import {
+  extractUniversalPdpLinksFromSearchHtml,
+  isUniversalRetailerSearchUrl,
+  pickBestUniversalPdpFromCandidates,
+  scoreUniversalPdpCandidateMatch,
+  UNIVERSAL_PDP_MIN_MATCH_SCORE,
+  type UniversalSearchPdpPick,
+} from "./universalSearchToPdp";
+
+/** @deprecated Prefer universal resolver — kept for optional store HTML parsers. */
 export const PDP_SECOND_PASS_STORES = new Set<StoreId>([
   "walmart",
   "target",
   "bestbuy",
 ]);
-
-const MIN_TITLE_SIMILARITY = 0.2;
 
 export type PdpResolveFromSearchResult = {
   productUrl: string;
@@ -24,68 +38,136 @@ export type PdpResolveFromSearchResult = {
   similarity: number;
 };
 
-function titleMatchScore(candidateTitle: string, cardTitle: string): number {
-  const a = new Set(tokenizeSignificant(candidateTitle));
-  const b = new Set(tokenizeSignificant(cardTitle));
-  if (a.size === 0 || b.size === 0) return 0;
-  let inter = 0;
-  for (const t of a) {
-    if (b.has(t)) inter += 1;
+function storeAdapterSearchCards(
+  store: StoreId,
+  html: string
+): { title: string; productUrl: string }[] {
+  switch (store) {
+    case "walmart":
+      return parseWalmartSearchHtml(html, 48);
+    case "target":
+      return parseTargetSearchHtml(html, 48);
+    case "bestbuy":
+      return parseBestBuySearchHtml(html, 48);
+    default:
+      return [];
   }
-  return inter / Math.max(a.size, b.size);
+}
+
+function pickFromStoreAdapterCards(args: {
+  store: StoreId;
+  candidateTitle: string;
+  cards: { title: string; productUrl: string }[];
+}): UniversalSearchPdpPick | null {
+  const { store, candidateTitle, cards } = args;
+  const picks = cards
+    .filter((c) => isStrictProductDetailUrl(store, c.productUrl))
+    .map((c) => ({
+      productUrl: c.productUrl,
+      anchorText: c.title,
+    }));
+
+  return pickBestUniversalPdpFromCandidates({
+    candidateTitle,
+    store,
+    picks,
+  });
 }
 
 /**
- * Fetch a retailer search SERP and pick the product card whose title best matches the listing.
+ * Universal search SERP → PDP (store adapter parsers optional precision layer).
+ */
+export async function resolvePdpFromUniversalSearchSerp(args: {
+  store: UniversalStoreId;
+  searchUrl: string;
+  candidateTitle: string;
+  brandHint?: string | null;
+}): Promise<UniversalSearchPdpPick | null> {
+  const { store, searchUrl, candidateTitle, brandHint } = args;
+  const trimmedSearch = searchUrl.trim();
+  if (!trimmedSearch || !isUniversalRetailerSearchUrl(trimmedSearch)) return null;
+
+  const html = await fetchSearchPageHtml(trimmedSearch);
+  if (!html?.trim()) {
+    console.log(
+      "[PDP_UNIVERSAL_FAIL]",
+      JSON.stringify({
+        store,
+        reason: "fetch_empty",
+        searchUrlPreview: trimmedSearch.slice(0, 160),
+      })
+    );
+    return null;
+  }
+
+  if (PDP_SECOND_PASS_STORES.has(store as StoreId)) {
+    const adapterPick = pickFromStoreAdapterCards({
+      store: store as StoreId,
+      candidateTitle,
+      cards: storeAdapterSearchCards(store as StoreId, html),
+    });
+    if (adapterPick) return adapterPick;
+  }
+
+  const universalPicks = extractUniversalPdpLinksFromSearchHtml(
+    html,
+    trimmedSearch
+  );
+
+  const universalPick = pickBestUniversalPdpFromCandidates({
+    candidateTitle,
+    brandHint,
+    store,
+    picks: universalPicks,
+  });
+
+  if (!universalPick) {
+    console.log(
+      "[PDP_UNIVERSAL_FAIL]",
+      JSON.stringify({
+        store,
+        reason: "no_safe_pdp_match",
+        linksScanned: universalPicks.length,
+        searchUrlPreview: trimmedSearch.slice(0, 160),
+      })
+    );
+  }
+
+  return universalPick;
+}
+
+/**
+ * @deprecated Use {@link resolvePdpFromUniversalSearchSerp} — thin wrapper for legacy callers.
  */
 export async function resolvePdpFromStoreSearchSerp(args: {
   store: StoreId;
   searchUrl: string;
   candidateTitle: string;
 }): Promise<PdpResolveFromSearchResult | null> {
-  const { store, searchUrl, candidateTitle } = args;
-  const html = await fetchSearchPageHtml(searchUrl);
-  if (!html?.trim()) return null;
-
-  let cards: { title: string; productUrl: string }[] = [];
-  switch (store) {
-    case "walmart":
-      cards = parseWalmartSearchHtml(html, 48);
-      break;
-    case "target":
-      cards = parseTargetSearchHtml(html, 48);
-      break;
-    case "bestbuy":
-      cards = parseBestBuySearchHtml(html, 48);
-      break;
-    default:
-      return null;
-  }
-
-  let best: { card: (typeof cards)[0]; score: number } | null = null;
-  for (const card of cards) {
-    if (!isStrictProductDetailUrl(store, card.productUrl)) continue;
-    const score = titleMatchScore(candidateTitle, card.title);
-    if (!best || score > best.score) best = { card, score };
-  }
-
-  if (!best || best.score < MIN_TITLE_SIMILARITY) return null;
-
-  const confidence: "medium" | "high" =
-    best.score >= 0.48 ? "high" : "medium";
-
+  const resolved = await resolvePdpFromUniversalSearchSerp({
+    store: args.store,
+    searchUrl: args.searchUrl,
+    candidateTitle: args.candidateTitle,
+  });
+  if (!resolved) return null;
   return {
-    productUrl: best.card.productUrl,
-    confidence,
-    matchedTitle: best.card.title,
-    similarity: best.score,
+    productUrl: resolved.productUrl,
+    confidence: resolved.confidence,
+    matchedTitle: resolved.anchorText || args.candidateTitle,
+    similarity: resolved.matchScore,
   };
 }
 
+function outboundSearchUrlForCandidate(api: CompareApiCandidate): string {
+  return (
+    api.outboundUrl?.trim() ||
+    api.productUrl?.trim() ||
+    ""
+  );
+}
+
 /**
- * Second-pass PDP resolution for compare candidates that only have a store search outbound URL.
- *
- * Today: passthrough — callers keep retailer search URLs as `urlType: "search"` (no server fetch).
+ * Second-pass: upgrade retailer search outbound URLs to PDPs when universal parsing + title match are confident.
  */
 export async function resolveDisplayedSearchPdps(
   apis: CompareApiCandidate[],
@@ -93,107 +175,84 @@ export async function resolveDisplayedSearchPdps(
 ): Promise<CompareApiCandidate[]> {
   if (demoMode) return apis;
 
-  // TODO: replace with affiliate API when keys available
-  //
-  // Disabled SERP fetch/parse path (was slow and often failed). Previously, for
-  // `api.urlType === "search"` and `PDP_SECOND_PASS_STORES`, we called
-  // `resolvePdpFromStoreSearchSerp`, then on success rewrote outbound URLs via
-  // `toAffiliateUrl` and set `urlType: "product"`. Re-enable or swap that logic
-  // once affiliate PDP URLs can be resolved reliably without scraping.
-
-  return apis;
-
-  /*
   return Promise.all(
     apis.map(async (api) => {
       try {
-        if (
-          api.urlType !== "search" ||
-          !PDP_SECOND_PASS_STORES.has(api.store as StoreId)
-        ) {
-          return api;
-        }
+        if (api.urlType !== "search") return api;
 
-        const store = api.store as StoreId;
-        const { outboundUrlRaw } = resolveCompareCandidateOutbound({
-          store,
-          listingProductUrl: api.productUrl,
-          title: api.title,
-        });
-        const searchUrl = outboundUrlRaw.trim();
-        if (!searchUrl) {
-          console.log(
-            "[PDP_RESOLVE_FAIL]",
-            JSON.stringify({ store, reason: "empty_search_url" })
-          );
-          return api;
-        }
+        const searchUrl = outboundSearchUrlForCandidate(api);
+        if (!searchUrl || !isUniversalRetailerSearchUrl(searchUrl)) return api;
 
         console.log(
-          "[PDP_RESOLVE_ATTEMPT]",
+          "[PDP_UNIVERSAL_ATTEMPT]",
           JSON.stringify({
-            store,
+            store: api.store,
             searchUrlPreview: searchUrl.slice(0, 180),
             titlePreview: api.title.slice(0, 120),
           })
         );
 
-        const resolved = await resolvePdpFromStoreSearchSerp({
-          store,
+        const brandHint =
+          api.normalized?.brand ??
+          api.normalized?.structured?.brand ??
+          null;
+
+        const storeId = asUniversalStoreId(api.store);
+
+        const resolved = await resolvePdpFromUniversalSearchSerp({
+          store: storeId,
           searchUrl,
           candidateTitle: api.title,
+          brandHint,
         });
 
-        if (!resolved) {
-          console.log(
-            "[PDP_RESOLVE_FAIL]",
-            JSON.stringify({
-              store,
-              reason: "no_matching_pdp_or_fetch_parse_failed",
-              searchUrlPreview: searchUrl.slice(0, 140),
-            })
-          );
-          return api;
-        }
+        if (!resolved) return api;
+
+        const outboundRaw = resolved.productUrl.trim();
+        if (!outboundRaw) return api;
 
         console.log(
-          "[PDP_RESOLVE_SUCCESS]",
+          "[PDP_UNIVERSAL_SUCCESS]",
           JSON.stringify({
-            store,
+            store: api.store,
             confidence: resolved.confidence,
-            similarity: Math.round(resolved.similarity * 1000) / 1000,
-            pdpPreview: resolved.productUrl.slice(0, 160),
-            matchedTitlePreview: resolved.matchedTitle.slice(0, 120),
+            matchScore: Math.round(resolved.matchScore * 1000) / 1000,
+            pdpPreview: outboundRaw.slice(0, 180),
+            anchorPreview: resolved.anchorText.slice(0, 100),
           })
         );
 
-        const outboundRaw = resolved.productUrl;
         const affiliateUrl =
-          outboundRaw.length > 0 ? toAffiliateUrl(outboundRaw, store) : "";
+          outboundRaw.length > 0 ? toAffiliateUrl(outboundRaw, storeId) : "";
 
         return {
           ...api,
+          productUrl: outboundRaw,
           resolvedProductUrl: outboundRaw,
           affiliateUrl: affiliateUrl || outboundRaw,
           outboundUrl: affiliateUrl || outboundRaw,
-          urlType: "product",
+          urlType: "product" as const,
           urlConfidence: resolved.confidence,
-          urlResolutionReason: "pdp_resolved_from_store_search_serp",
+          urlResolutionReason: "universal_search_to_pdp_resolved",
           outboundIsStoreSearch: false,
         };
       } catch (err) {
-        const store = api.store;
         console.log(
-          "[PDP_RESOLVE_FAIL]",
+          "[PDP_UNIVERSAL_FAIL]",
           JSON.stringify({
-            store,
+            store: api.store,
             reason: "resolver_threw",
-            detail: err instanceof Error ? err.message : String(err),
+            detail: err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200),
           })
         );
         return api;
       }
     })
   );
-  */
 }
+
+export {
+  isUniversalRetailerSearchUrl,
+  scoreUniversalPdpCandidateMatch,
+  UNIVERSAL_PDP_MIN_MATCH_SCORE,
+};
