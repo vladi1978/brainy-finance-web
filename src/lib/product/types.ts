@@ -35,6 +35,12 @@ export type StoreId =
  */
 export type UniversalStoreId = StoreId | "other";
 
+/** Outbound URL resolution tier outcome from the Product Source Layer. */
+export type UrlResolutionReason =
+  | "api_product_url"
+  | "organic_pdp_discovery"
+  | "generated_search_fallback";
+
 export type ProductCategory =
   | "tv"
   | "monitor"
@@ -204,6 +210,11 @@ export type CandidateProduct = {
   productId?: string;
   /** Merchant/source label from the shopping row when present */
   sourceLabel?: string;
+  /**
+   * Raw Google Shopping merchant link — untrusted hint for Product Source Layer only.
+   * Never shown directly to users without adapter validation.
+   */
+  shoppingHintUrl?: string | null;
   /** Shopping API query that produced this row (dedupe / diagnostics) */
   shoppingQueryUsed?: string;
   /** Listing star rating when the provider exposes it */
@@ -380,7 +391,7 @@ export type CompareProductDeal = {
   outboundUrl: string;
   urlType: "product" | "search" | "unknown";
   urlConfidence: "high" | "medium" | "low";
-  urlResolutionReason?: string;
+  urlResolutionReason?: UrlResolutionReason;
 };
 
 /** Search-first API candidate (shared shape across stores). */
@@ -434,7 +445,7 @@ export type CompareApiCandidate = {
   outboundUrl: string;
   urlType: "product" | "search" | "unknown";
   urlConfidence: "high" | "medium" | "low";
-  urlResolutionReason?: string;
+  urlResolutionReason?: UrlResolutionReason;
 };
 
 /** API payload — dashboard reads `bestDeal`, `candidates`, `comparisonMessage`. */

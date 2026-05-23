@@ -1,6 +1,5 @@
 /** Active cross-store discovery for compare — Serper or SerpAPI Google Shopping. See `LEGACY.md`. */
 import { buildNormalizedProduct, detectStoreFromProductUrl } from "./normalize";
-import { resolveShoppingRowProductUrl } from "./productUrlResolver";
 import { isBlockedUserFacingOutboundUrl } from "./productDetailUrl";
 import { dedupeIdenticalListingUrls } from "./candidateDedupe";
 import type {
@@ -733,19 +732,14 @@ function resolveStoreForShoppingRow(
   return { store: "other", mappedKnownStore: false };
 }
 
-function buildProductUrlForShoppingRow(args: {
+function internalListingKey(args: {
   store: UniversalStoreId;
   title: string;
-  merchantUrl: string | null;
-  merchantUrlUnwrapped?: boolean;
-  sourceLabel: string | null;
-}): string | null {
-  return resolveShoppingRowProductUrl({
-    store: args.store,
-    title: args.title,
-    merchantUrl: args.merchantUrl,
-    merchantUrlUnwrapped: args.merchantUrlUnwrapped,
-  });
+  shoppingHintUrl: string | null;
+}): string {
+  const hint = args.shoppingHintUrl?.trim();
+  if (hint) return hint;
+  return `shopping:${args.store}:${args.title.replace(/\s+/g, " ").trim().toLowerCase()}`;
 }
 
 function rowToCandidate(
@@ -765,7 +759,6 @@ function rowToCandidate(
   const source = pickSourceLabel(row);
   const merchantPick = pickFirstFinalMerchantUrl(row);
   const merchantUrl = merchantPick?.url ?? null;
-  const merchantUrlUnwrapped = merchantPick?.unwrapped ?? false;
   const retailerName = source?.trim() || null;
 
   const { store, mappedKnownStore } = resolveStoreForShoppingRow(
@@ -792,22 +785,11 @@ function rowToCandidate(
     return null;
   }
 
-  const productUrl = buildProductUrlForShoppingRow({
+  const productUrl = internalListingKey({
     store,
     title,
-    merchantUrl,
-    merchantUrlUnwrapped,
-    sourceLabel: retailerName,
+    shoppingHintUrl: merchantUrl,
   });
-
-  if (!productUrl) {
-    logShoppingRowSkip("invalid_outbound_url", {
-      store,
-      titlePreview: title.slice(0, 80),
-      urlPreview: (merchantUrl ?? "").slice(0, 160),
-    });
-    return null;
-  }
 
   const imageUrl = pickThumbnailFromRow(row);
   const rating = pickRatingFromRow(row);
@@ -847,6 +829,7 @@ function rowToCandidate(
   };
 
   if (retailerName) out.sourceLabel = retailerName;
+  if (merchantUrl) out.shoppingHintUrl = merchantUrl;
   out.shoppingQueryUsed = searchQuery.replace(/\s+/g, " ").trim();
   if (rating != null) out.rating = rating;
   if (productId) out.productId = productId;

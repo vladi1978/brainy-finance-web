@@ -60,8 +60,10 @@ import {
   isStrictProductDetailUrl,
   isValidUserFacingCompareOutbound,
 } from "./productDetailUrl";
-import { resolveCompareCandidateOutbound } from "./productUrlResolver";
-import { resolveDisplayedSearchPdps } from "./searchPdpResolve";
+import {
+  resolveOutboundUrl,
+  type ResolvedOutboundUrl,
+} from "./source";
 import type {
   CandidateProduct,
   CandidateStepTrace,
@@ -535,7 +537,7 @@ const MIN_CHEAPER_RESULTS_TARGET = 10;
 /** Max store rows returned in `candidates` / UI lists */
 const DISPLAY_LIMIT = 14;
 
-export { buildRetailerSearchUrlFromTitle } from "./productUrlResolver";
+export { buildRetailerSearchUrlFromTitle } from "./source/buildSearchUrl";
 
 function isValidComparablePrice(price: number | null | undefined): boolean {
   return price != null && Number.isFinite(price) && price > 0;
@@ -824,13 +826,18 @@ function toCompareApiCandidate(
   c: CandidateProduct,
   rel: AttributeMatchResult,
   identity: ProductIdentityResult,
-  resolution: import("./productUrlResolver").ResolvedCompareCandidateOutbound,
+  resolution: ResolvedOutboundUrl,
   premiumCoupons?: PremiumCouponOffer[]
 ): CompareApiCandidate {
   const outboundRaw = resolution.outboundUrlRaw.trim();
   const affiliateUrl =
     outboundRaw.length > 0 ? toAffiliateUrl(outboundRaw, c.store) : "";
   const storeLabel = c.sourceLabel?.trim() || undefined;
+  const navigableProductUrl =
+    resolution.resolvedProductUrl?.trim() ||
+    (resolution.urlType === "product" ? outboundRaw : "") ||
+    c.shoppingHintUrl?.trim() ||
+    c.productUrl;
 
   return {
     store: c.store,
@@ -838,7 +845,7 @@ function toCompareApiCandidate(
     title: c.title,
     price: c.price,
     currency: c.currency,
-    productUrl: c.productUrl,
+    productUrl: navigableProductUrl,
     affiliateUrl,
     imageUrl: c.imageUrl,
     normalized: c.normalized,
@@ -1471,8 +1478,16 @@ export async function compareProduct(
       (rejectionSummary.attributeRejected[reason] ?? 0) + 1;
   };
 
+  type PendingCandidate = {
+    c: CandidateProduct;
+    rel: AttributeMatchResult;
+    coupons: PremiumCouponOffer[] | undefined;
+  };
+  const pending: PendingCandidate[] = [];
+
   for (const c of deduped) {
-    const candidateListingKey = c.productUrl;
+    const listingForSameCheck =
+      c.shoppingHintUrl?.trim() || c.productUrl;
 
     traceLog("normalized_candidate", {
       store: c.store,
@@ -1499,7 +1514,7 @@ export async function compareProduct(
       continue;
     }
 
-    if (inputUrl && areSameRetailerListings(inputUrl, c.productUrl)) {
+    if (inputUrl && areSameRetailerListings(inputUrl, listingForSameCheck)) {
       candidateSteps.push({
         key: candidateKey(c, candidateSteps.length),
         store: c.store,
@@ -1507,7 +1522,7 @@ export async function compareProduct(
         price: c.price,
         productUrl: c.productUrl,
         outcome: "skipped_same_source_item",
-        detail: `same_listing_as_input_url(${candidateListingKey})`,
+        detail: `same_listing_as_input_url(${listingForSameCheck})`,
       });
       pipelineLog("candidate_skipped", {
         store: c.store,
@@ -1561,7 +1576,6 @@ export async function compareProduct(
       continue;
     }
 
-    // Structured gates favor similar cross-retailer substitutes (strict only on gross mismatches).
     const rel = scoreAttributeMatch(
       referenceNormalized,
       c.normalized,
@@ -1597,12 +1611,24 @@ export async function compareProduct(
     }
 
     const coupons = getSimulatedStoreCoupons(c.store, c.normalized.category);
-    const resolution = resolveCompareCandidateOutbound({
-      store: c.store,
-      listingProductUrl: c.productUrl,
-      title: c.title,
-      sourceLabel: c.sourceLabel,
-    });
+    pending.push({ c, rel, coupons });
+  }
+
+  const resolvedPending = await Promise.all(
+    pending.map(async ({ c, rel, coupons }) => {
+      const resolution = await resolveOutboundUrl({
+        store: c.store,
+        title: c.title,
+        storeLabel: c.sourceLabel,
+        shoppingHintUrl: c.shoppingHintUrl,
+        normalized: c.normalized,
+        demoMode,
+      });
+      return { c, rel, coupons, resolution };
+    }),
+  );
+
+  for (const { c, rel, coupons, resolution } of resolvedPending) {
     if (
       !resolution.outboundUrlRaw.trim() ||
       resolution.urlType === "unknown"
@@ -1629,7 +1655,7 @@ export async function compareProduct(
       store: c.store,
       title: c.title,
       price: c.price,
-      productUrl: c.productUrl,
+      productUrl: api.productUrl,
       outcome: "evaluated",
       matchConfidence: undefined,
       matchScore: identity.identityScore,
@@ -1681,21 +1707,8 @@ export async function compareProduct(
     (c) => c.priceCompareSegment === "not_cheaper"
   );
 
-  let orderedForDisplay = cheaperPool.slice(0, DISPLAY_LIMIT);
-  let similarButNotCheaper = notCheaperPool.slice(0, DISPLAY_LIMIT);
-
-  if (!demoMode) {
-    try {
-      [orderedForDisplay, similarButNotCheaper] = await Promise.all([
-        resolveDisplayedSearchPdps(orderedForDisplay, demoMode),
-        resolveDisplayedSearchPdps(similarButNotCheaper, demoMode),
-      ]);
-    } catch (err) {
-      console.error("[PDP_RESOLVE_BATCH_FAIL]", {
-        reason: err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200),
-      });
-    }
-  }
+  const orderedForDisplay = cheaperPool.slice(0, DISPLAY_LIMIT);
+  const similarButNotCheaper = notCheaperPool.slice(0, DISPLAY_LIMIT);
 
   rejectionSummary.baseFilteredCount = baseFiltered.length;
   rejectionSummary.orderedForDisplayCount = orderedForDisplay.length;

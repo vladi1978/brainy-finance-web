@@ -71,7 +71,11 @@ export function dedupeIdenticalListingUrls(items: CandidateProduct[]): Candidate
   const map = new Map<string, CandidateProduct>();
 
   for (const item of items) {
-    const key = `${item.store}|${item.productUrl.trim().toLowerCase()}`;
+    const urlPart =
+      item.productUrl.trim() ||
+      item.shoppingHintUrl?.trim() ||
+      item.title.replace(/\s+/g, " ").trim().toLowerCase();
+    const key = `${item.store}|${urlPart.toLowerCase()}`;
     const existing = map.get(key);
     if (!existing) {
       map.set(key, item);
