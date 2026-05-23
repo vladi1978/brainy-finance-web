@@ -222,6 +222,47 @@ function hasUsableListingTitle(title: string): boolean {
   return title.replace(/\s+/g, " ").trim().length >= 2;
 }
 
+function normalizeSearchUrlForCompare(store: ProductDetailStoreKey, url: string): string {
+  const trimmed = url.trim();
+  if (store === "tractorsupply" && isTractorSupplySearchPath(trimmed)) {
+    return canonicalizeTractorSupplySearchUrl(trimmed).toLowerCase();
+  }
+  try {
+    return new URL(trimmed).href.toLowerCase();
+  } catch {
+    return trimmed.toLowerCase();
+  }
+}
+
+/** Title-built retailer search must not be relabeled as a merchant-provided search URL. */
+function isGeneratedSearchUrlFromTitle(
+  store: ProductDetailStoreKey,
+  url: string,
+  title: string,
+): boolean {
+  if (!hasUsableListingTitle(title)) return false;
+  const generated = buildRetailerSearchUrlFromTitle(store, title);
+  if (!generated.trim()) return false;
+  return (
+    normalizeSearchUrlForCompare(store, url) ===
+    normalizeSearchUrlForCompare(store, generated)
+  );
+}
+
+function searchUrlResolutionReason(
+  store: ProductDetailStoreKey,
+  url: string,
+  title: string,
+  priorListing: string,
+): string {
+  if (isGeneratedSearchUrlFromTitle(store, url, title)) {
+    return priorListing.trim()
+      ? "generated_search_fallback_from_title"
+      : "missing_listing_link_generated_search";
+  }
+  return "merchant_search_url";
+}
+
 /** Extract search query from Tractor Supply URLs (canonical or legacy SERP paths). */
 function tractorSupplySearchQuery(url: string): string | null {
   try {
@@ -402,7 +443,12 @@ export function resolveCompareCandidateOutbound(args: {
         outboundUrlRaw: canonical,
         urlType: "search",
         urlConfidence: tractorSupplySearchQuery(listingRaw) ? "medium" : "low",
-        urlResolutionReason: "merchant_search_url",
+        urlResolutionReason: searchUrlResolutionReason(
+          store,
+          canonical,
+          title,
+          listingRaw,
+        ),
       });
     }
 
@@ -441,7 +487,12 @@ export function resolveCompareCandidateOutbound(args: {
         outboundUrlRaw: listingRaw,
         urlType: "search",
         urlConfidence: "medium",
-        urlResolutionReason: "merchant_search_url",
+        urlResolutionReason: searchUrlResolutionReason(
+          store,
+          listingRaw,
+          title,
+          listingRaw,
+        ),
       });
     }
 

@@ -1682,14 +1682,14 @@ export async function compareProduct(
   );
 
   let orderedForDisplay = cheaperPool.slice(0, DISPLAY_LIMIT);
-  const similarButNotCheaper = notCheaperPool.slice(0, DISPLAY_LIMIT);
+  let similarButNotCheaper = notCheaperPool.slice(0, DISPLAY_LIMIT);
 
   if (!demoMode) {
     try {
-      orderedForDisplay = await resolveDisplayedSearchPdps(
-        orderedForDisplay,
-        demoMode
-      );
+      [orderedForDisplay, similarButNotCheaper] = await Promise.all([
+        resolveDisplayedSearchPdps(orderedForDisplay, demoMode),
+        resolveDisplayedSearchPdps(similarButNotCheaper, demoMode),
+      ]);
     } catch (err) {
       console.error("[PDP_RESOLVE_BATCH_FAIL]", {
         reason: err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200),
