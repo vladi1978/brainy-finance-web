@@ -3,9 +3,10 @@ import {
   isBlockedUserFacingOutboundUrl,
   isClearlyHomepageOrCategoryOnly,
   isProductDetailStoreKey,
+  isRetailerSearchLandingUrl,
   isStrictProductDetailUrl,
   isProductLikeRetailerUrl,
-  isRetailerSearchUrl,
+  isValidStoreOutboundUrl,
   type ProductDetailStoreKey,
 } from "./productDetailUrl";
 import { shortenSearchQuery, truncateAtWordBoundary } from "./shortenSearchQuery";
@@ -22,7 +23,9 @@ type OutboundLogTag =
   | "URL_KEPT_PRODUCT_LIKE"
   | "URL_SEARCH"
   | "URL_GENERATED_SEARCH_FALLBACK"
-  | "URL_REJECTED_GOOGLE_OR_TRACKING";
+  | "URL_REJECTED_GOOGLE_OR_TRACKING"
+  | "MERCHANT_URL_PRESERVED"
+  | "GENERATED_SEARCH_FALLBACK";
 
 function logOutboundResolution(
   tag: OutboundLogTag,
@@ -67,7 +70,52 @@ function shouldGenerateSearchFallback(
   if (isBlockedUserFacingOutboundUrl(listingRaw)) return true;
   if (isStrictProductDetailUrl(store, listingRaw)) return false;
   if (isProductLikeRetailerUrl(store, listingRaw)) return false;
+  if (isClearlyRetailerSearchPage(store, listingRaw)) return false;
+  if (isValidStoreOutboundUrl(store, listingRaw)) return false;
   return isClearlyHomepageOrCategoryOnly(store, listingRaw);
+}
+
+/** True only for retailer-hosted search landing pages — not PDPs with incidental query keys. */
+function isClearlyRetailerSearchPage(
+  store: ProductDetailStoreKey,
+  url: string
+): boolean {
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  if (isStrictProductDetailUrl(store, trimmed)) return false;
+  if (isProductLikeRetailerUrl(store, trimmed)) return false;
+
+  try {
+    const u = new URL(trimmed);
+    return isRetailerSearchLandingUrl(store, u);
+  } catch {
+    return false;
+  }
+}
+
+function preserveValidMerchantOutbound(
+  store: ProductDetailStoreKey,
+  listingRaw: string,
+  reason: string,
+  merchantUrlUnwrapped?: boolean,
+): ResolvedCompareCandidateOutbound {
+  const productLike = isProductLikeRetailerUrl(store, listingRaw);
+  const strict = isStrictProductDetailUrl(store, listingRaw);
+  const resolutionReason =
+    merchantUrlUnwrapped && reason === "merchant_url_preserved"
+      ? "merchant_url_unwrapped"
+      : reason;
+  logOutboundResolution("MERCHANT_URL_PRESERVED", store, {
+    url: truncateUrlForLog(listingRaw),
+    reason: resolutionReason,
+  });
+  return finalizeOutboundResolution(store, {
+    outboundUrlRaw: listingRaw,
+    resolvedProductUrl: strict || productLike ? listingRaw : undefined,
+    urlType: strict || productLike ? "product" : "unknown",
+    urlConfidence: strict ? "high" : productLike ? "medium" : "medium",
+    urlResolutionReason: resolutionReason,
+  });
 }
 
 function generatedSearchFallback(
@@ -86,6 +134,11 @@ function generatedSearchFallback(
   }
 
   logOutboundResolution("URL_GENERATED_SEARCH_FALLBACK", store, {
+    url: truncateUrlForLog(generated),
+    title_preview: truncateUrlForLog(title, 160),
+    prior_listing_present: priorListing ? "yes" : "no",
+  });
+  logOutboundResolution("GENERATED_SEARCH_FALLBACK", store, {
     url: truncateUrlForLog(generated),
     title_preview: truncateUrlForLog(title, 160),
     prior_listing_present: priorListing ? "yes" : "no",
@@ -278,8 +331,9 @@ export function resolveCompareCandidateOutbound(args: {
   title: string;
   /** SERP merchant label — required for `other` Google-search fallbacks */
   sourceLabel?: string | null;
+  merchantUrlUnwrapped?: boolean;
 }): ResolvedCompareCandidateOutbound {
-  const { store, listingProductUrl, title } = args;
+  const { store, listingProductUrl, title, merchantUrlUnwrapped } = args;
   const listingRaw = listingProductUrl.replace(/\s+/g, " ").trim();
 
   if (store === "other") {
@@ -289,14 +343,18 @@ export function resolveCompareCandidateOutbound(args: {
       });
     } else if (listingRaw && isAcceptableUniversalShoppingOutboundUrl(listingRaw)) {
       const productLike = isUniversalMerchantProductLikeUrl(listingRaw);
+      logOutboundResolution("MERCHANT_URL_PRESERVED", store, {
+        url: truncateUrlForLog(listingRaw),
+        reason: productLike ? "merchant_product_like_url" : "merchant_url_preserved",
+      });
       return finalizeOutboundResolution(store, {
         outboundUrlRaw: listingRaw,
         resolvedProductUrl: productLike ? listingRaw : undefined,
-        urlType: productLike ? "product" : "search",
-        urlConfidence: productLike ? "medium" : "low",
+        urlType: productLike ? "product" : "unknown",
+        urlConfidence: productLike ? "medium" : "medium",
         urlResolutionReason: productLike
           ? "merchant_product_like_url"
-          : "merchant_outbound_unverified",
+          : "merchant_url_preserved",
       });
     }
     return {
@@ -357,7 +415,9 @@ export function resolveCompareCandidateOutbound(args: {
         resolvedProductUrl: listingRaw,
         urlType: "product",
         urlConfidence: "high",
-        urlResolutionReason: "merchant_strict_product_url",
+        urlResolutionReason: merchantUrlUnwrapped
+          ? "merchant_url_unwrapped"
+          : "merchant_strict_product_url",
       });
     }
 
@@ -365,16 +425,15 @@ export function resolveCompareCandidateOutbound(args: {
       logOutboundResolution("URL_KEPT_PRODUCT_LIKE", store, {
         url: truncateUrlForLog(listingRaw),
       });
-      return finalizeOutboundResolution(store, {
-        outboundUrlRaw: listingRaw,
-        resolvedProductUrl: listingRaw,
-        urlType: "product",
-        urlConfidence: "medium",
-        urlResolutionReason: "merchant_product_like_url",
-      });
+      return preserveValidMerchantOutbound(
+        store,
+        listingRaw,
+        "merchant_product_like_url",
+        merchantUrlUnwrapped,
+      );
     }
 
-    if (isRetailerSearchUrl(store, listingRaw)) {
+    if (isClearlyRetailerSearchPage(store, listingRaw)) {
       logOutboundResolution("URL_SEARCH", store, {
         url: truncateUrlForLog(listingRaw),
       });
@@ -386,14 +445,22 @@ export function resolveCompareCandidateOutbound(args: {
       });
     }
 
+    if (isValidStoreOutboundUrl(store, listingRaw)) {
+      return preserveValidMerchantOutbound(
+        store,
+        listingRaw,
+        "merchant_url_preserved",
+        merchantUrlUnwrapped,
+      );
+    }
+
     if (!shouldGenerateSearchFallback(store, listingRaw)) {
-      return finalizeOutboundResolution(store, {
-        outboundUrlRaw: listingRaw,
-        resolvedProductUrl: listingRaw,
-        urlType: "product",
-        urlConfidence: "medium",
-        urlResolutionReason: "merchant_outbound_preserved",
-      });
+      return preserveValidMerchantOutbound(
+        store,
+        listingRaw,
+        "merchant_outbound_preserved",
+        merchantUrlUnwrapped,
+      );
     }
   }
 
@@ -416,8 +483,9 @@ export function resolveShoppingRowProductUrl(args: {
   store: UniversalStoreId;
   title: string;
   merchantUrl: string | null;
+  merchantUrlUnwrapped?: boolean;
 }): string | null {
-  const { store, title, merchantUrl } = args;
+  const { store, title, merchantUrl, merchantUrlUnwrapped } = args;
 
   if (store === "other") {
     const raw = merchantUrl?.replace(/\s+/g, " ").trim() ?? "";
@@ -435,9 +503,16 @@ export function resolveShoppingRowProductUrl(args: {
     store,
     listingProductUrl: merchantUrl ?? "",
     title,
+    merchantUrlUnwrapped,
   });
   const outbound = resolution.outboundUrlRaw.trim();
   if (!outbound || isBlockedUserFacingOutboundUrl(outbound)) return null;
-  if (resolution.urlType !== "product" && resolution.urlType !== "search") return null;
+  if (
+    resolution.urlType !== "product" &&
+    resolution.urlType !== "search" &&
+    resolution.urlType !== "unknown"
+  ) {
+    return null;
+  }
   return outbound;
 }

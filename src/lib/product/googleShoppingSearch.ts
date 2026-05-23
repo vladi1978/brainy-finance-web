@@ -22,17 +22,71 @@ const SHOPPING_ROW_VERBOSE =
 
 type ShoppingJsonOk = { payload: unknown; rawTextLength: number };
 
-const DISALLOW_HOST_SUBSTR = [
-  "google.com",
-  "googleusercontent.com",
-  "gstatic.com",
-  "schema.org",
-  "googleadservices.com",
-  "doubleclick.net",
-  "googlesyndication.com",
-];
+const REDIRECT_PARAM_KEYS = [
+  "url",
+  "adurl",
+  "q",
+  "u",
+  "target",
+  "redirect",
+  "r",
+] as const;
 
-const REDIRECT_PARAM_KEYS = ["url", "adurl", "q", "u"] as const;
+const TRACKING_REDIRECT_HOSTS = new Set([
+  "bit.ly",
+  "j.mp",
+  "goo.gl",
+  "t.co",
+  "tinyurl.com",
+  "ow.ly",
+  "buff.ly",
+  "rebrand.ly",
+  "cutt.ly",
+  "is.gd",
+  "adf.ly",
+  "g.co",
+  "amzn.to",
+  "a.co",
+  "click.linksynergy.com",
+  "linksynergy.com",
+  "anrdoezrs.net",
+  "dpbolvw.net",
+  "kqzyfj.com",
+  "awin1.com",
+  "shareasale.com",
+]);
+
+function logMerchantUrlEvent(
+  tag: "MERCHANT_URL_PRESERVED" | "MERCHANT_URL_UNWRAPPED" | "MERCHANT_URL_REJECTED",
+  fields: Record<string, string | null | undefined>,
+): void {
+  const parts = [
+    `[${tag}]`,
+    ...Object.entries(fields)
+      .filter(([, v]) => v != null && v !== "")
+      .map(([k, v]) => `${k}=${v}`),
+  ];
+  console.log(parts.join(" "));
+}
+
+function hostIsTrackingRedirectDomain(host: string): boolean {
+  const h = normUnwrapHost(host);
+  if (TRACKING_REDIRECT_HOSTS.has(h)) return true;
+  for (const blocked of TRACKING_REDIRECT_HOSTS) {
+    if (h.endsWith(`.${blocked}`)) return true;
+  }
+  return false;
+}
+
+function isObviousHomepageOnlyUrl(url: string): boolean {
+  try {
+    const u = new URL(url.trim());
+    const path = u.pathname.replace(/\/+$/, "");
+    return path === "" || path === "/";
+  } catch {
+    return true;
+  }
+}
 
 function normUnwrapHost(host: string): string {
   return host.replace(/^www\./i, "").toLowerCase();
@@ -50,15 +104,6 @@ function hostIsGoogleAdsOrTrackingRedirect(host: string): boolean {
   if (h === "googleadservices.com" || h.endsWith(".googleadservices.com")) return true;
   if (h === "googlesyndication.com" || h.endsWith(".googlesyndication.com")) return true;
   if (h.includes("doubleclick.net")) return true;
-  return false;
-}
-
-function hostIsBlockedOutboundSurface(host: string): boolean {
-  const h = normUnwrapHost(host);
-  if (hostIsGoogleOrShoppingRedirect(h) || hostIsGoogleAdsOrTrackingRedirect(h)) return true;
-  for (const bad of DISALLOW_HOST_SUBSTR) {
-    if (h === bad || h.endsWith(`.${bad}`)) return true;
-  }
   return false;
 }
 
@@ -83,8 +128,28 @@ function pickNestedHttpTarget(u: URL): string | null {
     if (!raw?.trim()) continue;
     const decoded = safeDecodeUrlParam(raw);
     if (decoded.startsWith("http://") || decoded.startsWith("https://")) return decoded;
+    if (decoded.startsWith("//")) return `https:${decoded}`;
   }
   return null;
+}
+
+function isAcceptableUnwrappedMerchantUrl(url: string): boolean {
+  const trimmed = url.trim();
+  if (!trimmed.startsWith("http")) return false;
+  if (isObviousHomepageOnlyUrl(trimmed)) return false;
+
+  try {
+    const host = normUnwrapHost(new URL(trimmed).hostname);
+    if (hostIsGoogleOrShoppingRedirect(host) || hostIsGoogleAdsOrTrackingRedirect(host)) {
+      return false;
+    }
+    if (host === "schema.org") return false;
+    if (hostIsTrackingRedirectDomain(host)) return false;
+    if (isBlockedUserFacingOutboundUrl(trimmed)) return false;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function parsePriceLoose(raw: string | null | undefined): number | null {
@@ -253,7 +318,8 @@ function dedupeShoppingRowKey(row: Record<string, unknown>): string {
 }
 
 /**
- * Unwrap nested Google / ad redirect URLs (`url`, `adurl`, `q`, `u`) to a merchant PDP.
+ * Unwrap nested Google / ad redirect URLs to a merchant PDP.
+ * Tries `url`, `adurl`, `q`, `u`, `target`, `redirect`, and `r` params with safe nested decoding.
  */
 export function unwrapMerchantUrl(raw: string, depth = 0): string | null {
   if (depth > 6) return null;
@@ -263,41 +329,109 @@ export function unwrapMerchantUrl(raw: string, depth = 0): string | null {
   try {
     const u = new URL(t);
     const host = normUnwrapHost(u.hostname);
+    const originalPreview = t.slice(0, 220);
 
     if (hostIsGoogleOrShoppingRedirect(host) || hostIsGoogleAdsOrTrackingRedirect(host)) {
       const nested = pickNestedHttpTarget(u);
-      if (nested) return unwrapMerchantUrl(nested, depth + 1);
-      if (u.pathname.includes("/shopping")) return null;
+      if (nested) {
+        const unwrapped = unwrapMerchantUrl(nested, depth + 1);
+        if (unwrapped) {
+          logMerchantUrlEvent("MERCHANT_URL_UNWRAPPED", {
+            from: originalPreview,
+            to: unwrapped.slice(0, 220),
+          });
+          return unwrapped;
+        }
+      }
+      logMerchantUrlEvent("MERCHANT_URL_REJECTED", {
+        url: originalPreview,
+        reason: u.pathname.includes("/shopping") ? "google_shopping_surface" : "google_redirect_no_target",
+      });
       return null;
     }
 
-    if (hostIsBlockedOutboundSurface(host)) return null;
+    if (hostIsTrackingRedirectDomain(host)) {
+      const nested = pickNestedHttpTarget(u);
+      if (nested) {
+        const unwrapped = unwrapMerchantUrl(nested, depth + 1);
+        if (unwrapped) {
+          logMerchantUrlEvent("MERCHANT_URL_UNWRAPPED", {
+            from: originalPreview,
+            to: unwrapped.slice(0, 220),
+          });
+          return unwrapped;
+        }
+      }
+      logMerchantUrlEvent("MERCHANT_URL_REJECTED", {
+        url: originalPreview,
+        reason: "tracking_redirect_no_merchant_target",
+      });
+      return null;
+    }
+
+    if (host === "schema.org") {
+      logMerchantUrlEvent("MERCHANT_URL_REJECTED", {
+        url: originalPreview,
+        reason: "schema_org",
+      });
+      return null;
+    }
+
+    if (isObviousHomepageOnlyUrl(u.toString())) {
+      logMerchantUrlEvent("MERCHANT_URL_REJECTED", {
+        url: originalPreview,
+        reason: "homepage_only",
+      });
+      return null;
+    }
 
     return u.toString();
   } catch {
+    logMerchantUrlEvent("MERCHANT_URL_REJECTED", {
+      url: t.slice(0, 220),
+      reason: "malformed",
+    });
     return null;
   }
 }
 
 /**
  * Resolve any Google Shopping / Serp row link to a merchant URL.
- * Never returns Google Shopping hops, ad redirects, or malformed links.
+ * Preserves valid retailer URLs (including tracking/query params); rejects Google hops and malformed links.
  */
 export function finalizeMerchantProductUrl(rawLink: string): string | null {
+  return finalizeMerchantProductUrlWithMeta(rawLink)?.url ?? null;
+}
+
+function finalizeMerchantProductUrlWithMeta(
+  rawLink: string,
+): { url: string; unwrapped: boolean } | null {
   const trimmed = rawLink.trim();
-  if (!trimmed.startsWith("http")) return null;
+  if (!trimmed.startsWith("http")) {
+    logMerchantUrlEvent("MERCHANT_URL_REJECTED", {
+      url: trimmed.slice(0, 220) || null,
+      reason: "empty_or_non_http",
+    });
+    return null;
+  }
 
   const resolved = unwrapMerchantUrl(trimmed);
   if (!resolved) return null;
 
-  try {
-    const host = normUnwrapHost(new URL(resolved).hostname);
-    if (hostIsBlockedOutboundSurface(host)) return null;
-    if (isBlockedUserFacingOutboundUrl(resolved)) return null;
-    return resolved;
-  } catch {
+  if (!isAcceptableUnwrappedMerchantUrl(resolved)) {
+    logMerchantUrlEvent("MERCHANT_URL_REJECTED", {
+      url: resolved.slice(0, 220),
+      reason: "invalid_after_unwrap",
+    });
     return null;
   }
+
+  const unwrapped = trimmed !== resolved;
+  logMerchantUrlEvent("MERCHANT_URL_PRESERVED", {
+    url: resolved.slice(0, 220),
+    source: unwrapped ? "unwrapped" : "direct",
+  });
+  return { url: resolved, unwrapped };
 }
 
 /**
@@ -322,7 +456,9 @@ function pickHttpLinkFromNestedShoppingEntry(entry: Record<string, unknown>): st
   return null;
 }
 
-function pickFirstFinalMerchantUrl(row: Record<string, unknown>): string | null {
+function pickFirstFinalMerchantUrl(
+  row: Record<string, unknown>,
+): { url: string; unwrapped: boolean } | null {
   /** 1) Serper nests merchant PDP URLs under shoppingResults[].link (camelCase) or snake_case. */
   const bundle = row.shoppingResults ?? row.shopping_results;
   if (Array.isArray(bundle) && bundle.length > 0) {
@@ -330,7 +466,7 @@ function pickFirstFinalMerchantUrl(row: Record<string, unknown>): string | null 
     if (first != null && typeof first === "object") {
       const raw = pickHttpLinkFromNestedShoppingEntry(first as Record<string, unknown>);
       if (raw != null) {
-        const u = finalizeMerchantProductUrl(raw);
+        const u = finalizeMerchantProductUrlWithMeta(raw);
         if (u) return u;
       }
     }
@@ -349,7 +485,7 @@ function pickFirstFinalMerchantUrl(row: Record<string, unknown>): string | null 
   for (const k of serperDirectFields) {
     const v = row[k];
     if (typeof v !== "string" || !v.startsWith("http")) continue;
-    const u = finalizeMerchantProductUrl(v);
+    const u = finalizeMerchantProductUrlWithMeta(v);
     if (u) return u;
   }
 
@@ -367,7 +503,7 @@ function pickFirstFinalMerchantUrl(row: Record<string, unknown>): string | null 
   for (const k of fallbackKeys) {
     const v = row[k];
     if (typeof v !== "string" || !v.startsWith("http")) continue;
-    const u = finalizeMerchantProductUrl(v);
+    const u = finalizeMerchantProductUrlWithMeta(v);
     if (u) return u;
   }
   return null;
@@ -601,12 +737,14 @@ function buildProductUrlForShoppingRow(args: {
   store: UniversalStoreId;
   title: string;
   merchantUrl: string | null;
+  merchantUrlUnwrapped?: boolean;
   sourceLabel: string | null;
 }): string | null {
   return resolveShoppingRowProductUrl({
     store: args.store,
     title: args.title,
     merchantUrl: args.merchantUrl,
+    merchantUrlUnwrapped: args.merchantUrlUnwrapped,
   });
 }
 
@@ -625,7 +763,9 @@ function rowToCandidate(
   if (!title || title.length < 3) return null;
 
   const source = pickSourceLabel(row);
-  const merchantUrl = pickFirstFinalMerchantUrl(row);
+  const merchantPick = pickFirstFinalMerchantUrl(row);
+  const merchantUrl = merchantPick?.url ?? null;
+  const merchantUrlUnwrapped = merchantPick?.unwrapped ?? false;
   const retailerName = source?.trim() || null;
 
   const { store, mappedKnownStore } = resolveStoreForShoppingRow(
@@ -656,6 +796,7 @@ function rowToCandidate(
     store,
     title,
     merchantUrl,
+    merchantUrlUnwrapped,
     sourceLabel: retailerName,
   });
 
