@@ -373,6 +373,21 @@ export function extractCategory(title: string): ProductCategory {
   ) {
     return "tv";
   }
+
+  // Pool categories (BrainyFinance is universal; pool rules must be category-gated elsewhere).
+  if (/\bswimming\s+pool\b/.test(n)) {
+    return "swimming_pool";
+  }
+  if (/\babove[\s-]+ground[\s-]+pool\b/.test(n)) {
+    return "outdoor_pool";
+  }
+  if (/\bin[\s-]?ground\s+pool\b/.test(n)) {
+    return "outdoor_pool";
+  }
+  if (/\bpool\b/.test(n)) {
+    return "pool";
+  }
+
   if (SOCKS_RE.test(n)) {
     return "socks";
   }
@@ -461,6 +476,9 @@ export function parseProductAttributesFromTitle(title: string): ParsedProductAtt
 const CATEGORY_SEARCH_KEYWORD: Record<ProductCategory, string | null> = {
   tv: "tv",
   monitor: "monitor",
+  pool: "pool",
+  outdoor_pool: "pool",
+  swimming_pool: "pool",
   footwear: "shoes",
   audio: "headphones",
   socks: "socks",

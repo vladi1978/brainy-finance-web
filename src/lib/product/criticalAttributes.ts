@@ -2,6 +2,14 @@ import { parseDimensionPairs } from "./matching/criticalSpecs";
 import { normalizeTitle } from "./normalize";
 import type { CriticalListingAttributes, NormalizedProduct } from "./types";
 
+function isPoolCategory(category: NormalizedProduct["category"]): boolean {
+  return (
+    category === "pool" ||
+    category === "outdoor_pool" ||
+    category === "swimming_pool"
+  );
+}
+
 const ACCESSORY_RULES: { re: RegExp; stems: string[] }[] = [
   { re: /\b(pump|bomba)\b/i, stems: ["pump"] },
   { re: /\b(filter|filtro)\b/i, stems: ["filter"] },
@@ -52,14 +60,16 @@ function kindPhrasesFromText(norm: NormalizedProduct, raw: string): string[] {
   }
   if (norm.category === "monitor") out.push("monitor");
 
-  if (/\babove[\s-]+ground[\s-]+pool\b/.test(n)) {
-    out.push("above ground pool");
-  }
-  if (/\bin[\s-]?ground\s+pool\b/.test(n)) {
-    out.push("in ground pool");
-  }
-  if (/\bpool\b/.test(n) && !out.some((p) => p.includes("pool"))) {
-    out.push("pool");
+  if (isPoolCategory(norm.category)) {
+    if (/\babove[\s-]+ground[\s-]+pool\b/.test(n)) {
+      out.push("above ground pool");
+    }
+    if (/\bin[\s-]?ground\s+pool\b/.test(n)) {
+      out.push("in ground pool");
+    }
+    if (/\bpool\b/.test(n) && !out.some((p) => p.includes("pool"))) {
+      out.push("pool");
+    }
   }
 
   if (/\b(shoe|sneaker|boot|sandal)\b/.test(n)) out.push("shoe");
@@ -80,7 +90,11 @@ function kindPhrasesFromText(norm: NormalizedProduct, raw: string): string[] {
   return [...new Set(out)].filter(Boolean);
 }
 
-function accessoryMustIncludeFromText(raw: string): string[] {
+function accessoryMustIncludeFromText(
+  raw: string,
+  category: NormalizedProduct["category"]
+): string[] {
+  if (!isPoolCategory(category)) return [];
   const out = new Set<string>();
   for (const rule of ACCESSORY_RULES) {
     if (rule.re.test(raw)) {
@@ -96,7 +110,10 @@ export function buildCriticalListingAttributes(
 ): CriticalListingAttributes {
   const dimensionSignatures = dimensionSignaturesFromText(rawText);
   const kindPhrases = kindPhrasesFromText(norm, rawText);
-  const accessoryMustInclude = accessoryMustIncludeFromText(rawText);
+  const accessoryMustInclude = accessoryMustIncludeFromText(
+    rawText,
+    norm.category
+  );
   return {
     dimensionSignatures,
     kindPhrases,
@@ -133,7 +150,7 @@ export function buildCriticalShoppingCoreSegments(
   const inch = raw.match(/\b(\d{2,3})\s*(?:"|inch|inches)\b/i);
   if (inch?.[1]) segs.push(`${inch[1]} inch`);
 
-  for (const p of accessoryMustIncludeFromText(raw)) {
+  for (const p of accessoryMustIncludeFromText(raw, norm.category)) {
     segs.push(p);
   }
 

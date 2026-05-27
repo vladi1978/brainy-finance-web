@@ -50,6 +50,9 @@ const TIER1_STRUCTURED_MIN = 86;
 /** One-sided missing parsed diagonal vs peer structured size — soften instead of rejecting. */
 const DIAG_INCOMPLETE_FACTOR = 0.82;
 
+/** WxH present on source but missing/unconfirmed on candidate — soften, do not hard reject. */
+const DIMENSION_UNCONFIRMED_FACTOR = 0.78;
+
 /** Reference kind stems absent from candidate copy — soften vs hard reject. */
 const CRITICAL_KIND_PHRASE_MISS_FACTOR = 0.85;
 
@@ -107,7 +110,13 @@ export function scoreAttributeMatch(
 
   const structured = scoreUniversalStructured(source, candidate);
   let attrScore = structured.score;
-  const dimPenaltyReasons: string[] = [];
+  const dimPenaltyReasons: string[] = [...criticalGate.softPenalties];
+
+  for (const p of criticalGate.softPenalties) {
+    if (p.startsWith("dimension_pair_unconfirmed")) {
+      attrScore *= DIMENSION_UNCONFIRMED_FACTOR;
+    }
+  }
 
   if (shouldApplyDiagonalIncompleteSoftPenalty(source, candidate)) {
     attrScore *= DIAG_INCOMPLETE_FACTOR;

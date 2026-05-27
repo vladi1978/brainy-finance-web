@@ -40,13 +40,15 @@ import {
   detectStoreFromProductUrl,
   extractSearchQuery,
 } from "./normalize";
-import { scrapeProduct, toSourceScrapedHints } from "./scrapeProduct";
+import {
+  buildMinimalTitleForCanonicalUrl,
+  extractInitialProductFromCanonicalUrl,
+} from "./productDescriptionFromUrl";
 import {
   isGenericRetailProductQuery,
   looksLikeAmazonAsinToken,
 } from "./urlProductQuery";
 import { isUsablePdpTitle } from "./usablePdpTitle";
-import { findProductProviderForUrl } from "./registry";
 import {
   identityMatchLabel,
   rankIdentityMatchTypes,
@@ -60,10 +62,13 @@ import {
   isStrictProductDetailUrl,
   isValidUserFacingCompareOutbound,
 } from "./productDetailUrl";
+import { candidateHasMerchantPdpHint } from "./productUrlResolver";
 import {
+  logProductSourceCandidate,
   resolveOutboundUrl,
   type ResolvedOutboundUrl,
 } from "./source";
+import { isServerRetailScrapeBlocked } from "./source/serverScrapePolicy";
 import type {
   CandidateProduct,
   CandidateStepTrace,
@@ -123,6 +128,9 @@ function compactTvSkuForSearch(sku: string): string {
 const CATEGORY_TYPE_WORD: Record<ProductCategory, string> = {
   tv: "TV",
   monitor: "Monitor",
+  pool: "Pool",
+  outdoor_pool: "Pool",
+  swimming_pool: "Pool",
   footwear: "Shoes",
   audio: "Headphones",
   socks: "Socks",
@@ -705,9 +713,12 @@ function dedupeByStoreAndUrl(items: CandidateProduct[]): CandidateProduct[] {
 function queryDerivedSourceSummary(
   productQuery: string,
   detectedStore: StoreId | null,
-  norm: import("./types").NormalizedProduct
+  norm: import("./types").NormalizedProduct,
+  sourceUrl?: string
 ): NonNullable<CompareProductResponse["sourceProduct"]> {
+  const url = sourceUrl?.trim();
   return {
+    ...(url ? { sourceUrl: url } : {}),
     title: productQuery,
     store: detectedStore ?? "unknown",
     originalPrice: null,
@@ -1060,6 +1071,9 @@ export async function compareProduct(
   });
 
   const parsed = await parseProductInput(input);
+  const canonicalProductUrl = (
+    parsed.canonicalProductUrl ?? parsed.inputUrl
+  )?.trim();
 
   let explicitQueryPack: RetailSearchQueryPack | null = null;
   let explicitReferenceQuery: string | null = null;
@@ -1089,72 +1103,86 @@ export async function compareProduct(
     }
   }
 
+  const priceFromInput = parsePricePaidRaw(
+    options.pricePaid ?? (useManualForm && manual ? manual.pricePaid : null)
+  );
+
   let scrapedSource: SourceProduct | null = null;
   let attemptedPdpExtract = false;
   let referencePriceExtractionSource: string | null = null;
-  if (parsed.inputUrl && !demoMode) {
-    const urlProvider = findProductProviderForUrl(parsed.inputUrl);
-    if (urlProvider) {
-      attemptedPdpExtract = true;
-      try {
-        scrapedSource = await urlProvider.extractSourceProduct(parsed.inputUrl);
-        if (scrapedSource?.originalPrice != null) {
-          referencePriceExtractionSource = "provider_pdp";
-        }
-      } catch (err) {
-        pipelineLog("extract_source_failed", {
-          inputUrl: parsed.inputUrl.slice(0, 200),
-          error: err instanceof Error ? err.message : String(err),
-        });
-        scrapedSource = null;
-      }
-    } else {
-      attemptedPdpExtract = true;
-      try {
-        const scraped = await scrapeProduct(parsed.inputUrl);
-        const title =
-          scraped?.productName?.replace(/\s+/g, " ").trim() ||
-          parsed.productQuery.replace(/\s+/g, " ").trim();
-        if (scraped && title) {
-          const store = detectStoreFromProductUrl(parsed.inputUrl) ?? "unknown";
-          scrapedSource = {
-            sourceUrl: parsed.inputUrl,
-            store,
-            title,
-            originalPrice: scraped.price,
-            currency: scraped.currency ?? "USD",
-            imageUrl: scraped.imageUrl ?? null,
-            normalized: buildNormalizedProduct(title, {
-              price: scraped.price,
-              currency: scraped.currency ?? "USD",
-              productUrl: parsed.inputUrl,
-            }),
-            scrapedHints: toSourceScrapedHints(scraped) ?? null,
-          };
-          referencePriceExtractionSource = scraped.priceSource ?? "generic_pdp_scrape";
-        }
-      } catch (err) {
-        pipelineLog("generic_pdp_scrape_failed", {
-          inputUrl: parsed.inputUrl.slice(0, 200),
-          error: err instanceof Error ? err.message : String(err),
+
+  if (canonicalProductUrl && !demoMode) {
+    if (isServerRetailScrapeBlocked(canonicalProductUrl)) {
+      pipelineLog("server_generic_scrape_skipped_bot_protected_retailer", {
+        inputUrl: canonicalProductUrl.slice(0, 200),
+        fallbackQuery: parsed.productQuery.slice(0, 120),
+      });
+    }
+
+    const extracted = await extractInitialProductFromCanonicalUrl({
+      canonicalProductUrl,
+      originalInputUrl: parsed.originalInputUrl ?? parsed.rawInput,
+      slugFallbackQuery: parsed.productQuery,
+      userPrice: priceFromInput,
+      demoMode,
+    });
+
+    if (extracted) {
+      scrapedSource = extracted.sourceProduct;
+      attemptedPdpExtract = extracted.attemptedExtract;
+      referencePriceExtractionSource = extracted.priceSource;
+      if (extracted.fallbackReason) {
+        pipelineLog("description_fallback", {
+          reason: extracted.fallbackReason,
+          titlePreview: scrapedSource.title.slice(0, 120),
         });
       }
     }
+  }
+
+  if (scrapedSource && canonicalProductUrl) {
+    scrapedSource = {
+      ...scrapedSource,
+      sourceUrl: canonicalProductUrl,
+    };
   }
 
   const scrapedOk = Boolean(
     scrapedSource && isUsablePdpTitle(scrapedSource.title)
   );
   const scrapeBotWalled = attemptedPdpExtract && !scrapedOk;
-  const referenceProductQuery = scrapedOk
-    ? scrapedSource!.title.trim()
-    : (
-        explicitReferenceQuery?.replace(/\s+/g, " ").trim() ||
-        parsed.productQuery.replace(/\s+/g, " ").trim()
-      );
 
-  if (!referenceProductQuery) {
-    pipelineLog("derive_query_empty", { inputUrl: parsed.inputUrl ?? null });
+  let referenceProductQuery =
+    scrapedSource?.title?.replace(/\s+/g, " ").trim() ||
+    explicitReferenceQuery?.replace(/\s+/g, " ").trim() ||
+    parsed.productQuery.replace(/\s+/g, " ").trim();
+
+  if (!referenceProductQuery && canonicalProductUrl) {
+    referenceProductQuery = buildMinimalTitleForCanonicalUrl(canonicalProductUrl);
+    if (!scrapedSource) {
+      const store =
+        detectStoreFromProductUrl(canonicalProductUrl) ?? "unknown";
+      scrapedSource = {
+        sourceUrl: canonicalProductUrl,
+        store,
+        title: referenceProductQuery,
+        originalPrice: priceFromInput,
+        currency: "USD",
+        imageUrl: null,
+        normalized: buildNormalizedProduct(referenceProductQuery, {
+          price: priceFromInput ?? undefined,
+          productUrl: canonicalProductUrl,
+        }),
+        scrapedHints: null,
+      };
+    }
+  }
+
+  if (!referenceProductQuery && !canonicalProductUrl) {
+    pipelineLog("derive_query_empty", {
+      inputUrl: null,
+      hasTextInput: Boolean(parsed.rawInput && !/^https?:\/\//i.test(parsed.rawInput)),
+    });
     return {
       query: parsed.rawInput,
       normalizedQuery: "",
@@ -1179,9 +1207,7 @@ export async function compareProduct(
     ? scrapedSource!.title
     : parsed.productQuery.trim();
 
-  const priceFromManual = parsePricePaidRaw(
-    options.pricePaid ?? (useManualForm && manual ? manual.pricePaid : null)
-  );
+  const priceFromManual = priceFromInput;
 
   let referenceNormalized = scrapedOk
     ? scrapedSource!.normalized
@@ -1200,7 +1226,7 @@ export async function compareProduct(
     supplementaryText: normSourceText,
     sourceUrl:
       scrapedSource?.sourceUrl?.trim() ||
-      parsed.inputUrl?.trim() ||
+      canonicalProductUrl ||
       null,
     scrapedHints: scrapedSource?.scrapedHints ?? null,
     normalized: referenceNormalized,
@@ -1209,7 +1235,7 @@ export async function compareProduct(
 
   const metadataSourceUrl =
     scrapedSource?.sourceUrl?.trim() ||
-    parsed.inputUrl?.trim() ||
+    canonicalProductUrl ||
     "";
 
   const [aiProductMetadata, aiCompareEnrichment] = await Promise.all([
@@ -1387,7 +1413,7 @@ export async function compareProduct(
     byStore: candidatesPerProvider,
   });
 
-  const inputUrl = parsed.inputUrl?.trim();
+  const inputUrl = canonicalProductUrl;
   const deduped = dedupeByStoreAndUrl(allCandidates);
 
   pipelineLog("dedupe_summary", {
@@ -1418,7 +1444,7 @@ export async function compareProduct(
       : null;
 
   const referencePriceUrl =
-    scrapedSource?.sourceUrl?.trim() || parsed.inputUrl?.trim() || null;
+    scrapedSource?.sourceUrl?.trim() || canonicalProductUrl || null;
   if (referenceListPrice != null) {
     logReferencePriceOutcome({
       url: referencePriceUrl,
@@ -1636,6 +1662,22 @@ export async function compareProduct(
       rejectionSummary.urlRejected += 1;
     }
 
+    logProductSourceCandidate({
+      phase: "compare_candidate",
+      store: c.store,
+      storeLabel: c.sourceLabel ?? null,
+      title: c.title.replace(/\s+/g, " ").trim().slice(0, 120),
+      price: c.price,
+      sourceAdapter: c.sourceAdapter ?? null,
+      rawLinkType: c.rawLinkType ?? null,
+      hasPdpUrl:
+        candidateHasMerchantPdpHint(c) || resolution.urlType === "product",
+      urlType: resolution.urlType,
+      urlConfidence: resolution.urlConfidence,
+      urlResolutionReason: resolution.urlResolutionReason ?? null,
+      matchConfidence: rel.matchConfidenceLabel,
+    });
+
     const identity = scoreProductIdentity(
       referenceNormalized,
       c.normalized,
@@ -1728,6 +1770,17 @@ export async function compareProduct(
     });
   }
 
+  const scrapedStoreId: StoreId | null =
+    scrapedSource?.store && scrapedSource.store !== "unknown"
+      ? scrapedSource.store
+      : null;
+  const sourceListingStore: StoreId | null =
+    scrapedStoreId ??
+    parsed.detectedStore ??
+    (canonicalProductUrl
+      ? detectStoreFromProductUrl(canonicalProductUrl)
+      : null);
+
   const sourceProduct =
     scrapedOk && scrapedSource
       ? extractedSourceSummary(
@@ -1735,15 +1788,28 @@ export async function compareProduct(
             ...scrapedSource,
             originalPrice: referenceListPrice ?? scrapedSource.originalPrice,
           },
-          parsed.inputUrl
+          canonicalProductUrl
         )
-      : useManualForm || !parsed.inputUrl
+      : useManualForm && !canonicalProductUrl
         ? queryDerivedSourceSummary(
             referenceProductQuery,
             parsed.detectedStore,
             referenceNormalized
           )
-        : null;
+        : canonicalProductUrl
+          ? queryDerivedSourceSummary(
+              referenceProductQuery,
+              sourceListingStore,
+              referenceNormalized,
+              canonicalProductUrl
+            )
+          : useManualForm
+            ? queryDerivedSourceSummary(
+                referenceProductQuery,
+                parsed.detectedStore,
+                referenceNormalized
+              )
+            : null;
 
   const selectionBase: SelectionTrace = {
     trustworthyCount: rows.filter(
@@ -1770,7 +1836,7 @@ export async function compareProduct(
                   store: scrapedSource.store,
                   originalPrice: scrapedSource.originalPrice,
                   sourceUrl:
-                    scrapedSource.sourceUrl ?? parsed.inputUrl ?? undefined,
+                    scrapedSource.sourceUrl ?? canonicalProductUrl ?? undefined,
                 }
               : {
                   title: referenceProductQuery,

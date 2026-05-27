@@ -37,13 +37,26 @@ export type UniversalStoreId = StoreId | "other";
 
 /** Outbound URL resolution tier outcome from the Product Source Layer. */
 export type UrlResolutionReason =
-  | "api_product_url"
+  | "merchant_product_url"
   | "organic_pdp_discovery"
-  | "generated_search_fallback";
+  | "generated_search_fallback_from_title";
+
+/** Raw link classification from Google Shopping / Serp rows (ingestion). */
+export type ShoppingRawLinkType =
+  | "merchant_pdp"
+  | "google_shopping_overlay"
+  | "google_redirect"
+  | "tracking_redirect"
+  | "unknown";
+
+export type ShoppingSourceAdapterId = "serper" | "serpapi";
 
 export type ProductCategory =
   | "tv"
   | "monitor"
+  | "pool"
+  | "outdoor_pool"
+  | "swimming_pool"
   | "footwear"
   | "audio"
   | "socks"
@@ -213,8 +226,15 @@ export type CandidateProduct = {
   /**
    * Raw Google Shopping merchant link — untrusted hint for Product Source Layer only.
    * Never shown directly to users without adapter validation.
+   * Omitted when the source only provides a Google Shopping overlay URL.
    */
   shoppingHintUrl?: string | null;
+  /** Original link from the shopping API row before unwrap/classification */
+  rawShoppingLink?: string | null;
+  /** How {@link rawShoppingLink} was classified at ingestion */
+  rawLinkType?: ShoppingRawLinkType;
+  /** Shopping API adapter that produced this row */
+  sourceAdapter?: ShoppingSourceAdapterId;
   /** Shopping API query that produced this row (dedupe / diagnostics) */
   shoppingQueryUsed?: string;
   /** Listing star rating when the provider exposes it */

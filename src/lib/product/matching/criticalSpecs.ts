@@ -2,7 +2,9 @@ import { normalizeTitle } from "../normalize";
 import type { NormalizedProduct, ProductCondition } from "../types";
 import { buildUniversalMatchSnapshot } from "./snapshot";
 
-export type CriticalSpecsGateResult = { ok: true } | { ok: false; reason: string };
+export type CriticalSpecsGateResult =
+  | { ok: true; softPenalties: string[] }
+  | { ok: false; reason: string };
 
 export type DimensionPair = {
   a: number;
@@ -206,6 +208,8 @@ export function checkUniversalCriticalSpecsGate(
     `${candidateTitle} ${candidate.structured.title}`
   );
 
+  const softPenalties: string[] = [];
+
   if (src.dimensionPairs.length > 0) {
     const primary = src.dimensionPairs[0]!;
     if (cand.dimensionPairs.length > 0) {
@@ -214,10 +218,10 @@ export function checkUniversalCriticalSpecsGate(
         if (pairsConflict(src.dimensionPairs, cand.dimensionPairs)) {
           return fail("dimension_pair_mismatch", src, cand);
         }
-        return fail("dimension_pair_missing", src, cand);
+        softPenalties.push("dimension_pair_unconfirmed_soft(×0.78)");
       }
     } else if (!pairPresentInBlob(primary, candBlob)) {
-      return fail("dimension_pair_unconfirmed", src, cand);
+      softPenalties.push("dimension_pair_unconfirmed_soft(×0.78)");
     }
   }
 
@@ -256,7 +260,7 @@ export function checkUniversalCriticalSpecsGate(
     return fail(`condition_mismatch(${src.condition} vs ${cand.condition})`, src, cand);
   }
 
-  return { ok: true };
+  return { ok: true, softPenalties };
 }
 
 export function logCriticalSpecRejected(payload: {

@@ -209,6 +209,57 @@ export const CATEGORY_MATCH_PROFILES: Record<ProductCategory, CategoryMatchProfi
       title_overlap: 28,
     },
   },
+  pool: {
+    softBrandScoring: true,
+    gates: {
+      ...GENERIC_GATES,
+      /** Two uncategorized screen-like listings with different diagonals — reject. */
+      rejectDiagonalMismatchWhenBothKnown: true,
+    },
+    weights: {
+      category_bucket: 12,
+      brand: 16,
+      model_line: 14,
+      diagonal_inches: 10,
+      pack_quantity: 12,
+      condition: 8,
+      title_overlap: 28,
+    },
+  },
+  outdoor_pool: {
+    softBrandScoring: true,
+    gates: {
+      ...GENERIC_GATES,
+      /** Two uncategorized screen-like listings with different diagonals — reject. */
+      rejectDiagonalMismatchWhenBothKnown: true,
+    },
+    weights: {
+      category_bucket: 12,
+      brand: 16,
+      model_line: 14,
+      diagonal_inches: 10,
+      pack_quantity: 12,
+      condition: 8,
+      title_overlap: 28,
+    },
+  },
+  swimming_pool: {
+    softBrandScoring: true,
+    gates: {
+      ...GENERIC_GATES,
+      /** Two uncategorized screen-like listings with different diagonals — reject. */
+      rejectDiagonalMismatchWhenBothKnown: true,
+    },
+    weights: {
+      category_bucket: 12,
+      brand: 16,
+      model_line: 14,
+      diagonal_inches: 10,
+      pack_quantity: 12,
+      condition: 8,
+      title_overlap: 28,
+    },
+  },
 };
 
 export function profileForCategory(cat: ProductCategory): CategoryMatchProfile {
