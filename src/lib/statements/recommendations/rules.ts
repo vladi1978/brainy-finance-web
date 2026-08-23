@@ -1,6 +1,6 @@
 import type { IntelligenceInput } from "../intelligence/types";
 import type { MerchantGroupSummary } from "../intelligence/types";
-import { annualizePeriodAmount, statementPeriodDays } from "../intelligence/period";
+import { statementPeriodDays } from "../intelligence/period";
 import { subscriptionEligibleForAnnualSavings } from "../intelligence/savings";
 import {
   OBSERVED_ONLY_SAVINGS_NOTE,
@@ -281,11 +281,11 @@ export function applyRecommendationRules(
           id: "action-convenience-reduce",
           title: "Set a weekly convenience-store cap",
           description:
-            "Frequent convenience-store runs add up quickly. Batch errands or set a weekly limit to curb impulse purchases.",
+            "Frequent convenience-store runs add up in this window. Annual savings are not estimated from discretionary activity.",
           estimatedMonthlySavings: monthly,
-          estimatedYearlySavings: annualizePeriodAmount(periodCut, statementPeriod),
+          estimatedYearlySavings: 0,
           severity: convenience.length >= 5 ? "medium" : "low",
-          confidence: 0.74,
+          confidence: 0.55,
           actionType: "reduce_convenience_spend",
           merchantReference: convenience
             .map((r) => r.normalizedName)
@@ -314,19 +314,17 @@ export function applyRecommendationRules(
     const days = statementPeriodDays(statementPeriod);
     const monthlySpend = (deliveryTotal / days) * 30;
     const savingsMonthly = conservativeRecurringCut(monthlySpend, 0.15, 30);
-    const { monthly, yearly } =
-      monthlyAndYearlyFromMonthlyAmount(savingsMonthly);
     out.push(
       makeRec(
         {
           id: "action-delivery-reduce",
           title: "Reduce delivery and dining frequency",
           description:
-            "Food delivery and dining repeat often in this window. Cooking one or two more meals per week is a practical savings lever.",
-          estimatedMonthlySavings: monthly,
-          estimatedYearlySavings: yearly,
+            "Food delivery and dining repeat in this window. Annual savings are not estimated from discretionary activity.",
+          estimatedMonthlySavings: savingsMonthly,
+          estimatedYearlySavings: 0,
           severity: delivery.length >= 4 ? "medium" : "low",
-          confidence: 0.7,
+          confidence: 0.55,
           actionType: "reduce_delivery",
           merchantReference: [...delivery, ...dining]
             .map((r) => r.normalizedName)
@@ -420,17 +418,13 @@ export function applyRecommendationRules(
         s.flags.reviewSuggested
     );
     if (weakFlagged.length > 0) {
-      const observed = weakFlagged.reduce(
-        (s, x) => s + x.totalSpentInPeriod,
-        0
-      );
       out.push(
         makeRec(
           {
             id: "action-flagged-subs",
             title: "Review flagged subscriptions",
-            description: `${OBSERVED_ONLY_SAVINGS_NOTE}. ${weakFlagged.length} item(s) flagged without sufficient recurrence evidence to annualize.`,
-            estimatedMonthlySavings: roundMoney(observed),
+            description: `${OBSERVED_ONLY_SAVINGS_NOTE}. ${weakFlagged.length} item(s) flagged without sufficient recurrence evidence — savings not estimated.`,
+            estimatedMonthlySavings: 0,
             estimatedYearlySavings: 0,
             severity: "medium",
             confidence: 0.45,
@@ -463,17 +457,15 @@ export function applyRecommendationRules(
     if (subscriptionClusterIds.has(row.clusterId)) continue;
     const monthly = periodTotalToMonthly(row.totalSpentInPeriod, statementPeriod);
     const savingsMonthly = conservativeRecurringCut(monthly, 0.1, 20);
-    const { monthly: estMo, yearly } =
-      monthlyAndYearlyFromMonthlyAmount(savingsMonthly);
     out.push(
       makeRec(
         {
           id: `action-recurring-${row.clusterId}`,
           title: `Review recurring spend at ${row.normalizedName}`,
           description:
-            "This merchant shows a repeat charge pattern that is not classified as a subscription. Confirm whether it is still needed or can be reduced.",
-          estimatedMonthlySavings: estMo,
-          estimatedYearlySavings: yearly,
+            "This merchant shows a repeat charge pattern that is not classified as a subscription. Annual estimate unavailable without confirmed cadence.",
+          estimatedMonthlySavings: savingsMonthly,
+          estimatedYearlySavings: 0,
           severity: "low",
           confidence: clampConfidence(0.6 + row.recurringExpenseScore * 0.25),
           actionType: "review_recurring",
@@ -495,17 +487,15 @@ export function applyRecommendationRules(
     if (group.totalAmount < 50) continue;
     const monthly = periodTotalToMonthly(group.totalAmount, statementPeriod);
     const savingsMonthly = conservativeRecurringCut(monthly, 0.08, 15);
-    const { monthly: estMo, yearly } =
-      monthlyAndYearlyFromMonthlyAmount(savingsMonthly);
     out.push(
       makeRec(
         {
           id: `action-merchant-group-${group.groupKey}`,
           title: `Review repeat spending at ${group.displayName}`,
           description:
-            "Grouped transactions suggest a recurring merchant pattern. Verify whether charges are expected or can be consolidated.",
-          estimatedMonthlySavings: estMo,
-          estimatedYearlySavings: yearly,
+            "Grouped transactions suggest a recurring merchant pattern. Annual estimate unavailable without confirmed cadence.",
+          estimatedMonthlySavings: savingsMonthly,
+          estimatedYearlySavings: 0,
           severity: "low",
           confidence: clampConfidence(0.58 + group.recurringPatternScore * 0.3),
           actionType: "review_merchant_group",

@@ -26,6 +26,11 @@ import { clusterLooksSubscriptionMerchant } from "./subscriptionSignals";
 import { analyzeClustersWithOpenAI } from "./openaiAnalyze";
 import { deriveStatementPeriod, parseTransactionsFromText } from "./parseTransactions";
 import { buildStatementIntelligence } from "./intelligence/buildIntelligence";
+import {
+  buildGuardedSubscriptionTotals,
+  clampSubscriptionEquivalents,
+  hasConfirmedRecurrenceEvidence,
+} from "./evidenceGuarded";
 import type {
   AnalyzeStatementResult,
   MerchantCluster,
@@ -194,27 +199,16 @@ function enrichAiSubscription(args: {
 
 function buildSummary(
   subs: SubscriptionInsight[],
+  clusters: MerchantCluster[],
   spendingInsightsTotal: number
 ): AnalyzeStatementResult["summary"] {
-  const monthlySpend = subs.reduce((s, x) => s + x.monthlyEquivalent, 0);
-  const annualSpend = subs.reduce((s, x) => s + x.annualEquivalent, 0);
-  const subscriptionCount = subs.length;
-  const flagged = subs.filter(
-    (x) =>
-      x.flags.forgotten ||
-      x.flags.duplicate ||
-      x.flags.suspicious ||
-      x.flags.priceIncreased
-  );
-  const estimatedSavings = flagged.reduce(
-    (s, x) => s + x.monthlyEquivalent,
-    0
-  );
+  const guarded = buildGuardedSubscriptionTotals(subs, clusters);
   return {
-    monthlySpend,
-    annualSpend,
-    subscriptionCount,
-    estimatedSavings,
+    monthlySpend: guarded.confirmedMonthlySpend,
+    annualSpend: guarded.confirmedAnnualSpend,
+    subscriptionCount: guarded.confirmedCount,
+    possibleSubscriptionCount: guarded.possibleCount,
+    estimatedSavings: guarded.confirmedSavingsMonthly,
     spendingInsightsTotal,
   };
 }
@@ -442,11 +436,10 @@ export async function analyzeStatementPdf(
     const cluster = clusterById.get(row.clusterId)!;
     const trueSubscriptionScore = computeTrueSubscriptionScore(cluster, row);
     const debitCount = cluster.charges.filter((c) => c.type === "debit").length;
-    const recurrenceOk =
-      debitCount >= 2 &&
-      (row.frequency === "monthly" ||
-        row.frequency === "weekly" ||
-        row.frequency === "annual");
+    const recurrenceOk = hasConfirmedRecurrenceEvidence({
+      chargeCount: debitCount,
+      frequency: row.frequency,
+    });
     const confirmed =
       recurrenceOk &&
       trueSubscriptionScore >= 0.78 &&
@@ -459,7 +452,7 @@ export async function analyzeStatementPdf(
         row.confidence < 0.78 ||
         row.flags.trialConverted ||
         debitCount < 2);
-    return {
+    const withFlags: SubscriptionInsight = {
       ...row,
       trueSubscriptionScore,
       flags: {
@@ -468,6 +461,7 @@ export async function analyzeStatementPdf(
         reviewSuggested,
       },
     };
+    return clampSubscriptionEquivalents(withFlags, debitCount);
   });
 
   subscriptions = subscriptions.filter(
@@ -501,7 +495,7 @@ export async function analyzeStatementPdf(
     recurringExpenseCount: recurringExpenses.length,
   });
 
-  const summary = buildSummary(subscriptions, spendingInsightsTotal);
+  const summary = buildSummary(subscriptions, clusters, spendingInsightsTotal);
 
   const intelligence = buildStatementIntelligence({
     statementPeriod,

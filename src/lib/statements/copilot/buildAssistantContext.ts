@@ -4,6 +4,12 @@ import type { CopilotAssistantContext, SubscriptionHighlight } from "./types";
 import type { CopilotTimelineResult } from "../timeline/types";
 import type { FinancialIntelligenceSummary } from "../intelligence/financialCategories";
 import type { HealthScoreResult } from "../intelligence/types";
+import {
+  buildGuardedSubscriptionTotals,
+  chargeCountForSubscription,
+  isEvidenceConfirmedSubscription,
+  resolveChargeCount,
+} from "../evidenceGuarded";
 
 function subscriptionFlags(s: SubscriptionInsight): string[] {
   const out: string[] = [];
@@ -13,13 +19,17 @@ function subscriptionFlags(s: SubscriptionInsight): string[] {
   if (s.flags.trialConverted) out.push("trial converted");
   if (s.flags.suspicious) out.push("needs review");
   if (s.flags.reviewSuggested) out.push("review suggested");
+  if (!s.flags.confirmed) out.push("recurrence not confirmed");
   return out;
 }
 
-function toHighlight(s: SubscriptionInsight): SubscriptionHighlight {
+function toHighlight(
+  s: SubscriptionInsight,
+  monthly: number
+): SubscriptionHighlight {
   return {
     name: s.normalizedName || s.merchant,
-    monthly: s.monthlyEquivalent,
+    monthly,
     category: s.category,
     flags: subscriptionFlags(s),
   };
@@ -34,17 +44,31 @@ export function buildCopilotAssistantContext(
   }
 ): CopilotAssistantContext {
   const { subscriptions, recurringExpenses } = input;
+  const byCluster = new Map(input.clusters.map((c) => [c.id, c]));
   const allSpend = [...input.recurringExpenses, ...input.spendingInsights];
   const currency = parts.copilot.currency;
+  const guarded = buildGuardedSubscriptionTotals(subscriptions, byCluster);
 
   const streaming = subscriptions
     .filter((s) => s.category === "streaming")
-    .map(toHighlight)
+    .map((s) => {
+      const n = chargeCountForSubscription(s, byCluster);
+      const monthly = isEvidenceConfirmedSubscription(s, n)
+        ? s.monthlyEquivalent
+        : 0;
+      return toHighlight(s, monthly);
+    })
     .sort((a, b) => b.monthly - a.monthly);
 
   const telecom = subscriptions
     .filter((s) => s.category === "utilities")
-    .map(toHighlight)
+    .map((s) => {
+      const n = chargeCountForSubscription(s, byCluster);
+      const monthly = isEvidenceConfirmedSubscription(s, n)
+        ? s.monthlyEquivalent
+        : 0;
+      return toHighlight(s, monthly);
+    })
     .sort((a, b) => b.monthly - a.monthly);
 
   const flagged = subscriptions
@@ -56,11 +80,23 @@ export function buildCopilotAssistantContext(
         s.flags.suspicious ||
         s.flags.reviewSuggested
     )
-    .map(toHighlight)
+    .map((s) => {
+      const n = chargeCountForSubscription(s, byCluster);
+      const monthly = isEvidenceConfirmedSubscription(s, n)
+        ? s.monthlyEquivalent
+        : 0;
+      return toHighlight(s, monthly);
+    })
     .sort((a, b) => b.monthly - a.monthly);
 
   const topBySpend = [...subscriptions]
-    .map(toHighlight)
+    .map((s) => {
+      const n = chargeCountForSubscription(s, byCluster);
+      const monthly = isEvidenceConfirmedSubscription(s, n)
+        ? s.monthlyEquivalent
+        : s.totalSpentInPeriod;
+      return toHighlight(s, monthly);
+    })
     .sort((a, b) => b.monthly - a.monthly)
     .slice(0, 5);
 
@@ -73,7 +109,14 @@ export function buildCopilotAssistantContext(
   ).length;
 
   const recurringMerchants = recurringExpenses
-    .filter((r) => r.recurringExpenseScore >= 0.5)
+    .filter((r) => {
+      const n = resolveChargeCount({
+        cluster: byCluster.get(r.clusterId),
+        periodTotal: r.totalSpentInPeriod,
+        latestCharge: r.amount,
+      });
+      return r.recurringExpenseScore >= 0.5 && n >= 2;
+    })
     .sort((a, b) => b.totalSpentInPeriod - a.totalSpentInPeriod)
     .slice(0, 4)
     .map((r) => ({
@@ -82,18 +125,13 @@ export function buildCopilotAssistantContext(
       currency: r.currency?.length === 3 ? r.currency : currency,
     }));
 
-  const monthlyTotal = subscriptions.reduce(
-    (s, x) => s + x.monthlyEquivalent,
-    0
-  );
-
   return {
     copilot: parts.copilot,
     healthScore: parts.healthScore,
     financialSummary: parts.financialSummary,
     subscriptions: {
-      count: subscriptions.length,
-      monthlyTotal,
+      count: guarded.confirmedCount,
+      monthlyTotal: guarded.confirmedMonthlySpend,
       streaming,
       telecom,
       flagged,

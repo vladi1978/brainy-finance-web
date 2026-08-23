@@ -1,5 +1,8 @@
 import type { HealthScoreLabel, HealthScoreResult, IntelligenceInput } from "./types";
 import { buildSavingsOpportunities } from "./savings";
+import {
+  buildGuardedSubscriptionTotals,
+} from "../evidenceGuarded";
 
 function labelForScore(score: number): HealthScoreLabel {
   if (score >= 85) return "Excellent";
@@ -30,7 +33,9 @@ function spendingGrowthPenalty(weekTotals: number[]): number {
   const second = weekTotals.slice(mid);
   const avg = (a: number[]) =>
     a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0;
-  const ratio = avg(second) / Math.max(avg(first), 1);
+  const a0 = avg(first);
+  if (a0 < 25) return 0;
+  const ratio = avg(second) / a0;
   if (ratio > 1.35) return 12;
   if (ratio > 1.15) return 6;
   return 0;
@@ -50,6 +55,11 @@ function consistencyBonus(weekTotals: number[]): number {
 export function buildHealthScore(input: IntelligenceInput): HealthScoreResult {
   let score = 100;
   const factors: HealthScoreResult["factors"] = [];
+  const byCluster = new Map(input.clusters.map((c) => [c.id, c]));
+  const guarded = buildGuardedSubscriptionTotals(
+    input.subscriptions,
+    byCluster
+  );
 
   const allSpend = [...input.recurringExpenses, ...input.spendingInsights];
   const feeTotal = allSpend
@@ -78,23 +88,20 @@ export function buildHealthScore(input: IntelligenceInput): HealthScoreResult {
     });
   }
 
-  const subMonthly = input.subscriptions.reduce(
-    (s, x) => s + x.monthlyEquivalent,
-    0
-  );
+  const subMonthly = guarded.confirmedMonthlySpend;
   if (subMonthly > 250) {
     const impact = Math.min(18, Math.round((subMonthly - 250) / 25));
     score -= impact;
     factors.push({
       id: "subscription-load",
-      label: "Subscription load",
+      label: "Confirmed subscription load",
       impact: -impact,
     });
-  } else if (input.subscriptions.length > 0 && subMonthly <= 120) {
+  } else if (guarded.confirmedCount > 0 && subMonthly <= 120) {
     score += 3;
     factors.push({
       id: "subscription-load",
-      label: "Moderate subscription load",
+      label: "Moderate confirmed subscription load",
       impact: 3,
     });
   }
@@ -105,7 +112,7 @@ export function buildHealthScore(input: IntelligenceInput): HealthScoreResult {
     score -= growthPenalty;
     factors.push({
       id: "spending-growth",
-      label: "Rising weekly spend",
+      label: "Spending was higher in the second half",
       impact: -growthPenalty,
     });
   }
@@ -120,15 +127,21 @@ export function buildHealthScore(input: IntelligenceInput): HealthScoreResult {
     });
   }
 
-  const savings = buildSavingsOpportunities(input);
-  if (savings.length >= 3) {
+  const savings = buildSavingsOpportunities(input).filter(
+    (s) => s.yearlySavings > 0 || s.category === "avoidable_fees"
+  );
+  const actionableYearly = savings
+    .filter((s) => s.category === "confirmed" || s.category === "avoidable_fees")
+    .reduce((n, s) => n + s.yearlySavings, 0);
+
+  if (savings.length >= 3 && actionableYearly > 0) {
     score -= Math.min(10, savings.length * 2);
     factors.push({
       id: "savings-opps",
-      label: "Several savings opportunities",
+      label: "Several evidence-backed savings opportunities",
       impact: -Math.min(10, savings.length * 2),
     });
-  } else if (savings.length === 0 && feeTotal === 0) {
+  } else if (actionableYearly === 0 && feeTotal === 0) {
     score += 4;
     factors.push({
       id: "clean-ledger",
@@ -137,8 +150,7 @@ export function buildHealthScore(input: IntelligenceInput): HealthScoreResult {
     });
   }
 
-  const confirmedSubs = input.subscriptions.filter((s) => s.flags.confirmed).length;
-  if (confirmedSubs >= 2) {
+  if (guarded.confirmedCount >= 2) {
     score += 2;
     factors.push({
       id: "confirmed-bills",

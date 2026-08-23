@@ -1,24 +1,32 @@
 import type { FinancialInsightCard, IntelligenceInput } from "./types";
 import { annualizePeriodAmount } from "./period";
+import {
+  ANNUAL_ESTIMATE_UNAVAILABLE,
+  chargeCountForSubscription,
+  filterEvidenceConfirmedSubscriptions,
+  guardedFeeAnnualization,
+  hasRecurrenceEvidence,
+  isEvidenceConfirmedSubscription,
+  resolveChargeCount,
+} from "../evidenceGuarded";
 
 function sumCategory(
   rows: IntelligenceInput["recurringExpenses"],
-  key: string
-): { count: number; total: number } {
-  let count = 0;
+  key: string,
+  clusters: Map<string, import("../types").MerchantCluster>
+): { count: number; total: number; chargeCount: number } {
+  const matched = rows.filter((r) => r.categoryKey === key);
   let total = 0;
-  for (const r of rows) {
-    if (r.categoryKey !== key) continue;
-    const debits = r.totalSpentInPeriod > 0 ? 1 : 0;
-    count += debits;
+  let chargeCount = 0;
+  for (const r of matched) {
     total += r.totalSpentInPeriod;
+    chargeCount += resolveChargeCount({
+      cluster: clusters.get(r.clusterId),
+      periodTotal: r.totalSpentInPeriod,
+      latestCharge: r.amount,
+    });
   }
-  const clusters = rows.filter((r) => r.categoryKey === key);
-  const txnEstimate = clusters.reduce(
-    (s, r) => s + (r.recurringExpenseScore >= 0.45 ? 2 : 1),
-    0
-  );
-  return { count: Math.max(count, txnEstimate), total };
+  return { count: matched.length, total, chargeCount };
 }
 
 function weeklyDebitTotals(
@@ -30,7 +38,10 @@ function weeklyDebitTotals(
       if (ch.type !== "debit") continue;
       const d = Date.parse(ch.date + "T00:00:00Z");
       if (!Number.isFinite(d)) continue;
-      const week = new Date(d).toISOString().slice(0, 10).slice(0, 7) + "-W" + String(Math.ceil(new Date(d).getUTCDate() / 7));
+      const week =
+        new Date(d).toISOString().slice(0, 10).slice(0, 7) +
+        "-W" +
+        String(Math.ceil(new Date(d).getUTCDate() / 7));
       byWeek.set(week, (byWeek.get(week) ?? 0) + ch.amount);
     }
   }
@@ -50,40 +61,84 @@ export function buildInsightsFeed(input: IntelligenceInput): FinancialInsightCar
   const cards: FinancialInsightCard[] = [];
   const { statementPeriod, subscriptions, recurringExpenses, spendingInsights, clusters } =
     input;
+  const byCluster = new Map(clusters.map((c) => [c.id, c]));
 
   const allSpend = [...recurringExpenses, ...spendingInsights];
-  const convenience = sumCategory(allSpend, "convenience");
-  if (convenience.total > 0 && convenience.count >= 3) {
+  const confirmedSubs = filterEvidenceConfirmedSubscriptions(
+    subscriptions,
+    byCluster
+  );
+
+  const convenience = sumCategory(allSpend, "convenience", byCluster);
+  if (
+    convenience.total > 0 &&
+    convenience.count >= 3 &&
+    hasRecurrenceEvidence(convenience.chargeCount)
+  ) {
     cards.push({
       id: "convenience-up",
       title: "Frequent convenience purchases",
-      explanation: `Convenience-store spending appears ${convenience.count >= 4 ? "often" : "repeatedly"} in this statement window.`,
+      explanation: `Convenience-store spending appears ${convenience.count >= 4 ? "often" : "repeatedly"} in this statement window. ${ANNUAL_ESTIMATE_UNAVAILABLE}.`,
       severity: "moderate",
-      annualImpact: annualizePeriodAmount(convenience.total, statementPeriod),
     });
   }
 
-  const streaming = subscriptions.filter((s) => s.category === "streaming");
-  if (streaming.length >= 2) {
+  const streamingAll = subscriptions.filter((s) => s.category === "streaming");
+  const streamingConfirmed = streamingAll.filter((s) =>
+    isEvidenceConfirmedSubscription(
+      s,
+      chargeCountForSubscription(s, byCluster)
+    )
+  );
+  const streamingPossible = streamingAll.filter(
+    (s) => !streamingConfirmed.includes(s)
+  );
+
+  if (streamingConfirmed.length >= 2) {
     cards.push({
       id: "streaming-load",
       title: "Multiple streaming subscriptions",
-      explanation: `${streaming.length} streaming services detected with combined recurring spend.`,
-      severity: streaming.length >= 4 ? "moderate" : "informational",
-      annualImpact: streaming.reduce((s, x) => s + x.annualEquivalent, 0),
+      explanation: `${streamingConfirmed.length} confirmed streaming services with evidence-backed recurring spend.`,
+      severity: streamingConfirmed.length >= 4 ? "moderate" : "informational",
+      annualImpact: streamingConfirmed.reduce((s, x) => s + x.annualEquivalent, 0),
     });
-  } else if (streaming.length === 1) {
+  } else if (streamingConfirmed.length === 1) {
     cards.push({
       id: "streaming-single",
-      title: "Streaming subscription active",
-      explanation: `${streaming[0].normalizedName} is classified as a recurring streaming bill.`,
+      title: "Confirmed streaming subscription",
+      explanation: `${streamingConfirmed[0]!.normalizedName} shows a confirmed recurring billing pattern.`,
       severity: "informational",
-      annualImpact: streaming[0].annualEquivalent,
+      annualImpact: streamingConfirmed[0]!.annualEquivalent,
+    });
+  } else if (streamingPossible.length === 1) {
+    const s = streamingPossible[0]!;
+    cards.push({
+      id: "streaming-possible",
+      title: "Possible subscription · recurrence not confirmed",
+      explanation: `${s.normalizedName}: observed ${s.totalSpentInPeriod.toFixed(2)} ${s.currency} in this window. ${ANNUAL_ESTIMATE_UNAVAILABLE}.`,
+      severity: "informational",
+    });
+  } else if (streamingPossible.length >= 2) {
+    cards.push({
+      id: "streaming-possible-multi",
+      title: "Possible streaming subscriptions",
+      explanation: `${streamingPossible.length} streaming merchants without confirmed cadence. ${ANNUAL_ESTIMATE_UNAVAILABLE}.`,
+      severity: "informational",
     });
   }
 
   const fees = allSpend.filter(
     (r) => r.categoryKey === "fees" || r.kind === "fee"
+  );
+  const feeChargeCount = fees.reduce(
+    (n, r) =>
+      n +
+      resolveChargeCount({
+        cluster: byCluster.get(r.clusterId),
+        periodTotal: r.totalSpentInPeriod,
+        latestCharge: r.amount,
+      }),
+    0
   );
   const feeTotal = fees.reduce((s, r) => s + r.totalSpentInPeriod, 0);
   if (feeTotal > 0) {
@@ -92,25 +147,45 @@ export function buildInsightsFeed(input: IntelligenceInput): FinancialInsightCar
         `${r.merchant} ${r.normalizedName}`
       )
     );
+    const feeAnnual = guardedFeeAnnualization({
+      periodTotal: feeTotal,
+      chargeCount: feeChargeCount,
+      annualize: (t) => annualizePeriodAmount(t, statementPeriod),
+    });
     cards.push({
       id: overdraft ? "overdraft-fees" : "bank-fees",
       title: overdraft
-        ? "Repeated overdraft fees detected"
-        : "Bank fees detected",
-      explanation: overdraft
-        ? "Overdraft or NSF-style fees appear on this statement."
-        : "Account or service fees were identified in your debits.",
+        ? feeAnnual.annualizeEligible
+          ? "Repeated overdraft fees detected"
+          : "Overdraft fee detected"
+        : feeAnnual.annualizeEligible
+          ? "Bank fees detected"
+          : "Bank fee detected",
+      explanation: feeAnnual.annualizeEligible
+        ? overdraft
+          ? "Overdraft or NSF-style fees appear repeatedly on this statement."
+          : "Account or service fees were identified in your debits."
+        : overdraft
+          ? `An overdraft or NSF-style fee appears in this window. ${ANNUAL_ESTIMATE_UNAVAILABLE}.`
+          : `An account or service fee was identified. ${ANNUAL_ESTIMATE_UNAVAILABLE}.`,
       severity: "important",
-      annualImpact: annualizePeriodAmount(feeTotal, statementPeriod),
+      annualImpact: feeAnnual.annualizeEligible ? feeAnnual.yearly : undefined,
     });
   }
 
-  const dining = allSpend.filter(
-    (r) =>
+  const dining = allSpend.filter((r) => {
+    const n = resolveChargeCount({
+      cluster: byCluster.get(r.clusterId),
+      periodTotal: r.totalSpentInPeriod,
+      latestCharge: r.amount,
+    });
+    if (n < 2) return false;
+    return (
       r.categoryKey === "restaurants" ||
       r.categoryKey === "cafes" ||
       /\b(DOORDASH|UBER\s*EATS|GRUBHUB)\b/ui.test(r.normalizedName)
-  );
+    );
+  });
   const diningTotal = dining.reduce((s, r) => s + r.totalSpentInPeriod, 0);
   if (dining.length >= 2 && diningTotal > 0) {
     const delivery = dining.some((r) =>
@@ -120,35 +195,40 @@ export function buildInsightsFeed(input: IntelligenceInput): FinancialInsightCar
       id: delivery ? "delivery-activity" : "dining-activity",
       title: delivery
         ? "Frequent food delivery activity"
-        : "Dining spending trend",
+        : "Dining spending pattern",
       explanation: delivery
-        ? "Delivery platforms show repeated charges in this period."
-        : "Restaurant and cafe merchants appear multiple times.",
+        ? `Delivery platforms show repeated charges in this period. ${ANNUAL_ESTIMATE_UNAVAILABLE}.`
+        : `Restaurant and cafe merchants appear multiple times. ${ANNUAL_ESTIMATE_UNAVAILABLE}.`,
       severity: "moderate",
-      annualImpact: annualizePeriodAmount(diningTotal, statementPeriod),
     });
   }
 
-  const retail = allSpend.filter((r) => r.categoryKey === "retail");
+  const retail = allSpend.filter((r) => {
+    const n = resolveChargeCount({
+      cluster: byCluster.get(r.clusterId),
+      periodTotal: r.totalSpentInPeriod,
+      latestCharge: r.amount,
+    });
+    return r.categoryKey === "retail" && n >= 2;
+  });
   const retailTotal = retail.reduce((s, r) => s + r.totalSpentInPeriod, 0);
   if (retail.length >= 2 && retailTotal > 0) {
     cards.push({
       id: "retail-recurring",
-      title: "Recurring retail spending detected",
-      explanation: `${retail.length} retail merchants show repeat purchase patterns.`,
+      title: "Repeated retail spending",
+      explanation: `${retail.length} retail merchants show repeat purchase patterns. ${ANNUAL_ESTIMATE_UNAVAILABLE}.`,
       severity: "informational",
-      annualImpact: annualizePeriodAmount(retailTotal, statementPeriod),
     });
   }
 
-  const insurance = subscriptions.filter((s) => s.category === "insurance");
+  const insurance = confirmedSubs.filter((s) => s.category === "insurance");
   if (insurance.length > 0) {
     const annual = insurance.reduce((s, x) => s + x.annualEquivalent, 0);
     if (annual >= 1200) {
       cards.push({
         id: "insurance-high",
         title: "Insurance cost appears high",
-        explanation: `Insurance-related recurring bills total about ${insurance.length} service(s) in this window.`,
+        explanation: `Confirmed insurance-related bills total about ${insurance.length} service(s) in this window.`,
         severity: "moderate",
         annualImpact: annual,
       });
@@ -156,13 +236,19 @@ export function buildInsightsFeed(input: IntelligenceInput): FinancialInsightCar
   }
 
   const recurringMerchants =
-    recurringExpenses.filter((r) => r.recurringExpenseScore >= 0.5).length +
-    subscriptions.length;
+    recurringExpenses.filter((r) => {
+      const n = resolveChargeCount({
+        cluster: byCluster.get(r.clusterId),
+        periodTotal: r.totalSpentInPeriod,
+        latestCharge: r.amount,
+      });
+      return r.recurringExpenseScore >= 0.5 && n >= 2;
+    }).length + confirmedSubs.length;
   if (recurringMerchants >= 4) {
     cards.push({
       id: "many-recurring",
       title: "Multiple recurring merchants found",
-      explanation: `${recurringMerchants} merchants show subscription or repeat-spend patterns.`,
+      explanation: `${recurringMerchants} merchants show confirmed subscription or repeat-spend patterns.`,
       severity: "informational",
     });
   }
@@ -171,40 +257,46 @@ export function buildInsightsFeed(input: IntelligenceInput): FinancialInsightCar
   if (hasRisingWeeklyPattern(weekTotals)) {
     cards.push({
       id: "weekly-rise",
-      title: "Rising weekly spending pattern",
+      title: "Spending was higher in the second half",
       explanation:
-        "Debit totals trend higher in the second half of the detected weeks.",
+        "Debit totals look higher later in the detected weeks — percentage change is omitted when the baseline is too small to interpret.",
       severity: "moderate",
     });
   }
 
-  const aiSubs = subscriptions.filter((s) => s.category === "ai_tools");
-  const aiSpend = allSpend.filter((r) =>
-    /\b(OPEN\s*AI|OPENAI|CHATGPT|ANTHROPIC|CURSOR)\b/ui.test(r.normalizedName)
-  );
+  const aiSubs = confirmedSubs.filter((s) => s.category === "ai_tools");
+  const aiSpend = allSpend.filter((r) => {
+    const n = resolveChargeCount({
+      cluster: byCluster.get(r.clusterId),
+      periodTotal: r.totalSpentInPeriod,
+      latestCharge: r.amount,
+    });
+    return (
+      n >= 2 &&
+      /\b(OPEN\s*AI|OPENAI|CHATGPT|ANTHROPIC|CURSOR)\b/ui.test(r.normalizedName)
+    );
+  });
   if (aiSubs.length > 0 || aiSpend.length > 0) {
-    const total =
-      aiSubs.reduce((s, x) => s + x.annualEquivalent, 0) +
-      aiSpend.reduce((s, r) => s + r.totalSpentInPeriod, 0);
+    const annualFromSubs = aiSubs.reduce((s, x) => s + x.annualEquivalent, 0);
     cards.push({
       id: "ai-tools",
       title: "AI tools recurring spend",
-      explanation: "AI or developer-tool subscriptions appear on this statement.",
+      explanation:
+        aiSubs.length > 0
+          ? "Confirmed AI or developer-tool subscriptions appear on this statement."
+          : `AI or developer-tool charges appear, without confirmed annualization. ${ANNUAL_ESTIMATE_UNAVAILABLE}.`,
       severity: "informational",
-      annualImpact: total > 0 ? annualizePeriodAmount(total, statementPeriod) : undefined,
+      annualImpact: annualFromSubs > 0 ? annualFromSubs : undefined,
     });
   }
 
-  if (subscriptions.length > 0 && feeTotal === 0) {
-    const stable = subscriptions.filter((s) => s.flags.confirmed).length;
-    if (stable >= 2) {
-      cards.push({
-        id: "subs-stable",
-        title: "Recurring bills look stable",
-        explanation: `${stable} subscriptions show strong confidence and fit scores.`,
-        severity: "positive",
-      });
-    }
+  if (confirmedSubs.length >= 2 && feeTotal === 0) {
+    cards.push({
+      id: "subs-stable",
+      title: "Recurring bills look stable",
+      explanation: `${confirmedSubs.length} subscriptions show confirmed cadence evidence.`,
+      severity: "positive",
+    });
   }
 
   const severityOrder: Record<FinancialInsightCard["severity"], number> = {

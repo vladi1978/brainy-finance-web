@@ -192,12 +192,11 @@ export function buildSavingsOpportunities(
       savingsOpp({
         id: "reduce-delivery",
         title: "Reduce delivery frequency",
-        explanation:
-          "Food delivery and dining repeat often — small habit shifts may reduce spend; amounts vary.",
+        explanation: `${OBSERVED_ONLY_SAVINGS_NOTE}. Food delivery and dining repeat in this window — habit shifts may reduce spend; annual savings are not estimated from discretionary activity.`,
         monthlySavings: cut,
-        yearlySavings: Math.round(cut * 12 * 100) / 100,
+        yearlySavings: 0,
         currency,
-        confidence: 0.68,
+        confidence: 0.55,
       })
     );
   }
@@ -217,12 +216,11 @@ export function buildSavingsOpportunities(
       savingsOpp({
         id: "convenience-cut",
         title: "High recurring convenience spending",
-        explanation:
-          "Frequent convenience-store runs — batching errands may reduce impulse spend.",
+        explanation: `${OBSERVED_ONLY_SAVINGS_NOTE}. Frequent convenience-store runs in this window — annual savings are not estimated from discretionary activity.`,
         monthlySavings: Math.round((cut / statementPeriodDays(statementPeriod)) * 30 * 100) / 100,
-        yearlySavings: annualizePeriodAmount(cut, statementPeriod),
+        yearlySavings: 0,
         currency,
-        confidence: 0.7,
+        confidence: 0.55,
       })
     );
   }
@@ -263,16 +261,12 @@ export function buildSavingsOpportunities(
         s.flags.suspicious
     );
     if (weakFlagged.length > 0) {
-      const observed = weakFlagged.reduce(
-        (s, x) => s + x.totalSpentInPeriod,
-        0
-      );
       out.push(
         savingsOpp({
           id: "review-flagged-subs",
           title: "Review flagged subscriptions",
-          explanation: `${OBSERVED_ONLY_SAVINGS_NOTE}. ${weakFlagged.length} item(s) flagged, but recurrence evidence is insufficient to annualize.`,
-          monthlySavings: Math.round(observed * 100) / 100,
+          explanation: `${OBSERVED_ONLY_SAVINGS_NOTE}. ${weakFlagged.length} item(s) flagged, but recurrence evidence is insufficient to estimate savings.`,
+          monthlySavings: 0,
           yearlySavings: 0,
           currency,
           confidence: 0.45,

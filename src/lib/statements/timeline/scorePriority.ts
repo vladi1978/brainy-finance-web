@@ -2,8 +2,9 @@ import {
   OPTIMIZATION_HIGH_FRACTION,
   OPTIMIZATION_LOW_FRACTION,
 } from "../intelligence/financialCategories";
-import { annualizePeriodAmount } from "../intelligence/period";
 import type { IntelligenceInput } from "../intelligence/types";
+import { buildSavingsOpportunities } from "../intelligence/savings";
+import { canAnnualizeFeePattern, resolveChargeCount } from "../evidenceGuarded";
 import type {
   CopilotFeedItem,
   OptimizationPotentialRange,
@@ -53,28 +54,72 @@ function effortScore(signal: TimelineSignal): number {
   }
 }
 
+/**
+ * Map timeline signals onto the same guarded savings opportunities used by
+ * Financial Intelligence / recommendations — never re-annualize signal.amount.
+ */
 function savingsFromSignal(
   signal: TimelineSignal,
   input: IntelligenceInput
 ): { monthly: number; yearly: number } {
-  const { statementPeriod } = input;
-  let yearly = annualizePeriodAmount(signal.amount, statementPeriod);
+  const opps = buildSavingsOpportunities(input);
+  const byCluster = new Map(input.clusters.map((c) => [c.id, c]));
 
   if (signal.kind === "overdraft_pattern" || signal.kind === "fee_escalation") {
-    yearly = Math.round(yearly * 0.85 * 100) / 100;
-  }
-  if (signal.kind === "subscription_growth" && signal.categoryKey === "streaming") {
-    yearly = Math.round(yearly * 0.15 * 100) / 100;
-  }
-  if (signal.kind === "spending_increase" && signal.categoryKey === "restaurants") {
-    yearly = Math.round(yearly * 0.1 * 100) / 100;
-  }
-  if (signal.kind === "spending_decrease") {
-    yearly = 0;
+    const feeOpp = opps.find((o) => o.id === "reduce-fees");
+    if (feeOpp) {
+      return {
+        monthly: feeOpp.monthlySavings,
+        yearly: feeOpp.yearlySavings,
+      };
+    }
+    const fees = [...input.recurringExpenses, ...input.spendingInsights].filter(
+      (r) => r.categoryKey === "fees" || r.kind === "fee"
+    );
+    const chargeCount = fees.reduce(
+      (n, r) =>
+        n +
+        resolveChargeCount({
+          cluster: byCluster.get(r.clusterId),
+          periodTotal: r.totalSpentInPeriod,
+          latestCharge: r.amount,
+        }),
+      0
+    );
+    if (!canAnnualizeFeePattern(chargeCount)) {
+      return { monthly: signal.amount, yearly: 0 };
+    }
   }
 
-  const monthly = Math.round((yearly / 12) * 100) / 100;
-  return { monthly, yearly };
+  if (signal.kind === "subscription_growth") {
+    const match =
+      opps.find((o) => o.id === "streaming-bundle") ??
+      opps.find((o) => o.id === "review-flagged-subs");
+    if (match) {
+      return { monthly: match.monthlySavings, yearly: match.yearlySavings };
+    }
+    return { monthly: 0, yearly: 0 };
+  }
+
+  if (signal.kind === "recurring_monthly") {
+    return { monthly: signal.amount > 0 ? signal.amount : 0, yearly: 0 };
+  }
+
+  if (signal.kind === "spending_increase") {
+    const match =
+      opps.find((o) => o.id === "reduce-delivery") ??
+      opps.find((o) => o.id === "convenience-cut");
+    if (match) {
+      return { monthly: match.monthlySavings, yearly: match.yearlySavings };
+    }
+    return { monthly: 0, yearly: 0 };
+  }
+
+  if (signal.kind === "spending_decrease" || signal.kind === "unusual_spike") {
+    return { monthly: 0, yearly: 0 };
+  }
+
+  return { monthly: 0, yearly: 0 };
 }
 
 export function scoreCopilotPriority(
@@ -125,69 +170,20 @@ export function toCopilotFeedItem(
   };
 }
 
-const OPTIMIZATION_SIGNAL_PREFIXES = [
-  "subscription",
-  "spending",
-  "telecom",
-  "streaming",
-  "dining",
-  "convenience",
-  "recurring",
-  "insurance",
-];
-
-function isOptimizationFeedItem(item: CopilotFeedItem): boolean {
-  if (item.tags.includes("fee")) return false;
-  if (item.signalId.includes("overdraft") || item.signalId.includes("fee")) {
-    return false;
-  }
-  return (
-    item.tags.includes("trend") ||
-    item.tags.includes("subscription") ||
-    OPTIMIZATION_SIGNAL_PREFIXES.some((p) => item.signalId.includes(p))
-  );
-}
-
 export function estimateOptimizationRange(
-  items: CopilotFeedItem[]
+  _items: CopilotFeedItem[]
 ): OptimizationPotentialRange {
-  const seen = new Set<string>();
-  const yearlyEstimates: number[] = [];
-  const confidences: number[] = [];
-
-  for (const item of items) {
-    if (!isOptimizationFeedItem(item)) continue;
-    if (!item.estimatedYearlySavings || item.estimatedYearlySavings <= 0) continue;
-    const key = item.signalId.split("-")[0] ?? item.id;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    yearlyEstimates.push(item.estimatedYearlySavings);
-    confidences.push(item.priority.confidence / 100);
-  }
-
-  if (!yearlyEstimates.length) {
-    return { yearlyLow: 0, yearlyHigh: 0, confidence: 0 };
-  }
-
-  const yearlyLow = Math.round(
-    yearlyEstimates.reduce((s, y) => s + y * OPTIMIZATION_LOW_FRACTION, 0) * 100
-  ) / 100;
-  const yearlyHigh = Math.round(
-    yearlyEstimates.reduce((s, y) => s + y * OPTIMIZATION_HIGH_FRACTION, 0) * 100
-  ) / 100;
-  const confidence =
-    Math.round(
-      (confidences.reduce((s, c) => s + c, 0) / confidences.length) * 100
-    ) / 100;
-
-  return { yearlyLow, yearlyHigh, confidence };
+  // Copilot feed must not invent its own optimization band.
+  return { yearlyLow: 0, yearlyHigh: 0, confidence: 0 };
 }
 
-/** @deprecated Inflated single-number estimate — use estimateOptimizationRange */
+/** @deprecated Use financial summary optimization only. */
 export function estimateYearlyPotential(
-  items: CopilotFeedItem[],
+  _items: CopilotFeedItem[],
   _existingYearlySavings: number
 ): number {
-  const range = estimateOptimizationRange(items);
-  return range.yearlyHigh;
+  return 0;
 }
+
+// Re-export fractions so callers that previously derived bands locally stay type-compatible.
+export { OPTIMIZATION_HIGH_FRACTION, OPTIMIZATION_LOW_FRACTION };

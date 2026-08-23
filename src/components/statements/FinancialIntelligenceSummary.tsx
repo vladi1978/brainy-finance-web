@@ -83,13 +83,19 @@ export function FinancialIntelligenceSummaryPanel({ summary, formatMoney }: Prop
                 <span className="text-sm font-normal text-white/45"> /mo</span>
               </p>
               <p className="mt-1 text-sm tabular-nums text-white/55">
-                {formatMoney(summary.confirmed.yearlyHigh, currency)} /yr
-                {summary.confirmed.confidence > 0 ? (
-                  <span className="text-white/35">
-                    {" "}
-                    · {confidenceLabel(summary.confirmed.confidence)}
-                  </span>
-                ) : null}
+                {summary.confirmed.yearlyHigh > 0 ? (
+                  <>
+                    {formatMoney(summary.confirmed.yearlyHigh, currency)} /yr
+                    {summary.confirmed.confidence > 0 ? (
+                      <span className="text-white/35">
+                        {" "}
+                        · {confidenceLabel(summary.confirmed.confidence)}
+                      </span>
+                    ) : null}
+                  </>
+                ) : (
+                  <span>Annual estimate unavailable</span>
+                )}
               </p>
               <p className="mt-2 text-[10px] text-white/35">
                 {summary.confirmed.itemCount} actionable recurring item
@@ -113,13 +119,19 @@ export function FinancialIntelligenceSummaryPanel({ summary, formatMoney }: Prop
                 <span className="text-sm font-normal text-white/45"> /mo</span>
               </p>
               <p className="mt-1 text-sm tabular-nums text-white/55">
-                {formatMoney(summary.avoidableFees.yearlyHigh, currency)} /yr
-                {summary.avoidableFees.confidence > 0 ? (
-                  <span className="text-white/35">
-                    {" "}
-                    · {confidenceLabel(summary.avoidableFees.confidence)}
-                  </span>
-                ) : null}
+                {summary.avoidableFees.yearlyHigh > 0 ? (
+                  <>
+                    {formatMoney(summary.avoidableFees.yearlyHigh, currency)} /yr
+                    {summary.avoidableFees.confidence > 0 ? (
+                      <span className="text-white/35">
+                        {" "}
+                        · {confidenceLabel(summary.avoidableFees.confidence)}
+                      </span>
+                    ) : null}
+                  </>
+                ) : (
+                  <span>Annual estimate unavailable</span>
+                )}
               </p>
               <p className="mt-2 text-[10px] text-white/35">
                 Conservative estimate if fees are eliminated going forward
@@ -143,22 +155,28 @@ export function FinancialIntelligenceSummaryPanel({ summary, formatMoney }: Prop
                 {formatMoney(summary.optimization.monthlyHigh, currency)}
                 <span className="text-sm font-normal text-white/45"> /mo</span>
               </p>
-              <p className="mt-1 text-sm tabular-nums text-white/55">
-                {formatMoney(summary.optimization.yearlyLow, currency)} –{" "}
-                {formatMoney(summary.optimization.yearlyHigh, currency)} /yr
-                {summary.optimization.confidence > 0 ? (
-                  <span className="text-white/35">
-                    {" "}
-                    · {confidenceLabel(summary.optimization.confidence)}
-                  </span>
-                ) : null}
-              </p>
+              {summary.optimization.yearlyHigh > 0 ? (
+                <p className="mt-1 text-sm tabular-nums text-white/55">
+                  {formatMoney(summary.optimization.yearlyLow, currency)} –{" "}
+                  {formatMoney(summary.optimization.yearlyHigh, currency)} /yr
+                  {summary.optimization.confidence > 0 ? (
+                    <span className="text-white/35">
+                      {" "}
+                      · {confidenceLabel(summary.optimization.confidence)}
+                    </span>
+                  ) : null}
+                </p>
+              ) : (
+                <p className="mt-1 text-sm text-white/45">
+                  No annual estimate available
+                </p>
+              )}
               <p className="mt-2 text-[10px] text-violet-200/50">
                 Range only — not included in actionable totals
               </p>
             </>
           ) : (
-            <p className="text-sm text-white/40">No optimization signals yet.</p>
+            <p className="text-sm text-white/40">No annual estimate available</p>
           )}
         </CategoryCard>
       </div>

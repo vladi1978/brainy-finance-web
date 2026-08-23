@@ -1,6 +1,12 @@
 import type { IntelligenceInput } from "../intelligence/types";
 import type { MerchantCluster, SpendingInsight } from "../types";
 import type { TimelineSignal, TimelineSignalKind } from "./types";
+import {
+  computeMeaningfulTrendPct,
+  filterEvidenceConfirmedSubscriptions,
+  hasRecurrenceEvidence,
+  resolveChargeCount,
+} from "../evidenceGuarded";
 
 function weekKey(isoDate: string): string | null {
   const d = Date.parse(isoDate + "T00:00:00Z");
@@ -22,7 +28,12 @@ function weeklyDebitTotals(clusters: MerchantCluster[]): number[] {
   return [...byWeek.values()].sort((a, b) => a - b);
 }
 
-function halfDelta(values: number[]): { pct: number; first: number; second: number } | null {
+function halfDelta(values: number[]): {
+  pct: number | null;
+  first: number;
+  second: number;
+  useNeutralWording: boolean;
+} | null {
   if (values.length < 3) return null;
   const mid = Math.floor(values.length / 2);
   const first = values.slice(0, mid);
@@ -31,8 +42,14 @@ function halfDelta(values: number[]): { pct: number; first: number; second: numb
     arr.length ? arr.reduce((s, x) => s + x, 0) / arr.length : 0;
   const a0 = avg(first);
   const a1 = avg(second);
-  if (a0 <= 0) return null;
-  return { pct: ((a1 - a0) / a0) * 100, first: a0, second: a1 };
+  if (a0 <= 0 && a1 <= 0) return null;
+  const trend = computeMeaningfulTrendPct(a0, a1);
+  return {
+    pct: trend.pct,
+    first: a0,
+    second: a1,
+    useNeutralWording: trend.useNeutralWording || trend.pct == null,
+  };
 }
 
 function dominantCurrency(
@@ -48,13 +65,15 @@ function dominantCurrency(
   return [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
 }
 
-function sumCategory(
-  rows: SpendingInsight[],
-  key: string
+function spendChargeCount(
+  row: SpendingInsight,
+  byCluster: Map<string, MerchantCluster>
 ): number {
-  return rows
-    .filter((r) => r.categoryKey === key)
-    .reduce((s, r) => s + r.totalSpentInPeriod, 0);
+  return resolveChargeCount({
+    cluster: byCluster.get(row.clusterId),
+    periodTotal: row.totalSpentInPeriod,
+    latestCharge: row.amount,
+  });
 }
 
 function isWeekend(isoDate: string): boolean {
@@ -64,7 +83,7 @@ function isWeekend(isoDate: string): boolean {
   return day === 0 || day === 6;
 }
 
-function weekendDiningDelta(clusters: MerchantCluster[]): number | null {
+function weekendDiningHigherLater(clusters: MerchantCluster[]): boolean {
   let first = 0;
   let second = 0;
   const dates: string[] = [];
@@ -76,11 +95,9 @@ function weekendDiningDelta(clusters: MerchantCluster[]): number | null {
     for (const ch of c.charges) {
       if (ch.type !== "debit" || !isWeekend(ch.date)) continue;
       dates.push(ch.date);
-      const t = Date.parse(ch.date + "T00:00:00Z");
-      if (!Number.isFinite(t)) continue;
     }
   }
-  if (dates.length < 2) return null;
+  if (dates.length < 2) return false;
 
   const sorted = [...new Set(dates)].sort();
   const mid = sorted[Math.floor(sorted.length / 2)] ?? sorted[0];
@@ -99,9 +116,7 @@ function weekendDiningDelta(clusters: MerchantCluster[]): number | null {
       else second += ch.amount;
     }
   }
-  if (first <= 0 && second <= 0) return null;
-  if (first <= 0) return 100;
-  return ((second - first) / first) * 100;
+  return second > first;
 }
 
 function pushSignal(
@@ -117,32 +132,39 @@ export function detectTimelineSignals(input: IntelligenceInput): TimelineSignal[
   const signals: TimelineSignal[] = [];
   const { clusters, subscriptions, recurringExpenses, spendingInsights } =
     input;
+  const byCluster = new Map(clusters.map((c) => [c.id, c]));
   const allSpend = [...recurringExpenses, ...spendingInsights];
   const currency = dominantCurrency([...subscriptions, ...allSpend]);
+  const confirmedSubs = filterEvidenceConfirmedSubscriptions(
+    subscriptions,
+    byCluster
+  );
 
   const weekTotals = weeklyDebitTotals(clusters);
   const weekDelta = halfDelta(weekTotals);
-  if (weekDelta && weekDelta.pct >= 15) {
+  if (weekDelta && weekDelta.second > weekDelta.first) {
     pushSignal(
       signals,
       {
         id: "spending-increase-weekly",
         kind: "spending_increase",
-        deltaPct: Math.round(weekDelta.pct),
+        deltaPct: weekDelta.pct ?? undefined,
         amount: weekDelta.second - weekDelta.first,
-        evidence: "Debit totals trend higher in the second half of detected weeks.",
+        evidence: weekDelta.useNeutralWording
+          ? "Spending was higher in the second half of detected weeks."
+          : "Debit totals trend higher in the second half of detected weeks.",
         tags: ["trend", "priority"],
         baseConfidence: weekTotals.length >= 4 ? 0.75 : 0.6,
       },
       currency
     );
-  } else if (weekDelta && weekDelta.pct <= -12) {
+  } else if (weekDelta && weekDelta.pct != null && weekDelta.pct <= -12) {
     pushSignal(
       signals,
       {
         id: "spending-decrease-weekly",
         kind: "spending_decrease",
-        deltaPct: Math.round(Math.abs(weekDelta.pct)),
+        deltaPct: Math.abs(weekDelta.pct),
         amount: weekDelta.first - weekDelta.second,
         evidence: "Overall debit activity declined in the second half of the period.",
         tags: ["trend"],
@@ -154,10 +176,11 @@ export function detectTimelineSignals(input: IntelligenceInput): TimelineSignal[
 
   const diningKeys = ["restaurants", "cafes"] as const;
   for (const key of diningKeys) {
-    const total = sumCategory(allSpend, key);
-    if (total <= 0) continue;
-    const rows = allSpend.filter((r) => r.categoryKey === key);
-    if (rows.length < 2) continue;
+    const rows = allSpend.filter(
+      (r) => r.categoryKey === key && spendChargeCount(r, byCluster) >= 2
+    );
+    const total = rows.reduce((s, r) => s + r.totalSpentInPeriod, 0);
+    if (total <= 0 || rows.length < 2) continue;
     pushSignal(
       signals,
       {
@@ -165,7 +188,6 @@ export function detectTimelineSignals(input: IntelligenceInput): TimelineSignal[
         kind: "spending_increase",
         categoryKey: key,
         amount: total,
-        deltaPct: rows.length >= 3 ? 18 : 12,
         evidence: `${rows.length} ${key === "restaurants" ? "dining" : "cafe"} merchants with repeat activity.`,
         tags: ["trend"],
         baseConfidence: 0.7,
@@ -174,17 +196,16 @@ export function detectTimelineSignals(input: IntelligenceInput): TimelineSignal[
     );
   }
 
-  const weekendDining = weekendDiningDelta(clusters);
-  if (weekendDining != null && weekendDining >= 10) {
+  if (weekendDiningHigherLater(clusters)) {
     pushSignal(
       signals,
       {
         id: "weekend-dining-up",
         kind: "spending_increase",
         categoryKey: "restaurants",
-        deltaPct: Math.round(weekendDining),
         amount: 0,
-        evidence: "Weekend dining debits are higher in the latter part of the statement.",
+        evidence:
+          "Weekend dining debits look higher later in the statement — percentage omitted without a stable baseline.",
         tags: ["trend", "priority"],
         baseConfidence: 0.68,
       },
@@ -194,8 +215,9 @@ export function detectTimelineSignals(input: IntelligenceInput): TimelineSignal[
 
   const weeklyRecurring = allSpend.filter(
     (r) =>
-      r.frequency === "weekly" ||
-      (r.recurringExpenseScore >= 0.5 && r.kind === "frequent_spending")
+      spendChargeCount(r, byCluster) >= 3 &&
+      (r.frequency === "weekly" ||
+        (r.recurringExpenseScore >= 0.5 && r.kind === "frequent_spending"))
   );
   if (weeklyRecurring.length >= 1) {
     const total = weeklyRecurring.reduce((s, r) => s + r.totalSpentInPeriod, 0);
@@ -213,23 +235,22 @@ export function detectTimelineSignals(input: IntelligenceInput): TimelineSignal[
     );
   }
 
-  const monthlySubs = subscriptions.filter(
+  const monthlySubs = confirmedSubs.filter(
     (s) => s.frequency === "monthly" || s.frequency === "annual"
   );
   const monthlyRecurring = recurringExpenses.filter(
-    (r) => r.recurringExpenseScore >= 0.55
+    (r) =>
+      r.recurringExpenseScore >= 0.55 && spendChargeCount(r, byCluster) >= 2
   );
   if (monthlySubs.length + monthlyRecurring.length >= 2) {
-    const total =
-      monthlySubs.reduce((s, x) => s + x.monthlyEquivalent, 0) +
-      monthlyRecurring.reduce((s, r) => s + r.totalSpentInPeriod, 0);
+    const total = monthlySubs.reduce((s, x) => s + x.monthlyEquivalent, 0);
     pushSignal(
       signals,
       {
         id: "recurring-monthly",
         kind: "recurring_monthly",
         amount: total,
-        evidence: `${monthlySubs.length} subscriptions and ${monthlyRecurring.length} recurring expense patterns.`,
+        evidence: `${monthlySubs.length} confirmed subscriptions and ${monthlyRecurring.length} recurring expense patterns.`,
         tags: ["recurring"],
         baseConfidence: 0.8,
       },
@@ -237,7 +258,7 @@ export function detectTimelineSignals(input: IntelligenceInput): TimelineSignal[
     );
   }
 
-  const telecom = subscriptions.filter((s) => s.category === "utilities");
+  const telecom = confirmedSubs.filter((s) => s.category === "utilities");
   const telecomSpend = telecom.reduce((s, x) => s + x.monthlyEquivalent, 0);
   if (telecom.length > 0 && telecomSpend > 0) {
     pushSignal(
@@ -248,7 +269,7 @@ export function detectTimelineSignals(input: IntelligenceInput): TimelineSignal[
         categoryKey: "utilities",
         merchantReference: telecom[0]?.normalizedName,
         amount: telecomSpend,
-        evidence: "Phone, internet, or utility bills rank among top recurring debits.",
+        evidence: "Phone, internet, or utility bills with confirmed cadence.",
         tags: ["recurring", "priority"],
         baseConfidence: Math.max(...telecom.map((t) => t.confidence), 0.7),
       },
@@ -260,6 +281,10 @@ export function detectTimelineSignals(input: IntelligenceInput): TimelineSignal[
     (r) => r.categoryKey === "fees" || r.kind === "fee"
   );
   const feeTotal = fees.reduce((s, r) => s + r.totalSpentInPeriod, 0);
+  const feeCharges = fees.reduce(
+    (n, r) => n + spendChargeCount(r, byCluster),
+    0
+  );
   const overdraft = fees.filter((r) =>
     /\b(OVERDRAFT|OD\s+F|NSF)\b/ui.test(`${r.merchant} ${r.normalizedName}`)
   );
@@ -278,7 +303,7 @@ export function detectTimelineSignals(input: IntelligenceInput): TimelineSignal[
     );
   }
 
-  if (fees.length >= 2 && feeTotal > 0) {
+  if (hasRecurrenceEvidence(feeCharges) && feeTotal > 0) {
     pushSignal(
       signals,
       {
@@ -298,7 +323,8 @@ export function detectTimelineSignals(input: IntelligenceInput): TimelineSignal[
         id: "bank-fees",
         kind: "fee_escalation",
         amount: feeTotal,
-        evidence: "Account or service fees identified on this statement.",
+        evidence:
+          "Account or service fee identified on this statement (single-period observation).",
         tags: ["fee"],
         baseConfidence: 0.75,
       },
@@ -306,25 +332,18 @@ export function detectTimelineSignals(input: IntelligenceInput): TimelineSignal[
     );
   }
 
-  const streaming = subscriptions.filter((s) => s.category === "streaming");
+  const streaming = confirmedSubs.filter((s) => s.category === "streaming");
   const streamingMonthly = streaming.reduce((s, x) => s + x.monthlyEquivalent, 0);
-  const priceUp = subscriptions.filter((s) => s.flags.priceIncreased);
+  const priceUp = confirmedSubs.filter((s) => s.flags.priceIncreased);
   if (streaming.length >= 2) {
-    const growthPct =
-      priceUp.length > 0
-        ? 18
-        : streaming.length >= 3
-          ? 12
-          : 8;
     pushSignal(
       signals,
       {
         id: "subscription-growth-streaming",
         kind: "subscription_growth",
         categoryKey: "streaming",
-        deltaPct: growthPct,
         amount: streamingMonthly,
-        evidence: `${streaming.length} streaming services with combined recurring spend.`,
+        evidence: `${streaming.length} confirmed streaming services with combined recurring spend.`,
         tags: ["subscription", "trend", "priority"],
         baseConfidence: 0.78,
       },
@@ -336,9 +355,8 @@ export function detectTimelineSignals(input: IntelligenceInput): TimelineSignal[
       {
         id: "subscription-price-increase",
         kind: "subscription_growth",
-        deltaPct: 15,
         amount: priceUp.reduce((s, x) => s + x.monthlyEquivalent, 0),
-        evidence: `${priceUp.length} subscription(s) flagged for possible price increases.`,
+        evidence: `${priceUp.length} confirmed subscription(s) flagged for possible price increases.`,
         tags: ["subscription", "priority"],
         baseConfidence: 0.7,
       },
@@ -347,16 +365,19 @@ export function detectTimelineSignals(input: IntelligenceInput): TimelineSignal[
   }
 
   const subCount =
-    subscriptions.length +
-    recurringExpenses.filter((r) => r.recurringExpenseScore >= 0.5).length;
+    confirmedSubs.length +
+    recurringExpenses.filter(
+      (r) =>
+        r.recurringExpenseScore >= 0.5 && spendChargeCount(r, byCluster) >= 2
+    ).length;
   if (subCount >= 5) {
     pushSignal(
       signals,
       {
         id: "subscription-growth-count",
         kind: "subscription_growth",
-        amount: subscriptions.reduce((s, x) => s + x.monthlyEquivalent, 0),
-        evidence: `${subCount} recurring merchants and subscriptions detected — review for overlap.`,
+        amount: confirmedSubs.reduce((s, x) => s + x.monthlyEquivalent, 0),
+        evidence: `${subCount} confirmed recurring merchants and subscriptions detected — review for overlap.`,
         tags: ["subscription"],
         baseConfidence: 0.65,
       },
@@ -389,25 +410,28 @@ export function detectTimelineSignals(input: IntelligenceInput): TimelineSignal[
     }
   }
 
-  const convenience = sumCategory(allSpend, "convenience");
-  if (convenience > 0) {
-    const count = allSpend.filter((r) => r.categoryKey === "convenience").length;
-    if (count >= 3) {
-      pushSignal(
-        signals,
-        {
-          id: "convenience-trend",
-          kind: "spending_increase",
-          categoryKey: "convenience",
-          amount: convenience,
-          deltaPct: 14,
-          evidence: `Convenience-store spending appears ${count} times in this window.`,
-          tags: ["trend"],
-          baseConfidence: 0.66,
-        },
-        currency
-      );
-    }
+  const convenienceRows = allSpend.filter(
+    (r) =>
+      r.categoryKey === "convenience" && spendChargeCount(r, byCluster) >= 2
+  );
+  const convenience = convenienceRows.reduce(
+    (s, r) => s + r.totalSpentInPeriod,
+    0
+  );
+  if (convenience > 0 && convenienceRows.length >= 3) {
+    pushSignal(
+      signals,
+      {
+        id: "convenience-trend",
+        kind: "spending_increase",
+        categoryKey: "convenience",
+        amount: convenience,
+        evidence: `Convenience-store spending appears across ${convenienceRows.length} merchants in this window.`,
+        tags: ["trend"],
+        baseConfidence: 0.66,
+      },
+      currency
+    );
   }
 
   return signals;

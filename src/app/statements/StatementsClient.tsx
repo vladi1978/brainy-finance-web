@@ -264,6 +264,7 @@ type AnalyzeOk = {
     monthlySpend: number;
     annualSpend: number;
     subscriptionCount: number;
+    possibleSubscriptionCount?: number;
     estimatedSavings: number;
     spendingInsightsTotal: number;
   };
@@ -690,6 +691,12 @@ export default function StatementsClient() {
                                     {formatMoney(card.annualImpact, summaryCurrency)}
                                   </span>
                                 </p>
+                              ) : /Annual estimate unavailable/i.test(
+                                  card.explanation
+                                ) ? (
+                                <p className="mt-2 text-xs text-white/35">
+                                  Annual estimate unavailable
+                                </p>
                               ) : null}
                             </li>
                           );
@@ -820,7 +827,11 @@ export default function StatementsClient() {
                               )}
                               /yr
                             </p>
-                          ) : null}
+                          ) : (
+                            <p className="mt-1 text-[10px] text-white/40">
+                              No annual estimate available
+                            </p>
+                          )}
                         </div>
                       ) : null}
                     </div>
@@ -883,20 +894,34 @@ export default function StatementsClient() {
                 title="Estimated monthly subscriptions"
                 value={formatMoney(data.summary.monthlySpend, summaryCurrency)}
                 subtitle={
-                  data.subscriptions.length
-                    ? `True subscriptions only · ${summaryCurrency}`
-                    : "No qualifying recurring bills in this statement window"
+                  data.summary.subscriptionCount > 0
+                    ? `Confirmed cadence only · ${summaryCurrency}`
+                    : (data.summary.possibleSubscriptionCount ?? 0) > 0
+                      ? `${data.summary.possibleSubscriptionCount} possible · recurrence not confirmed`
+                      : "No qualifying recurring bills in this statement window"
                 }
               />
               <SummaryCard
                 title="Estimated annual subscriptions"
-                value={formatMoney(data.summary.annualSpend, summaryCurrency)}
-                subtitle="Excludes transfers, dining, fuel, fees, and retail patterns"
+                value={
+                  data.summary.annualSpend > 0
+                    ? formatMoney(data.summary.annualSpend, summaryCurrency)
+                    : "—"
+                }
+                subtitle={
+                  data.summary.annualSpend > 0
+                    ? "Evidence-backed confirmed subscriptions only"
+                    : "Annual estimate unavailable"
+                }
               />
               <SummaryCard
                 title="True subscriptions detected"
                 value={String(data.summary.subscriptionCount)}
-                subtitle={`Model confidence gate ≥ ${(SUBSCRIPTION_CONFIDENCE_MIN * 100).toFixed(0)}% · fit score ≥ ${(TRUE_SUBSCRIPTION_SCORE_MIN * 100).toFixed(0)}%`}
+                subtitle={
+                  (data.summary.possibleSubscriptionCount ?? 0) > 0
+                    ? `Confirmed only · ${data.summary.possibleSubscriptionCount} possible separately`
+                    : `Confirmed cadence · confidence ≥ ${(SUBSCRIPTION_CONFIDENCE_MIN * 100).toFixed(0)}%`
+                }
               />
               <SummaryCard
                 title="Spending insights total"

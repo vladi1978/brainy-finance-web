@@ -1,5 +1,5 @@
 import type { MerchantCluster, SpendingInsight } from "../types";
-import { debitAmountsSimilar } from "../heuristics";
+import { hasGenuineDuplicateCharges } from "../evidenceGuarded";
 
 function clusterBlob(cluster: MerchantCluster): string {
   return `${cluster.descriptions.join(" ")} ${cluster.key}`.toUpperCase();
@@ -7,6 +7,10 @@ function clusterBlob(cluster: MerchantCluster): string {
 
 function isDeliveryMerchant(blob: string): boolean {
   return /\b(DOORDASH|UBER\s*EATS|GRUBHUB|POSTMATES|INSTACART)\b/u.test(blob);
+}
+
+function isRideshareMerchant(blob: string): boolean {
+  return /\b(UBER|LYFT)\b/u.test(blob) && !/\bUBER\s*EATS\b/u.test(blob);
 }
 
 function isOverdraftFee(blob: string): boolean {
@@ -21,23 +25,6 @@ function isAiToolsMerchant(blob: string): boolean {
   );
 }
 
-function possibleDuplicateCharge(cluster: MerchantCluster): boolean {
-  const debits = cluster.charges.filter((c) => c.type === "debit");
-  if (debits.length < 2) return false;
-  const amounts = debits.map((d) => d.amount);
-  if (!debitAmountsSimilar(amounts)) return false;
-  const dates = debits.map((d) => d.date).sort();
-  for (let i = 1; i < dates.length; i++) {
-    const t0 = Date.parse(dates[i - 1] + "T00:00:00Z");
-    const t1 = Date.parse(dates[i] + "T00:00:00Z");
-    if (Number.isFinite(t0) && Number.isFinite(t1)) {
-      const days = Math.abs(t1 - t0) / 86400000;
-      if (days <= 5) return true;
-    }
-  }
-  return false;
-}
-
 /**
  * Dynamic, pattern-based signal copy for a spending row.
  */
@@ -50,20 +37,34 @@ export function deriveSmartSignal(
   const blob = clusterBlob(cluster);
 
   if (row.kind === "fee" || row.categoryKey === "fees") {
-    if (isOverdraftFee(blob)) return "Repeated overdraft fees detected";
-    return "Bank fee detected";
+    if (isOverdraftFee(blob)) {
+      return n >= 2
+        ? "Repeated overdraft fees detected"
+        : "Overdraft fee detected";
+    }
+    return n >= 2 ? "Bank fees detected" : "Bank fee detected";
   }
 
   if (row.categoryKey === "transfers" && n >= 2) {
     return "Recurring transfer pattern";
   }
 
-  if (possibleDuplicateCharge(cluster)) {
+  if (hasGenuineDuplicateCharges(cluster.charges)) {
     return "Possible duplicate charge";
   }
 
+  if (isRideshareMerchant(blob) && n >= 2) {
+    return "Repeated activity to review";
+  }
+
+  if (isDeliveryMerchant(blob) && n >= 2) {
+    return "Repeated activity to review";
+  }
+
   if (isAiToolsMerchant(blob)) {
-    return "AI tools recurring spend";
+    return n >= 2
+      ? "AI tools recurring spend"
+      : "AI tools charge — recurrence not confirmed";
   }
 
   if (row.categoryKey === "convenience" && n >= 3) {
@@ -98,11 +99,15 @@ export function deriveSmartSignal(
   }
 
   if (row.kind === "frequent_spending") {
-    return "Repeated discretionary spending";
+    return n >= 2
+      ? "Repeated discretionary spending"
+      : "Discretionary spending to review";
   }
 
   if (row.kind === "possible_recurring_expense") {
-    return "Recurring pattern detected";
+    return n >= 2
+      ? "Recurring pattern detected"
+      : "Possible recurring expense — recurrence not confirmed";
   }
 
   if (row.kind === "needs_review") {

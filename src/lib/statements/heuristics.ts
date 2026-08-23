@@ -8,6 +8,7 @@ import {
   clusterLooksSubscriptionMerchant,
   unmistakableSubscriptionBillingMerchant,
 } from "./subscriptionSignals";
+import { amountsNearIdentical } from "./evidenceGuarded";
 import type {
   MerchantCluster,
   SpendingInsight,
@@ -663,10 +664,9 @@ export function computeHeuristicFlags(args: {
 
   const dupWindow = charges.some((c, i) => {
     for (let j = i + 1; j < charges.length; j++) {
-      if (
-        charges[j].amount === c.amount &&
-        dayDiff(c.date, charges[j].date) <= 3
-      ) {
+      const other = charges[j]!;
+      if (!amountsNearIdentical(c.amount, other.amount)) continue;
+      if (dayDiff(c.date, other.date) <= 2) {
         return true;
       }
     }

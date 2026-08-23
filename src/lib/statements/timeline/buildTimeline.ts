@@ -4,7 +4,6 @@ import { narrativeForSignal } from "./narratives";
 import type { FinancialIntelligenceSummary } from "../intelligence/financialCategories";
 import {
   estimateOptimizationRange,
-  estimateYearlyPotential,
   toCopilotFeedItem,
 } from "./scorePriority";
 import type { CopilotTimelineResult } from "./types";
@@ -43,23 +42,16 @@ export function buildCopilotTimeline(
 
   const feedOptimization = estimateOptimizationRange(feed);
   const summaryOptimization = options?.financialSummary?.optimization;
+  // Prefer guarded financial-summary optimization only — never inflate from feed annualization.
   const optimizationPotential = {
-    yearlyLow: Math.max(
-      feedOptimization.yearlyLow,
-      summaryOptimization?.yearlyLow ?? 0
-    ),
-    yearlyHigh: Math.max(
-      feedOptimization.yearlyHigh,
-      summaryOptimization?.yearlyHigh ?? 0
-    ),
-    confidence: Math.max(
-      feedOptimization.confidence,
-      summaryOptimization?.confidence ?? 0
-    ),
+    yearlyLow: summaryOptimization?.yearlyLow ?? feedOptimization.yearlyLow,
+    yearlyHigh: summaryOptimization?.yearlyHigh ?? feedOptimization.yearlyHigh,
+    confidence:
+      summaryOptimization?.confidence ?? feedOptimization.confidence,
   };
   const actionableYearlySavings =
     options?.financialSummary?.actionableYearly ?? 0;
-  const yearlyOptimizationPotential = estimateYearlyPotential(feed, 0);
+  const yearlyOptimizationPotential = optimizationPotential.yearlyHigh;
 
   return {
     feed,

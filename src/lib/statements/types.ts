@@ -187,7 +187,10 @@ export type AnalyzeStatementResult = {
   summary: {
     monthlySpend: number;
     annualSpend: number;
+    /** Evidence-confirmed subscriptions only. */
     subscriptionCount: number;
+    /** Recognized subscription merchants without confirmed cadence. */
+    possibleSubscriptionCount: number;
     estimatedSavings: number;
     /** Sum of `spendingInsights` period totals only */
     spendingInsightsTotal: number;

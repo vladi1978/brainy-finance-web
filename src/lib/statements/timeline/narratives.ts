@@ -17,7 +17,7 @@ export function narrativeForSignal(signal: TimelineSignal): NarrativeCopy {
           title: "Weekend dining is rising",
           insight: pct
             ? `Weekend dining activity is increasing — up about ${pct} in the latter part of this period.`
-            : "Weekend dining activity is increasing compared with earlier weeks.",
+            : "Weekend dining activity looks higher later in this period.",
           recommendation:
             "Set a weekend dining cap or plan one meal out to keep discretionary spend predictable.",
         };
@@ -36,7 +36,7 @@ export function narrativeForSignal(signal: TimelineSignal): NarrativeCopy {
         return {
           title: "Convenience spending pattern",
           insight:
-            "Frequent convenience-store purchases add up quickly across the statement window.",
+            "Frequent convenience-store purchases add up across the statement window.",
           recommendation:
             "Batch errands or use a weekly cash envelope for impulse convenience buys.",
         };
@@ -52,10 +52,10 @@ export function narrativeForSignal(signal: TimelineSignal): NarrativeCopy {
         };
       }
       return {
-        title: "Spending pace increased",
+        title: "Spending was higher in the second half",
         insight: pct
           ? `Overall debit activity rose about ${pct} in the second half of this statement.`
-          : "Debit totals trend higher in the latter part of the detected weeks.",
+          : "Spending was higher in the second half of the detected weeks.",
         recommendation:
           "Review the largest new merchants from the second half and set alerts before the next cycle.",
       };

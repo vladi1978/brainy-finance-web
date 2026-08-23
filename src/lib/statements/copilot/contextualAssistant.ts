@@ -384,7 +384,7 @@ function replySubscriptions(ctx: CopilotAssistantContext): string {
     return "No confirmed subscriptions in this window — recurring merchants may still appear under expenses if cadence wasn't strong enough to classify.";
   }
 
-  let text = `${count} subscription(s) detected, ~${formatAmount(monthlyTotal, currency)}/mo combined.`;
+  let text = `${count} confirmed subscription(s), ~${formatAmount(monthlyTotal, currency)}/mo combined.`;
 
   if (flagged.length > 0) {
     text += ` ${flagged.length} flagged (${joinNames(flagged)}) — review those before anything else.`;
@@ -504,7 +504,7 @@ export function generateCopilotOpening(ctx: CopilotAssistantContext | undefined)
 
   if (ctx.subscriptions.count > 0) {
     parts.push(
-      `${ctx.subscriptions.count} recurring subscription(s) (~${formatAmount(ctx.subscriptions.monthlyTotal, ctx.copilot.currency)}/mo) on file.`
+      `${ctx.subscriptions.count} confirmed subscription(s) (~${formatAmount(ctx.subscriptions.monthlyTotal, ctx.copilot.currency)}/mo) on file.`
     );
   }
 

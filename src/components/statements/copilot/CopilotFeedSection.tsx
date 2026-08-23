@@ -138,28 +138,45 @@ export function CopilotFeedSection({ copilot, assistant, formatMoney }: Props) {
           <p className="text-xs font-medium uppercase tracking-widest text-violet-200/70">
             Optimization opportunity range
           </p>
-          <p className="mt-2 text-3xl font-bold tabular-nums text-violet-100">
-            {formatMoney(
-              copilot.optimizationPotential?.yearlyLow ?? 0,
-              copilot.currency
-            )}
-            <span className="text-lg font-normal text-white/40"> – </span>
-            {formatMoney(
-              copilot.optimizationPotential?.yearlyHigh ?? 0,
-              copilot.currency
-            )}
-            <span className="text-sm font-normal text-white/45"> /yr</span>
-          </p>
-          <p className="mt-2 text-xs leading-relaxed text-white/50">
-            Not guaranteed savings — telecom, insurance, bundles, and spending
-            trends. Never added to actionable totals.
-            {(copilot.optimizationPotential?.confidence ?? 0) > 0 ? (
-              <span className="mt-1 block text-violet-200/50">
-                Confidence{" "}
-                {Math.round((copilot.optimizationPotential?.confidence ?? 0) * 100)}%
-              </span>
-            ) : null}
-          </p>
+          {(copilot.optimizationPotential?.yearlyHigh ?? 0) > 0 ? (
+            <>
+              <p className="mt-2 text-3xl font-bold tabular-nums text-violet-100">
+                {formatMoney(
+                  copilot.optimizationPotential?.yearlyLow ?? 0,
+                  copilot.currency
+                )}
+                <span className="text-lg font-normal text-white/40"> – </span>
+                {formatMoney(
+                  copilot.optimizationPotential?.yearlyHigh ?? 0,
+                  copilot.currency
+                )}
+                <span className="text-sm font-normal text-white/45"> /yr</span>
+              </p>
+              <p className="mt-2 text-xs leading-relaxed text-white/50">
+                Not guaranteed savings — evidence-backed optimization only.
+                Never added to actionable totals.
+                {(copilot.optimizationPotential?.confidence ?? 0) > 0 ? (
+                  <span className="mt-1 block text-violet-200/50">
+                    Confidence{" "}
+                    {Math.round(
+                      (copilot.optimizationPotential?.confidence ?? 0) * 100
+                    )}
+                    %
+                  </span>
+                ) : null}
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="mt-2 text-xl font-semibold text-violet-100/90">
+                No annual estimate available
+              </p>
+              <p className="mt-2 text-xs leading-relaxed text-white/50">
+                Optimization ranges require evidence-backed cadence — period
+                spending is never annualized as potential savings.
+              </p>
+            </>
+          )}
         </div>
       </div>
     </section>
