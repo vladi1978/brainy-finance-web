@@ -345,41 +345,6 @@ export function applyRecommendationRules(
     );
   }
 
-  const insurance = subscriptions.filter(
-    (s) =>
-      s.category === "insurance" &&
-      subscriptionEligibleForAnnualSavings(s, byCluster)
-  );
-  if (insurance.length > 0) {
-    const annual = insurance.reduce((s, x) => s + x.annualEquivalent, 0);
-    if (annual >= 600) {
-      const yearly = roundMoney(annual * 0.1);
-      const monthly = roundMoney(yearly / 12);
-      out.push(
-        makeRec(
-          {
-            id: "action-insurance-compare",
-            title: "Optional: compare insurance quotes before renewal",
-            description:
-              "Insurance is an expected recurring cost. Comparing quotes at renewal can be worthwhile for some households, without changing coverage needs. Savings shown are optimization ranges, not guaranteed.",
-            estimatedMonthlySavings: monthly,
-            estimatedYearlySavings: yearly,
-            severity: annual >= 1200 ? "medium" : "low",
-            confidence: clampConfidence(
-              0.68 + avgSubscriptionConfidence(insurance) * 0.12
-            ),
-            actionType: "compare_insurance",
-            merchantReference: insurance
-              .map((s) => s.normalizedName)
-              .join(", "),
-            sourceInsightId: "insurance-high",
-          },
-          currency
-        )
-      );
-    }
-  }
-
   const flagged = subscriptions.filter(
     (s) =>
       !isExpectedBillSubscription(s) &&

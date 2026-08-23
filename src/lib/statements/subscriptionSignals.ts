@@ -3,6 +3,7 @@
  * SaaS-ish words). Not a fixed brand roster — reinforces detection when the LLM is conservative.
  */
 import type { MerchantCluster, SubscriptionCategory } from "./types";
+import { classifyInsurancePayment } from "./insuranceClassify";
 
 const SUBSCRIPTION_LIKE_PATTERN = new RegExp(
   [
@@ -29,18 +30,18 @@ const SUBSCRIPTION_LIKE_PATTERN = new RegExp(
   "iu"
 );
 
-const INSURANCE_PATTERN =
-  /\b(HUMANA|AETNA|CIGNA|BCBS|ELEVANCE|KAISER|BLUE\s+CROSS|GEICO|PROGRESSIVE|STATE\s+FARM)\b/iu;
-
 export function merchantTextSignals(description: string, keyUpper: string): {
   subscriptionLike: boolean;
   categoryHint: SubscriptionCategory | null;
 } {
   const blob = `${description} ${keyUpper}`;
+  const insurance = classifyInsurancePayment(blob);
 
   let categoryHint: SubscriptionCategory | null = null;
 
-  if (
+  if (insurance.isInsurance) {
+    categoryHint = "insurance";
+  } else if (
     /\b(NETFLIX|HULU\b|DISNEY|PEACOCK|SHOWTIME|AMAZON\s+PRIME|\bPRIME\b|APPLE\s+TV|STREAM\b)\b/ui.test(
       blob
     )
@@ -50,8 +51,6 @@ export function merchantTextSignals(description: string, keyUpper: string): {
     categoryHint = "music";
   } else if (/\bGYM\b|\bFITNESS\b|\bPEL(OT)?ON\b|\bWHOOP\b|EQUINO?X\b/ui.test(blob)) {
     categoryHint = "fitness";
-  } else if (INSURANCE_PATTERN.test(blob) || /\bHEALTH\s+INS\b|\bDENTAL\s+PREM\b/ui.test(blob)) {
-    categoryHint = "insurance";
   } else if (
     /\b(ANTHROPIC|CLAUDE\.?AI|\bCLAUDE\b|OPEN\s*AI|OPENAI|CHATGPT|CHAT\s*GPT|MIDJOURNEY)\b/ui.test(blob)
   ) {
@@ -72,9 +71,7 @@ export function merchantTextSignals(description: string, keyUpper: string): {
   }
 
   const subscriptionLike =
-    SUBSCRIPTION_LIKE_PATTERN.test(blob) ||
-    INSURANCE_PATTERN.test(blob) ||
-    /\bDIGITAL\s*SERV(IC)?(ICES)?\b/ui.test(blob);
+    SUBSCRIPTION_LIKE_PATTERN.test(blob) || insurance.isInsurance;
 
   return { subscriptionLike, categoryHint };
 }
@@ -92,7 +89,7 @@ export function unmistakableSubscriptionBillingMerchant(
   const blob =
     [...cluster.descriptions.slice(0, 6), cluster.key].join(" ").toUpperCase();
 
-  if (INSURANCE_PATTERN.test(blob)) return true;
+  if (classifyInsurancePayment(blob).isInsurance) return true;
 
   return /\b(NETFLIX|PEACOCK|SPOTIFY|HULU|DISNEY\+?|\bHBO\b|APPLE\.COM\/BILL|\bICLOUD\b|\bITUNES\b|GOOGLE\s*ONE|YOUTUBE\s+(PREMIUM|MUSIC)|\bADOBE\b|MICROSOFT\s+365|OFFICE\s+365|MICRO\s*365|AMAZON\s+(PRIME|VIDEO|DIGITAL|MUSIC)|PRIME\s+VIDEO|OPEN\s*AI|OPENAI|CHATGPT|CHAT\s*GPT)\b/ui.test(
     blob

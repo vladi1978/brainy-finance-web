@@ -142,7 +142,7 @@ export function FinancialIntelligenceSummaryPanel({ summary, formatMoney }: Prop
 
         <CategoryCard
           title="Optimization opportunities"
-          subtitle="Telecom, insurance, bundles, and spending trends — outcomes vary; not counted as real savings."
+          subtitle="Telecom, bundles, and spending trends — outcomes vary; insurance is observed only (no invented savings)."
           tone="violet"
         >
           {hasOptimization && summary.optimization.yearlyHigh > 0 ? (

@@ -108,6 +108,17 @@ export default function AppSidebar() {
           Brainy helps you compare prices, shop in plain language, and review
           text-based PDF statements — not banking, investing, or financial advice.
         </p>
+        <p className="mt-3 flex flex-wrap gap-3 text-[11px]">
+          <Link href="/terms" className="text-white/50 underline hover:text-white/70">
+            Terms
+          </Link>
+          <Link
+            href="/privacy"
+            className="text-white/50 underline hover:text-white/70"
+          >
+            Privacy
+          </Link>
+        </p>
       </div>
     </aside>
   );

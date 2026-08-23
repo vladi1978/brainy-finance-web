@@ -117,30 +117,6 @@ export function buildSavingsOpportunities(
     }
   }
 
-  const insurance = subscriptions.filter(
-    (s) =>
-      s.category === "insurance" &&
-      subscriptionEligibleForAnnualSavings(s, byCluster)
-  );
-  if (insurance.length > 0) {
-    const annual = insurance.reduce((s, x) => s + x.annualEquivalent, 0);
-    if (annual >= 600) {
-      const yearly = Math.round(annual * 0.1 * 100) / 100;
-      out.push(
-        savingsOpp({
-          id: "compare-insurance",
-          title: "Compare insurance rates",
-          explanation:
-            "Insurance premiums with confirmed recurrence — shopping quotes at renewal may lower cost; outcomes vary by coverage.",
-          monthlySavings: Math.round((yearly / 12) * 100) / 100,
-          yearlySavings: yearly,
-          currency,
-          confidence: 0.68,
-        })
-      );
-    }
-  }
-
   const streaming = subscriptions.filter(
     (s) =>
       s.category === "streaming" &&

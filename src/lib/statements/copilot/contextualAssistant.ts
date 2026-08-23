@@ -300,7 +300,7 @@ function replyReduceBills(ctx: CopilotAssistantContext, seed: string): string {
   }
   if (optHigh > 0) {
     lines.push(
-      `• Negotiation upside (telecom, insurance, bundles): roughly ${formatAmount(optLow, currency)}–${formatAmount(optHigh, currency)}/yr — not guaranteed, but worth quoting.`
+      `• Negotiation upside (telecom, bundles): roughly ${formatAmount(optLow, currency)}–${formatAmount(optHigh, currency)}/yr — not guaranteed. Insurance is observed only — Brainy does not invent a savings estimate without comparable quotes.`
     );
   }
 

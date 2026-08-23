@@ -411,6 +411,7 @@ export default function StatementsClient() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<AnalyzeOk | null>(null);
+  const [documentConsent, setDocumentConsent] = useState(false);
   const [actions, setActions] = useState<
     Record<
       string,
@@ -420,6 +421,12 @@ export default function StatementsClient() {
 
   const onFile = useCallback(async (file: File | null) => {
     if (!file) return;
+    if (!documentConsent) {
+      setError(
+        "Confirm document ownership and analysis permission before uploading."
+      );
+      return;
+    }
     setError(null);
     setData(null);
     setBusy(true);
@@ -439,12 +446,15 @@ export default function StatementsClient() {
         return;
       }
       setData(json as AnalyzeOk);
+      // Each completed analysis ends the consent grant; a new PDF requires re-check.
+      setDocumentConsent(false);
+      setActions({});
     } catch {
       setError("Upload failed — check your network and try again.");
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [documentConsent]);
 
   const periodLabel = useMemo(() => {
     if (!data?.meta.statementPeriod) return null;
@@ -527,12 +537,48 @@ export default function StatementsClient() {
           scored as transaction candidates; AI fills in only disputed rows. Excel
           and CSV are not supported. Raw PDF bytes are{" "}
           <span className="text-white">not</span> forwarded to OpenAI. This is
-          not banking, accounting, or financial advice.
+          not banking, accounting, or financial advice. See{" "}
+          <a href="/terms" className="text-emerald-300 underline">
+            Terms
+          </a>{" "}
+          and{" "}
+          <a href="/privacy" className="text-emerald-300 underline">
+            Privacy
+          </a>
+          .
         </p>
 
-        <label className="flex cursor-pointer flex-col gap-3 rounded-2xl border border-dashed border-white/20 bg-white/[0.04] px-6 py-10 transition hover:border-emerald-400/35 hover:bg-white/[0.06]">
+        <label className="mb-4 flex cursor-pointer items-start gap-3 rounded-xl border border-white/15 bg-white/[0.03] px-4 py-3 text-sm text-white/80">
+          <input
+            type="checkbox"
+            className="mt-1 h-4 w-4 shrink-0 rounded border-white/30 bg-black"
+            checked={documentConsent}
+            disabled={busy}
+            onChange={(e) => setDocumentConsent(e.target.checked)}
+          />
+          <span>
+            I confirm that I own this document or have permission to analyze it.
+            I authorize Brainy to process it to identify spending patterns,
+            subscriptions, fees, and expected bills for this session. Consent is
+            recorded only in this browser session until accounts exist — it is
+            not a stored legal signature.
+          </span>
+        </label>
+
+        <label
+          className={[
+            "flex flex-col gap-3 rounded-2xl border border-dashed px-6 py-10 transition",
+            documentConsent && !busy
+              ? "cursor-pointer border-white/20 bg-white/[0.04] hover:border-emerald-400/35 hover:bg-white/[0.06]"
+              : "cursor-not-allowed border-white/10 bg-white/[0.02] opacity-60",
+          ].join(" ")}
+        >
           <span className="text-sm font-medium text-white">
-            {busy ? "Processing PDF…" : "Drag or choose a PDF"}
+            {busy
+              ? "Processing PDF…"
+              : documentConsent
+                ? "Drag or choose a PDF"
+                : "Accept document consent to enable upload"}
           </span>
           <span className="text-xs text-white/45">
             Multi-page extraction with pdf-parse · max 12&nbsp;MB
@@ -541,7 +587,7 @@ export default function StatementsClient() {
             type="file"
             accept="application/pdf"
             className="hidden"
-            disabled={busy}
+            disabled={busy || !documentConsent}
             onChange={(e) => void onFile(e.target.files?.[0] ?? null)}
           />
         </label>

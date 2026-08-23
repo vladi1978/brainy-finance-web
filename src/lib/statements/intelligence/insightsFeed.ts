@@ -17,6 +17,10 @@ import {
   overdraftFeeTitle,
 } from "../feeClaims";
 import {
+  INSURANCE_OBSERVED_NEUTRAL,
+  isInsuranceRelatedText,
+} from "../insuranceClassify";
+import {
   canEmitHalfPeriodTrend,
   chronologicalWeeklyDebitTotals,
   halfPeriodAverages,
@@ -191,18 +195,20 @@ export function buildInsightsFeed(input: IntelligenceInput): FinancialInsightCar
     });
   }
 
-  const insurance = confirmedSubs.filter((s) => s.category === "insurance");
-  if (insurance.length > 0) {
-    const annual = insurance.reduce((s, x) => s + x.annualEquivalent, 0);
-    if (annual >= 1200) {
-      cards.push({
-        id: "insurance-high",
-        title: "Insurance cost appears high",
-        explanation: `Confirmed insurance-related bills total about ${insurance.length} service(s) in this window.`,
-        severity: "moderate",
-        annualImpact: annual,
-      });
-    }
+  // Insurance: neutral observation only — never "cost appears high" or invented savings.
+  const insuranceSubs = subscriptions.filter((s) => s.category === "insurance");
+  const insuranceSpend = allSpend.filter((r) =>
+    isInsuranceRelatedText(
+      `${r.categoryKey} ${r.categoryLabel} ${r.normalizedName} ${r.merchant}`
+    )
+  );
+  if (insuranceSubs.length > 0 || insuranceSpend.length > 0) {
+    cards.push({
+      id: "insurance-observed",
+      title: "Insurance payment observed",
+      explanation: INSURANCE_OBSERVED_NEUTRAL,
+      severity: "informational",
+    });
   }
 
   const recurringMerchants =
