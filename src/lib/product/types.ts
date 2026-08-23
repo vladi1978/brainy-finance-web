@@ -485,6 +485,12 @@ export type CompareProductDeal = {
   score?: number;
   premiumCoupons?: PremiumCouponOffer[];
   savingsVsReference?: number | null;
+  priceDifferenceKind?:
+    | "verified_save"
+    | "alternative_lower"
+    | "search_listed_lower"
+    | null;
+  priceDifferenceLabel?: string | null;
   priceCompareSegment?: "cheaper" | "not_cheaper" | "unknown";
   outboundIsStoreSearch?: boolean;
   /** Raw merchant PDP when {@link urlType} is `"product"` (canonical listing URL). */
@@ -546,10 +552,23 @@ export type CompareApiCandidate = {
   /** Premium: active-style coupons for this retailer/category (simulated until partner APIs) */
   premiumCoupons?: PremiumCouponOffer[];
   /**
-   * When the source listing had a comparable price: USD saved vs that reference
-   * (only set for `priceCompareSegment === "cheaper"`).
+   * When the source listing had a comparable price: USD delta vs that reference
+   * (only set for `priceCompareSegment === "cheaper"` and eligible listings).
+   * Label honesty is controlled by {@link priceDifferenceKind} — only
+   * `verified_save` may be described as savings.
    */
   savingsVsReference?: number | null;
+  /**
+   * How to present {@link savingsVsReference}: verified Save vs honest
+   * alternative / search-result price-difference copy.
+   */
+  priceDifferenceKind?:
+    | "verified_save"
+    | "alternative_lower"
+    | "search_listed_lower"
+    | null;
+  /** Preformatted price-difference claim for UI badges (no “Save” for alternatives). */
+  priceDifferenceLabel?: string | null;
   /** Grouping for cheaper-first UI when a reference price exists */
   priceCompareSegment?: "cheaper" | "not_cheaper" | "unknown";
   /**

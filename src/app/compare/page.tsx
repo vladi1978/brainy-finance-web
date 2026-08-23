@@ -348,11 +348,50 @@ function renderCandidateCard(
                   : c.identityScore}
                 /100
               </span>
-              {savingsVs != null && savingsVs > 0 && !c.commercialListingLabel ? (
-                <span className="text-xs font-semibold text-green-400 rounded-md border border-green-500/40 bg-green-500/15 px-2 py-0.5">
-                  Save {formatPrice(savingsVs)}
-                </span>
-              ) : null}
+              {(() => {
+                if (c.commercialListingLabel) return null;
+                const kind = c.priceDifferenceKind;
+                const label = c.priceDifferenceLabel;
+                if (kind === "verified_save" && savingsVs != null && savingsVs > 0) {
+                  return (
+                    <span className="text-xs font-semibold text-green-400 rounded-md border border-green-500/40 bg-green-500/15 px-2 py-0.5">
+                      {label ?? `Save ${formatPrice(savingsVs)}`}
+                    </span>
+                  );
+                }
+                if (
+                  (kind === "alternative_lower" || kind === "search_listed_lower") &&
+                  savingsVs != null &&
+                  savingsVs > 0
+                ) {
+                  return (
+                    <span
+                      className="text-xs font-medium text-amber-100/95 rounded-md border border-amber-500/40 bg-amber-500/12 px-2 py-0.5"
+                      title="Price is lower than your reference, but this is not a verified exact match."
+                    >
+                      {label ??
+                        (kind === "search_listed_lower"
+                          ? `Listed ${formatPrice(savingsVs)} lower — verify product`
+                          : `${formatPrice(savingsVs)} lower — different or unconfirmed model`)}
+                    </span>
+                  );
+                }
+                if (savingsVs != null && savingsVs > 0 && c.confidenceBand === "exact_match") {
+                  return (
+                    <span className="text-xs font-semibold text-green-400 rounded-md border border-green-500/40 bg-green-500/15 px-2 py-0.5">
+                      Save {formatPrice(savingsVs)}
+                    </span>
+                  );
+                }
+                if (savingsVs != null && savingsVs > 0) {
+                  return (
+                    <span className="text-xs font-medium text-amber-100/95 rounded-md border border-amber-500/40 bg-amber-500/12 px-2 py-0.5">
+                      {formatPrice(savingsVs)} lower — different or unconfirmed model
+                    </span>
+                  );
+                }
+                return null;
+              })()}
               {c.commercialListingLabel ? (
                 <span
                   className="text-[11px] font-medium uppercase tracking-wide rounded-md border border-amber-500/45 bg-amber-500/12 px-2 py-0.5 text-amber-200/95"
@@ -877,8 +916,8 @@ export default function ComparePage() {
                 <p className="text-green-400 font-semibold mt-1">{formatPrice(best.price)}</p>
                 {result!.savings != null && result!.savings > 0 && (
                   <p className="text-white/70 text-sm mt-2">
-                    Save up to {formatPrice(result!.savings)} vs your reference price among cheaper
-                    options
+                    Save up to {formatPrice(result!.savings)} vs your reference price among
+                    verified exact matches
                   </p>
                 )}
               </div>

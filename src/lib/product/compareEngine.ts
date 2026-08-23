@@ -94,6 +94,7 @@ import {
   type ProductIdentityResult,
 } from "./matching/productIdentity";
 import { cleanRetailerSearchQuery } from "./matching/searchQueryCleanup";
+import { resolvePriceDifferenceClaim } from "./priceDifferenceClaim";
 import {
   commercialListingDisplayLabel,
   hasCommercialNonPurchaseSignals,
@@ -1363,6 +1364,8 @@ function applyCommercialPriceSafetyToCandidate(
       ),
       confidenceBandLabel: confidenceBandBadgeLabel(band),
       savingsVsReference: null,
+      priceDifferenceKind: null,
+      priceDifferenceLabel: null,
       commercialListingLabel:
         candidate.commercialListingLabel ?? "Incomplete / parts listing",
       matchType:
@@ -1380,6 +1383,8 @@ function applyCommercialPriceSafetyToCandidate(
       displayMatchScore: Math.min(candidate.displayMatchScore ?? 0, BAND_POSSIBLE_MIN - 1),
       confidenceBandLabel: "Low Match",
       savingsVsReference: null,
+      priceDifferenceKind: null,
+      priceDifferenceLabel: null,
       commercialListingLabel:
         commercialListingDisplayLabel(candidate.commercialListing) ??
         candidate.commercialListingLabel ??
@@ -1412,6 +1417,8 @@ function applyCommercialPriceSafetyToCandidate(
       displayMatchScore: Math.min(candidate.displayMatchScore ?? 0, BAND_POSSIBLE_MIN - 1),
       confidenceBandLabel: "Low Match",
       savingsVsReference: null,
+      priceDifferenceKind: null,
+      priceDifferenceLabel: null,
       commercialListingLabel:
         commercialListingDisplayLabel(candidate.commercialListing) ??
         candidate.commercialListingLabel ??
@@ -1448,6 +1455,8 @@ function applyCommercialPriceSafetyToCandidate(
     confidenceBand: band,
     confidenceBandLabel: confidenceBandBadgeLabel(band),
     savingsVsReference: null,
+    priceDifferenceKind: null,
+    priceDifferenceLabel: null,
     commercialListingLabel:
       candidate.commercialListingLabel ?? "Verify purchase price",
   };
@@ -1649,6 +1658,8 @@ function toDeal(
     matchExplanation: row.matchExplanation,
     premiumCoupons: row.premiumCoupons,
     savingsVsReference: row.savingsVsReference,
+    priceDifferenceKind: row.priceDifferenceKind,
+    priceDifferenceLabel: row.priceDifferenceLabel,
     priceCompareSegment: row.priceCompareSegment,
     outboundIsStoreSearch: row.outboundIsStoreSearch,
     resolvedProductUrl: row.resolvedProductUrl,
@@ -1685,6 +1696,8 @@ function annotateAndOrderCandidates(
         ...api,
         priceCompareSegment: "unknown" as const,
         savingsVsReference: null,
+        priceDifferenceKind: null,
+        priceDifferenceLabel: null,
       };
     }
     const p = api.price;
@@ -1693,11 +1706,13 @@ function annotateAndOrderCandidates(
         ...api,
         priceCompareSegment: "unknown" as const,
         savingsVsReference: null,
+        priceDifferenceKind: null,
+        priceDifferenceLabel: null,
       };
     }
     const price = p as number;
     const cheaper = price < referencePrice!;
-    const eligibleSavings =
+    const eligiblePriceDelta =
       cheaper &&
       !isIncompleteOrPartsListingTitle(api.title) &&
       isPurchasePriceListing(api) &&
@@ -1705,10 +1720,27 @@ function annotateAndOrderCandidates(
         isDurableGoodsCategory(api.normalized.category) &&
         isSuspiciousPurchasePriceRatio(price, referencePrice!)
       );
+    const delta = eligiblePriceDelta ? referencePrice! - price : null;
+    const claim = resolvePriceDifferenceClaim({
+      amount: delta,
+      confidenceBand: api.confidenceBand,
+      matchType: api.matchType,
+      title: api.title,
+      commercialListingLabel: api.commercialListingLabel,
+      store: api.store,
+      outboundUrl: api.outboundUrl,
+      affiliateUrl: api.affiliateUrl,
+      productUrl: api.productUrl,
+      urlType: api.urlType,
+      outboundIsStoreSearch: api.outboundIsStoreSearch,
+    });
     return {
       ...api,
       priceCompareSegment: cheaper ? ("cheaper" as const) : ("not_cheaper" as const),
-      savingsVsReference: eligibleSavings ? referencePrice! - price : null,
+      // Keep numeric delta for alternatives; label honesty is via priceDifferenceKind.
+      savingsVsReference: claim?.amount ?? null,
+      priceDifferenceKind: claim?.kind ?? null,
+      priceDifferenceLabel: claim?.label ?? null,
     };
   });
 
@@ -3187,25 +3219,22 @@ export async function compareProduct(
     if (!bestApi) {
       bestApi = bestPickPool.find((c) => c.confidenceBand === "exact_match");
     }
-    if (!bestApi) {
-      bestApi = bestPickPool.find((c) => c.confidenceBand === "high_confidence");
-    }
-    if (!bestApi) {
-      bestApi = bestPickPool.find((c) => c.matchType === "close_match");
-    }
-    bestApi ??= bestPickPool[0];
+    // Verified Best Deal requires Exact Match — never promote alternatives.
 
     const bestRow = bestApi ? rowForApi(bestApi) : undefined;
     if (bestRow && bestApi) {
       const bestDisplayScore = candidateDisplayScore(bestApi);
       if (bestDisplayScore >= MIN_SCORE_PRODUCT_LISTING_OR_BEST_DEAL) {
-        bestDeal = applyStrictSearchUrlCapToDeal(
-          toDeal(bestApi, bestRow.rel, bestRow.identity)
-        );
-        showBestDeal =
+        const verified =
           bestApi.confidenceBand === "exact_match" &&
           !isStrictSearchFallbackOutbound(bestApi) &&
           !isBlockedFromExactMatchOrBestDeal(bestApi, referenceListPrice);
+        if (verified) {
+          bestDeal = applyStrictSearchUrlCapToDeal(
+            toDeal(bestApi, bestRow.rel, bestRow.identity)
+          );
+          showBestDeal = true;
+        }
       } else if (process.env.DEBUG_COMPARE === "true") {
         console.log(
           "[FINAL_RESULT_REJECTED]",
@@ -3223,8 +3252,23 @@ export async function compareProduct(
       alternatives = orderedForDisplay
         .filter(
           (c) =>
-            !(c.store === bestApi!.store && c.productUrl === bestApi!.productUrl)
+            !(
+              bestApi &&
+              c.store === bestApi.store &&
+              c.productUrl === bestApi.productUrl
+            )
         )
+        .slice(0, Math.max(0, DISPLAY_LIMIT - 1))
+        .map((c) => {
+          const r = rowForApi(c);
+          return r
+            ? applyStrictSearchUrlCapToDeal(toDeal(c, r.rel, r.identity))
+            : null;
+        })
+        .filter((d): d is CompareProductDeal => d != null);
+    } else {
+      // No verified Exact Match — still surface alternatives for the list API.
+      alternatives = orderedForDisplay
         .slice(0, Math.max(0, DISPLAY_LIMIT - 1))
         .map((c) => {
           const r = rowForApi(c);
