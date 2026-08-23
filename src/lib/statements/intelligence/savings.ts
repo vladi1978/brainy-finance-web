@@ -1,10 +1,12 @@
 import type { MerchantCluster, SubscriptionInsight } from "../types";
 import {
   OBSERVED_ONLY_SAVINGS_NOTE,
-  canAnnualizeFeePattern,
   canAnnualizeFromRecurrence,
   resolveChargeCount,
 } from "../recurrenceEvidence";
+import { ANNUAL_ESTIMATE_UNAVAILABLE } from "../evidenceGuarded";
+import { collectDedupedFees } from "../feeDedupe";
+import { isExpectedBillSubscription } from "../expectedBills";
 import type { IntelligenceInput, SavingsOpportunity } from "./types";
 import { categoryForSavingsId } from "./financialCategories";
 import { annualizePeriodAmount, statementPeriodDays } from "./period";
@@ -72,44 +74,44 @@ export function buildSavingsOpportunities(
   const currency = dominantCurrency([...subscriptions, ...allSpend]);
   const byCluster = clusterByIdMap(clusters);
 
-  const fees = allSpend.filter(
-    (r) => r.categoryKey === "fees" || r.kind === "fee"
-  );
-  const feeChargeCount = fees.reduce((n, r) => {
-    const c = resolveChargeCount({
-      cluster: byCluster.get(r.clusterId),
-      periodTotal: r.totalSpentInPeriod,
-      latestCharge: r.amount,
-    });
-    return n + c;
-  }, 0);
-  const feeTotal = fees.reduce((s, r) => s + r.totalSpentInPeriod, 0);
-  if (feeTotal > 0) {
-    const observedMonthly = Math.round(feeTotal * 0.85 * 100) / 100;
-    if (canAnnualizeFeePattern(feeChargeCount)) {
-      const yearly = annualizePeriodAmount(feeTotal, statementPeriod);
+  const fees = collectDedupedFees({
+    recurringExpenses,
+    spendingInsights,
+    clusters,
+  });
+  if (fees.observedPeriodTotal > 0) {
+    if (fees.annualizeEligible) {
+      const yearly = annualizePeriodAmount(
+        fees.observedPeriodTotal,
+        statementPeriod
+      );
+      const monthly =
+        Math.round(fees.observedPeriodTotal * 0.85 * 100) / 100;
       out.push(
         savingsOpp({
           id: "reduce-fees",
           title: "Reduce overdraft and bank fees",
           explanation:
             "Repeated fees on this statement may be avoidable with balance alerts or a fee-free account tier.",
-          monthlySavings: observedMonthly,
+          monthlySavings: monthly,
           yearlySavings: Math.round(yearly * 0.85 * 100) / 100,
-          currency,
+          currency: fees.currency || currency,
           confidence: 0.88,
+          observedPeriodAmount: fees.observedPeriodTotal,
         })
       );
     } else {
+      const amt = fees.observedPeriodTotal.toFixed(2);
       out.push(
         savingsOpp({
           id: "reduce-fees",
           title: "Reduce overdraft and bank fees",
-          explanation: `${OBSERVED_ONLY_SAVINGS_NOTE}. A fee was detected in this window; repeat cadence is not confirmed.`,
-          monthlySavings: observedMonthly,
+          explanation: `$${amt} observed in this statement. ${ANNUAL_ESTIMATE_UNAVAILABLE}.`,
+          monthlySavings: 0,
           yearlySavings: 0,
-          currency,
+          currency: fees.currency || currency,
           confidence: 0.55,
+          observedPeriodAmount: fees.observedPeriodTotal,
         })
       );
     }
@@ -226,6 +228,7 @@ export function buildSavingsOpportunities(
   }
 
   const flagged = subscriptions.filter((s) => {
+    if (isExpectedBillSubscription(s)) return false;
     if (
       !(
         s.flags.forgotten ||
@@ -255,10 +258,11 @@ export function buildSavingsOpportunities(
   } else {
     const weakFlagged = subscriptions.filter(
       (s) =>
-        s.flags.forgotten ||
-        s.flags.duplicate ||
-        s.flags.priceIncreased ||
-        s.flags.suspicious
+        !isExpectedBillSubscription(s) &&
+        (s.flags.forgotten ||
+          s.flags.duplicate ||
+          s.flags.priceIncreased ||
+          s.flags.suspicious)
     );
     if (weakFlagged.length > 0) {
       out.push(

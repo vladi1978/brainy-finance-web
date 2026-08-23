@@ -40,6 +40,7 @@ export type RecommendationInput = {
   actionType: RecommendationActionType;
   merchantReference?: string;
   currency: string;
+  observedPeriodAmount?: number;
 };
 
 export type EnrichedRecommendation = RecommendationInput & {

@@ -71,10 +71,14 @@ export function isEvidenceConfirmedSubscription(
   });
 }
 
+import { isExpectedBillSubscription } from "./expectedBills";
+
 export function classifySubscriptionEvidence(
   sub: SubscriptionInsight,
   chargeCount: number
 ): EvidenceSubscriptionClass {
+  // Expected bills are exclusive of subscription counts.
+  if (isExpectedBillSubscription(sub)) return "excluded";
   if (isEvidenceConfirmedSubscription(sub, chargeCount)) return "confirmed";
   if (sub.trueSubscriptionScore >= 0.7 || sub.confidence >= 0.72) {
     return "possible";

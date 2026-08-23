@@ -111,6 +111,7 @@ type ActionRecommendationRow = {
   actionType: RecommendationActionType;
   merchantReference?: string;
   currency: string;
+  observedPeriodAmount?: number;
 };
 
 type StatementIntelligencePayload = {
@@ -129,6 +130,7 @@ type StatementIntelligencePayload = {
     currency: string;
     category: "confirmed" | "avoidable_fees" | "optimization";
     confidence: number;
+    observedPeriodAmount?: number;
   }>;
   financialSummary?: FinancialIntelligenceSummary;
   recommendations: {
@@ -747,7 +749,8 @@ export default function StatementsClient() {
                                 : "Optimization"}
                           </p>
                           <p className="mt-2 text-xs text-white/45">
-                            {opp.category === "optimization" ? (
+                            {opp.category === "optimization" &&
+                            opp.monthlySavings > 0 ? (
                               <>
                                 Range ≈{" "}
                                 <span className="font-medium text-violet-200/90">
@@ -765,7 +768,7 @@ export default function StatementsClient() {
                                 </span>
                                 /mo
                               </>
-                            ) : (
+                            ) : opp.monthlySavings > 0 ? (
                               <>
                                 ≈{" "}
                                 <span className="font-medium text-white/80">
@@ -777,6 +780,19 @@ export default function StatementsClient() {
                                 </span>
                                 /yr
                               </>
+                            ) : (opp.observedPeriodAmount ?? 0) > 0 ? (
+                              <>
+                                <span className="font-medium text-white/80">
+                                  {formatMoney(
+                                    opp.observedPeriodAmount!,
+                                    opp.currency
+                                  )}
+                                </span>{" "}
+                                observed in this statement · Annual estimate
+                                unavailable
+                              </>
+                            ) : (
+                              <>Annual estimate unavailable</>
                             )}
                           </p>
                         </li>

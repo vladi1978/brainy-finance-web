@@ -7,6 +7,10 @@ import {
   hasRecurrenceEvidence,
   resolveChargeCount,
 } from "../recurrenceEvidence";
+import {
+  isExpectedBillSubscription as isExpectedBillSubscriptionShared,
+  isUtilityLikeSpending as isUtilityLikeSpendingShared,
+} from "../expectedBills";
 import type {
   MerchantCluster,
   SpendingInsight,
@@ -69,11 +73,6 @@ const CADENCE_LABEL: Record<SubscriptionFrequency, string | null> = {
   unknown: null,
 };
 
-const EXPECTED_BILL_SUB_CATEGORIES = new Set([
-  "utilities",
-  "insurance",
-]);
-
 const SUBSCRIPTION_SERVICE_CATEGORIES = new Set([
   "streaming",
   "music",
@@ -94,6 +93,18 @@ const DISCRETIONARY_CATEGORY_KEYS = new Set([
   "retail",
   "gas",
 ]);
+
+export function isExpectedBillSubscription(
+  sub: Pick<SubscriptionInsight, "category" | "merchant" | "normalizedName">
+): boolean {
+  return isExpectedBillSubscriptionShared(sub);
+}
+
+export function isUtilityLikeSpending(
+  row: Pick<SpendingInsight, "categoryLabel" | "normalizedName" | "merchant">
+): boolean {
+  return isUtilityLikeSpendingShared(row);
+}
 
 function formatMoneyPlain(amount: number, currency: string): string {
   try {
@@ -131,28 +142,10 @@ export function formatUncertainActivitySummary(args: {
   return `${n} ${chargeWord} detected · ${fmt(args.periodTotal, args.currency)} total · latest charge ${fmt(args.latestCharge, args.currency)}`;
 }
 
-export function isExpectedBillSubscription(
-  sub: Pick<SubscriptionInsight, "category" | "merchant" | "normalizedName">
-): boolean {
-  if (EXPECTED_BILL_SUB_CATEGORIES.has(sub.category)) return true;
-  return isUtilityLikeSpending({
-    categoryLabel: sub.category,
-    normalizedName: sub.normalizedName,
-    merchant: sub.merchant,
-  });
-}
-
 export function isRideshareOrDeliveryMerchant(text: string): boolean {
   const u = text.toUpperCase();
   return /\b(UBER|LYFT|DOORDASH|GRUBHUB|POSTMATES|UBER\s*EATS|INSTACART)\b/u.test(
     u
-  );
-}
-
-export function isUtilityLikeSpending(row: Pick<SpendingInsight, "categoryLabel" | "normalizedName" | "merchant">): boolean {
-  const blob = `${row.categoryLabel} ${row.normalizedName} ${row.merchant}`.toUpperCase();
-  return /\b(UTILITY|UTILITIES|ELECTRIC|POWER|WATER|GAS\s+CO|INTERNET|PHONE|MOBILE|WIRELESS|VERIZON|AT&T|T-MOBILE|COMCAST|SPECTRUM|INSURANCE|GEICO|STATE\s+FARM|PROGRESSIVE|ALLSTATE)\b/u.test(
-    blob
   );
 }
 

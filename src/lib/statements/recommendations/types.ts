@@ -26,6 +26,8 @@ export type ActionRecommendation = {
   merchantReference?: string;
   currency: string;
   sourceInsightId?: string;
+  /** Observed period amount for one-time fees (not a monthly claim). */
+  observedPeriodAmount?: number;
 };
 
 export type OptimizationRange = {

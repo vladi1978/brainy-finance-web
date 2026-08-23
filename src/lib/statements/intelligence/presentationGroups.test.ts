@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { equivalentsForFrequency } from "../heuristics";
 import {
-  OBSERVED_ONLY_SAVINGS_NOTE,
   MIN_CHARGES_FOR_RECURRENCE,
   canAnnualizeFeePattern,
   hasConfirmedRecurrenceEvidence,
@@ -349,7 +348,8 @@ test("one overdraft fee is observed-only, not annualized as recurring", () => {
   const fee = savings.find((s) => s.id === "reduce-fees");
   assert.ok(fee);
   assert.equal(fee!.yearlySavings, 0);
-  assert.match(fee!.explanation, new RegExp(OBSERVED_ONLY_SAVINGS_NOTE));
+  assert.equal(fee!.monthlySavings, 0);
+  assert.equal(fee!.observedPeriodAmount, 35);
 });
 
 test("repeated overdraft fees may annualize", () => {

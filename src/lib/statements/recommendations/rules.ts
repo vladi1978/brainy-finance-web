@@ -3,15 +3,16 @@ import type { MerchantGroupSummary } from "../intelligence/types";
 import { statementPeriodDays } from "../intelligence/period";
 import { subscriptionEligibleForAnnualSavings } from "../intelligence/savings";
 import {
+  ANNUAL_ESTIMATE_UNAVAILABLE,
   OBSERVED_ONLY_SAVINGS_NOTE,
-  canAnnualizeFeePattern,
   resolveChargeCount,
-} from "../recurrenceEvidence";
+} from "../evidenceGuarded";
+import { collectDedupedFees } from "../feeDedupe";
+import { isExpectedBillSubscription } from "../expectedBills";
 import type { ActionRecommendation, RecommendationSeverity } from "./types";
 import {
   conservativeRecurringCut,
   monthlyAndYearlyFromMonthlyAmount,
-  monthlyAndYearlyFromPeriod,
   periodTotalToMonthly,
   roundMoney,
 } from "./savingsEstimate";
@@ -26,12 +27,6 @@ function dominantCurrency(
   }
   if (!counts.size) return "USD";
   return [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
-}
-
-function isOverdraftText(text: string): boolean {
-  return /\b(OVERDRAFT|OVERDR\.?|OD\s+F(?:EE|E)|NSF\b|NON[-\s]*SUF|INSUFFICIENT\s+FUNDS)\b/ui.test(
-    text
-  );
 }
 
 function isAiMerchantText(text: string): boolean {
@@ -67,6 +62,10 @@ function makeRec(
     estimatedMonthlySavings: roundMoney(partial.estimatedMonthlySavings),
     estimatedYearlySavings: roundMoney(partial.estimatedYearlySavings),
     confidence: clampConfidence(partial.confidence),
+    observedPeriodAmount:
+      partial.observedPeriodAmount != null
+        ? roundMoney(partial.observedPeriodAmount)
+        : undefined,
   };
 }
 
@@ -95,69 +94,74 @@ export function applyRecommendationRules(
       latestCharge: r.amount,
     });
 
-  const fees = allSpend.filter(
-    (r) => r.categoryKey === "fees" || r.kind === "fee"
-  );
-  const overdraftFees = fees.filter((r) =>
-    isOverdraftText(`${r.merchant} ${r.normalizedName}`)
-  );
-  if (overdraftFees.length > 0) {
-    const feeTotal = overdraftFees.reduce((s, r) => s + r.totalSpentInPeriod, 0);
-    const feeCharges = overdraftFees.reduce((n, r) => n + spendChargeCount(r), 0);
-    const { monthly, yearly } = monthlyAndYearlyFromPeriod(
-      feeTotal * 0.85,
-      statementPeriod
-    );
-    const canAnnualize = canAnnualizeFeePattern(feeCharges);
-    out.push(
-      makeRec(
-        {
-          id: "action-overdraft-alerts",
-          title: "Enable balance alerts or move to fee-free banking",
-          description: canAnnualize
-            ? "Repeated overdraft or NSF-style fees appeared on this statement. Low-balance notifications or an account without overdraft fees can stop repeat charges."
-            : `${OBSERVED_ONLY_SAVINGS_NOTE}. An overdraft-style fee appeared once — annual savings are not estimated without a repeat pattern.`,
-          estimatedMonthlySavings: monthly,
-          estimatedYearlySavings: canAnnualize ? yearly : 0,
-          severity: "high",
-          confidence: canAnnualize ? 0.9 : 0.55,
-          actionType: "setup_balance_alerts",
-          merchantReference: overdraftFees
-            .map((r) => r.normalizedName)
-            .slice(0, 3)
-            .join(", "),
-          sourceInsightId: "overdraft-fees",
-        },
-        currency
-      )
-    );
-  } else if (fees.length > 0) {
-    const feeTotal = fees.reduce((s, r) => s + r.totalSpentInPeriod, 0);
-    const feeCharges = fees.reduce((n, r) => n + spendChargeCount(r), 0);
-    const { monthly, yearly } = monthlyAndYearlyFromPeriod(
-      feeTotal * 0.7,
-      statementPeriod
-    );
-    const canAnnualize = canAnnualizeFeePattern(feeCharges);
-    out.push(
-      makeRec(
-        {
-          id: "action-bank-fees",
-          title: "Review account fees and alert settings",
-          description: canAnnualize
-            ? "Bank or service fees were detected. Compare fee schedules and turn on alerts before small balances trigger charges."
-            : `${OBSERVED_ONLY_SAVINGS_NOTE}. A fee was detected once — annual savings are not estimated without a repeat pattern.`,
-          estimatedMonthlySavings: monthly,
-          estimatedYearlySavings: canAnnualize ? yearly : 0,
-          severity: "medium",
-          confidence: canAnnualize ? 0.82 : 0.55,
-          actionType: "switch_banking",
-          merchantReference: fees.map((r) => r.normalizedName).slice(0, 2).join(", "),
-          sourceInsightId: "bank-fees",
-        },
-        currency
-      )
-    );
+  const feeSet = collectDedupedFees({
+    recurringExpenses,
+    spendingInsights,
+    clusters: input.clusters,
+  });
+  if (feeSet.observedPeriodTotal > 0) {
+    const amt = feeSet.observedPeriodTotal.toFixed(2);
+    const merchantRef = feeSet.events
+      .map((e) => e.normalizedName)
+      .filter(Boolean)
+      .slice(0, 3)
+      .join(", ");
+    if (feeSet.annualizeEligible) {
+      const monthly =
+        Math.round(feeSet.observedPeriodTotal * 0.85 * 100) / 100;
+      const yearly = roundMoney(monthly * 12);
+      out.push(
+        makeRec(
+          {
+            id: feeSet.hasOverdraft
+              ? "action-overdraft-alerts"
+              : "action-bank-fees",
+            title: feeSet.hasOverdraft
+              ? "Enable balance alerts or move to fee-free banking"
+              : "Review account fees and alert settings",
+            description: feeSet.hasOverdraft
+              ? "Repeated overdraft or NSF-style fees appeared on this statement. Low-balance notifications or an account without overdraft fees can stop repeat charges."
+              : "Bank or service fees were detected repeatedly. Compare fee schedules and turn on alerts before small balances trigger charges.",
+            estimatedMonthlySavings: monthly,
+            estimatedYearlySavings: yearly,
+            severity: "high",
+            confidence: 0.9,
+            actionType: feeSet.hasOverdraft
+              ? "setup_balance_alerts"
+              : "switch_banking",
+            merchantReference: merchantRef,
+            sourceInsightId: feeSet.hasOverdraft ? "overdraft-fees" : "bank-fees",
+            observedPeriodAmount: feeSet.observedPeriodTotal,
+          },
+          currency
+        )
+      );
+    } else {
+      out.push(
+        makeRec(
+          {
+            id: feeSet.hasOverdraft
+              ? "action-overdraft-alerts"
+              : "action-bank-fees",
+            title: feeSet.hasOverdraft
+              ? "Enable balance alerts or move to fee-free banking"
+              : "Review account fees and alert settings",
+            description: `A $${amt} fee was observed in this statement. Consider enabling balance alerts or reviewing fee-free options. ${ANNUAL_ESTIMATE_UNAVAILABLE}.`,
+            estimatedMonthlySavings: 0,
+            estimatedYearlySavings: 0,
+            severity: "high",
+            confidence: 0.55,
+            actionType: feeSet.hasOverdraft
+              ? "setup_balance_alerts"
+              : "switch_banking",
+            merchantReference: merchantRef,
+            sourceInsightId: feeSet.hasOverdraft ? "overdraft-fees" : "bank-fees",
+            observedPeriodAmount: feeSet.observedPeriodTotal,
+          },
+          currency
+        )
+      );
+    }
   }
 
   const streaming = subscriptions.filter(
@@ -373,6 +377,7 @@ export function applyRecommendationRules(
 
   const flagged = subscriptions.filter(
     (s) =>
+      !isExpectedBillSubscription(s) &&
       (s.flags.forgotten ||
         s.flags.duplicate ||
         s.flags.priceIncreased ||
@@ -411,11 +416,12 @@ export function applyRecommendationRules(
   } else {
     const weakFlagged = subscriptions.filter(
       (s) =>
-        s.flags.forgotten ||
-        s.flags.duplicate ||
-        s.flags.priceIncreased ||
-        s.flags.suspicious ||
-        s.flags.reviewSuggested
+        !isExpectedBillSubscription(s) &&
+        (s.flags.forgotten ||
+          s.flags.duplicate ||
+          s.flags.priceIncreased ||
+          s.flags.suspicious ||
+          s.flags.reviewSuggested)
     );
     if (weakFlagged.length > 0) {
       out.push(

@@ -4,7 +4,6 @@ import {
 } from "../intelligence/financialCategories";
 import type { IntelligenceInput } from "../intelligence/types";
 import { buildSavingsOpportunities } from "../intelligence/savings";
-import { canAnnualizeFeePattern, resolveChargeCount } from "../evidenceGuarded";
 import type {
   CopilotFeedItem,
   OptimizationPotentialRange,
@@ -63,7 +62,6 @@ function savingsFromSignal(
   input: IntelligenceInput
 ): { monthly: number; yearly: number } {
   const opps = buildSavingsOpportunities(input);
-  const byCluster = new Map(input.clusters.map((c) => [c.id, c]));
 
   if (signal.kind === "overdraft_pattern" || signal.kind === "fee_escalation") {
     const feeOpp = opps.find((o) => o.id === "reduce-fees");
@@ -73,22 +71,7 @@ function savingsFromSignal(
         yearly: feeOpp.yearlySavings,
       };
     }
-    const fees = [...input.recurringExpenses, ...input.spendingInsights].filter(
-      (r) => r.categoryKey === "fees" || r.kind === "fee"
-    );
-    const chargeCount = fees.reduce(
-      (n, r) =>
-        n +
-        resolveChargeCount({
-          cluster: byCluster.get(r.clusterId),
-          periodTotal: r.totalSpentInPeriod,
-          latestCharge: r.amount,
-        }),
-      0
-    );
-    if (!canAnnualizeFeePattern(chargeCount)) {
-      return { monthly: signal.amount, yearly: 0 };
-    }
+    return { monthly: 0, yearly: 0 };
   }
 
   if (signal.kind === "subscription_growth") {

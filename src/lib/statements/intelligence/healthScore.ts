@@ -1,8 +1,7 @@
 import type { HealthScoreLabel, HealthScoreResult, IntelligenceInput } from "./types";
 import { buildSavingsOpportunities } from "./savings";
-import {
-  buildGuardedSubscriptionTotals,
-} from "../evidenceGuarded";
+import { buildGuardedSubscriptionTotals } from "../evidenceGuarded";
+import { collectDedupedFees } from "../feeDedupe";
 
 function labelForScore(score: number): HealthScoreLabel {
   if (score >= 85) return "Excellent";
@@ -61,30 +60,24 @@ export function buildHealthScore(input: IntelligenceInput): HealthScoreResult {
     byCluster
   );
 
-  const allSpend = [...input.recurringExpenses, ...input.spendingInsights];
-  const feeTotal = allSpend
-    .filter((r) => r.categoryKey === "fees" || r.kind === "fee")
-    .reduce((s, r) => s + r.totalSpentInPeriod, 0);
-  if (feeTotal > 0) {
-    const impact = Math.min(25, 8 + feeTotal / 15);
+  const feeSet = collectDedupedFees({
+    recurringExpenses: input.recurringExpenses,
+    spendingInsights: input.spendingInsights,
+    clusters: input.clusters,
+  });
+  if (feeSet.observedPeriodTotal > 0) {
+    // One consolidated fee penalty — do not stack bank-fee + overdraft for the same events.
+    const impact = Math.min(
+      25,
+      8 + feeSet.observedPeriodTotal / 15 + (feeSet.hasOverdraft ? 4 : 0)
+    );
     score -= impact;
     factors.push({
       id: "fees",
-      label: "Bank and account fees",
+      label: feeSet.hasOverdraft
+        ? "Overdraft / bank fees"
+        : "Bank and account fees",
       impact: -Math.round(impact),
-    });
-  }
-
-  const overdraftCount = allSpend.filter((r) =>
-    /\b(OVERDRAFT|OD\s+F|NSF)\b/ui.test(`${r.merchant} ${r.normalizedName}`)
-  ).length;
-  if (overdraftCount > 0) {
-    const impact = Math.min(20, overdraftCount * 8);
-    score -= impact;
-    factors.push({
-      id: "overdraft",
-      label: "Overdraft / NSF activity",
-      impact: -impact,
     });
   }
 
@@ -141,7 +134,7 @@ export function buildHealthScore(input: IntelligenceInput): HealthScoreResult {
       label: "Several evidence-backed savings opportunities",
       impact: -Math.min(10, savings.length * 2),
     });
-  } else if (actionableYearly === 0 && feeTotal === 0) {
+  } else if (actionableYearly === 0 && feeSet.observedPeriodTotal === 0) {
     score += 4;
     factors.push({
       id: "clean-ledger",

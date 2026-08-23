@@ -63,9 +63,7 @@ export function buildRecommendations(
   }));
   const { confirmed, avoidableFees, optimization } = mergeCategoryTotals(lineItems);
 
-  const actionableMonthlySavings = roundMoney(
-    confirmed.monthlyHigh + avoidableFees.monthlyHigh
-  );
+  const actionableMonthlySavings = roundMoney(confirmed.monthlyHigh);
   const actionableYearlySavings = roundMoney(
     confirmed.yearlyHigh + avoidableFees.yearlyHigh
   );

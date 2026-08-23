@@ -187,7 +187,8 @@ test("zero confirmed with one possible: counts stay split and savings stay $0 co
   const recs = buildRecommendations(input);
   const financial = buildFinancialSummary(savings, recs);
   assert.equal(financial.confirmed.monthlyHigh, 0);
-  assert.equal(financial.actionableMonthly, financial.avoidableFees.monthlyHigh);
+  assert.equal(financial.actionableMonthly, 0);
+  assert.equal(financial.observedAvoidableFeesPeriod ?? 0, 0);
 });
 
 test("one fee never annualized across savings, insights, recommendations, copilot", () => {
@@ -220,6 +221,8 @@ test("one fee never annualized across savings, insights, recommendations, copilo
   const feeSav = savings.find((s) => s.id === "reduce-fees");
   assert.ok(feeSav);
   assert.equal(feeSav!.yearlySavings, 0);
+  assert.equal(feeSav!.monthlySavings, 0);
+  assert.equal(feeSav!.observedPeriodAmount, 35);
 
   const insights = buildInsightsFeed(input);
   const feeInsight = insights.find((c) => c.id.includes("fee") || c.id.includes("overdraft"));
@@ -230,10 +233,13 @@ test("one fee never annualized across savings, insights, recommendations, copilo
   const recs = buildRecommendations(input);
   for (const item of recs.items.filter((i) => i.id.includes("fee") || i.id.includes("overdraft"))) {
     assert.equal(item.estimatedYearlySavings, 0);
+    assert.equal(item.estimatedMonthlySavings, 0);
   }
 
   const financial = buildFinancialSummary(savings, recs);
   assert.equal(financial.avoidableFees.yearlyHigh, 0);
+  assert.equal(financial.observedAvoidableFeesPeriod, 35);
+  assert.equal(financial.actionableMonthly, 0);
 
   const copilot = buildCopilotTimeline(input, { financialSummary: financial });
   const feeFeed = copilot.feed.filter(

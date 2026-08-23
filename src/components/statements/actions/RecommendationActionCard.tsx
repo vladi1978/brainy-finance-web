@@ -98,6 +98,13 @@ export function RecommendationActionCard({
           </span>
           /yr
         </p>
+      ) : rec.observedPeriodAmount != null && rec.observedPeriodAmount > 0 ? (
+        <p className="mt-3 text-xs text-white/45">
+          <span className="font-medium text-white/80">
+            {formatMoney(rec.observedPeriodAmount, rec.currency)}
+          </span>{" "}
+          observed in this statement · Annual estimate unavailable
+        </p>
       ) : null}
 
       {!isDismissed ? (

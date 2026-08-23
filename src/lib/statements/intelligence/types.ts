@@ -54,6 +54,11 @@ export type SavingsOpportunity = {
   category: SavingsCategory;
   /** 0–1 confidence in the underlying pattern */
   confidence: number;
+  /**
+   * Observed period fee total when cadence is insufficient for monthly/annual claims.
+   * Not included in actionable monthly totals.
+   */
+  observedPeriodAmount?: number;
 };
 
 export type { FinancialIntelligenceSummary, SavingsCategory };

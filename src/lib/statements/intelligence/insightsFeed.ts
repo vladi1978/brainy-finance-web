@@ -4,11 +4,11 @@ import {
   ANNUAL_ESTIMATE_UNAVAILABLE,
   chargeCountForSubscription,
   filterEvidenceConfirmedSubscriptions,
-  guardedFeeAnnualization,
   hasRecurrenceEvidence,
   isEvidenceConfirmedSubscription,
   resolveChargeCount,
 } from "../evidenceGuarded";
+import { collectDedupedFees } from "../feeDedupe";
 
 function sumCategory(
   rows: IntelligenceInput["recurringExpenses"],
@@ -127,49 +127,31 @@ export function buildInsightsFeed(input: IntelligenceInput): FinancialInsightCar
     });
   }
 
-  const fees = allSpend.filter(
-    (r) => r.categoryKey === "fees" || r.kind === "fee"
-  );
-  const feeChargeCount = fees.reduce(
-    (n, r) =>
-      n +
-      resolveChargeCount({
-        cluster: byCluster.get(r.clusterId),
-        periodTotal: r.totalSpentInPeriod,
-        latestCharge: r.amount,
-      }),
-    0
-  );
-  const feeTotal = fees.reduce((s, r) => s + r.totalSpentInPeriod, 0);
-  if (feeTotal > 0) {
-    const overdraft = fees.some((r) =>
-      /\b(OVERDRAFT|OD\s+F|NSF)\b/ui.test(
-        `${r.merchant} ${r.normalizedName}`
-      )
-    );
-    const feeAnnual = guardedFeeAnnualization({
-      periodTotal: feeTotal,
-      chargeCount: feeChargeCount,
-      annualize: (t) => annualizePeriodAmount(t, statementPeriod),
-    });
+  const fees = collectDedupedFees({
+    recurringExpenses,
+    spendingInsights,
+    clusters,
+  });
+  if (fees.observedPeriodTotal > 0) {
+    const amt = fees.observedPeriodTotal.toFixed(2);
     cards.push({
-      id: overdraft ? "overdraft-fees" : "bank-fees",
-      title: overdraft
-        ? feeAnnual.annualizeEligible
+      id: fees.hasOverdraft ? "overdraft-fees" : "bank-fees",
+      title: fees.hasOverdraft
+        ? fees.annualizeEligible
           ? "Repeated overdraft fees detected"
           : "Overdraft fee detected"
-        : feeAnnual.annualizeEligible
+        : fees.annualizeEligible
           ? "Bank fees detected"
           : "Bank fee detected",
-      explanation: feeAnnual.annualizeEligible
-        ? overdraft
+      explanation: fees.annualizeEligible
+        ? fees.hasOverdraft
           ? "Overdraft or NSF-style fees appear repeatedly on this statement."
           : "Account or service fees were identified in your debits."
-        : overdraft
-          ? `An overdraft or NSF-style fee appears in this window. ${ANNUAL_ESTIMATE_UNAVAILABLE}.`
-          : `An account or service fee was identified. ${ANNUAL_ESTIMATE_UNAVAILABLE}.`,
+        : `$${amt} observed in this statement. ${ANNUAL_ESTIMATE_UNAVAILABLE}.`,
       severity: "important",
-      annualImpact: feeAnnual.annualizeEligible ? feeAnnual.yearly : undefined,
+      annualImpact: fees.annualizeEligible
+        ? annualizePeriodAmount(fees.observedPeriodTotal, statementPeriod)
+        : undefined,
     });
   }
 
@@ -290,7 +272,7 @@ export function buildInsightsFeed(input: IntelligenceInput): FinancialInsightCar
     });
   }
 
-  if (confirmedSubs.length >= 2 && feeTotal === 0) {
+  if (confirmedSubs.length >= 2 && fees.observedPeriodTotal === 0) {
     cards.push({
       id: "subs-stable",
       title: "Recurring bills look stable",

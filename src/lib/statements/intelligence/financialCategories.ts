@@ -19,9 +19,15 @@ export type FinancialIntelligenceSummary = {
   confirmed: CategoryTotals;
   avoidableFees: CategoryTotals;
   optimization: CategoryTotals;
-  /** Confirmed + avoidable fees only — never includes optimization */
+  /** Confirmed recurring savings only — never observed one-time fees */
   actionableMonthly: number;
+  /** Evidence-supported annualized savings only */
   actionableYearly: number;
+  /**
+   * Observed avoidable fees in the statement window (no cadence implied).
+   * Never added into actionableMonthly.
+   */
+  observedAvoidableFeesPeriod: number;
   currency: string;
 };
 

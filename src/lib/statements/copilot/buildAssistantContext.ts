@@ -4,12 +4,14 @@ import type { CopilotAssistantContext, SubscriptionHighlight } from "./types";
 import type { CopilotTimelineResult } from "../timeline/types";
 import type { FinancialIntelligenceSummary } from "../intelligence/financialCategories";
 import type { HealthScoreResult } from "../intelligence/types";
+import { isExpectedBillSubscription } from "../expectedBills";
 import {
   buildGuardedSubscriptionTotals,
   chargeCountForSubscription,
   isEvidenceConfirmedSubscription,
   resolveChargeCount,
 } from "../evidenceGuarded";
+import { collectDedupedFees } from "../feeDedupe";
 
 function subscriptionFlags(s: SubscriptionInsight): string[] {
   const out: string[] = [];
@@ -45,7 +47,6 @@ export function buildCopilotAssistantContext(
 ): CopilotAssistantContext {
   const { subscriptions, recurringExpenses } = input;
   const byCluster = new Map(input.clusters.map((c) => [c.id, c]));
-  const allSpend = [...input.recurringExpenses, ...input.spendingInsights];
   const currency = parts.copilot.currency;
   const guarded = buildGuardedSubscriptionTotals(subscriptions, byCluster);
 
@@ -74,11 +75,12 @@ export function buildCopilotAssistantContext(
   const flagged = subscriptions
     .filter(
       (s) =>
-        s.flags.forgotten ||
-        s.flags.duplicate ||
-        s.flags.priceIncreased ||
-        s.flags.suspicious ||
-        s.flags.reviewSuggested
+        !isExpectedBillSubscription(s) &&
+        (s.flags.forgotten ||
+          s.flags.duplicate ||
+          s.flags.priceIncreased ||
+          s.flags.suspicious ||
+          s.flags.reviewSuggested)
     )
     .map((s) => {
       const n = chargeCountForSubscription(s, byCluster);
@@ -90,6 +92,7 @@ export function buildCopilotAssistantContext(
     .sort((a, b) => b.monthly - a.monthly);
 
   const topBySpend = [...subscriptions]
+    .filter((s) => !isExpectedBillSubscription(s))
     .map((s) => {
       const n = chargeCountForSubscription(s, byCluster);
       const monthly = isEvidenceConfirmedSubscription(s, n)
@@ -100,13 +103,13 @@ export function buildCopilotAssistantContext(
     .sort((a, b) => b.monthly - a.monthly)
     .slice(0, 5);
 
-  const fees = allSpend.filter(
-    (r) => r.categoryKey === "fees" || r.kind === "fee"
-  );
-  const feeTotal = fees.reduce((s, r) => s + r.totalSpentInPeriod, 0);
-  const overdraftCount = fees.filter((r) =>
-    /\b(OVERDRAFT|OD\s+F|NSF)\b/ui.test(`${r.merchant} ${r.normalizedName}`)
-  ).length;
+  const feeSet = collectDedupedFees({
+    recurringExpenses: input.recurringExpenses,
+    spendingInsights: input.spendingInsights,
+    clusters: input.clusters,
+  });
+  const feeTotal = feeSet.observedPeriodTotal;
+  const overdraftCount = feeSet.overdraftCount;
 
   const recurringMerchants = recurringExpenses
     .filter((r) => {
