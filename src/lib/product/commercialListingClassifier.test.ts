@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   classifyCommercialListing,
+  isIncompleteOrPartsListingTitle,
   isSuspiciousPurchasePriceRatio,
   resolveShoppingPurchasePrice,
   shouldRejectCommercialListing,
@@ -135,4 +136,21 @@ test("suspicious $9.88 TV price against $247.99 reference is not exact-match eli
   const cappedBand = "possible_alternative";
   assert.notEqual(cappedBand, "exact_match");
   assert.ok(BAND_HIGH_CONFIDENCE_MIN - 1 < BAND_EXACT_MIN);
+});
+
+test("incomplete/parts title phrases block Exact Match and Best Deal eligibility", () => {
+  for (const title of [
+    "TV no screws",
+    "parts only listing",
+    "sold for parts",
+    "broken panel",
+    "needs repair",
+    "not working remote",
+  ]) {
+    assert.equal(isIncompleteOrPartsListingTitle(title), true, title);
+  }
+  assert.equal(
+    isIncompleteOrPartsListingTitle("Brand new sealed Vizio Smart TV"),
+    false,
+  );
 });

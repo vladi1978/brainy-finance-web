@@ -175,15 +175,17 @@ export function modelNeedlesFromSnapshot(s: UniversalMatchSnapshot): string[] {
   const out = new Set<string>();
   const add = (raw: string | null | undefined) => {
     const n = normSku(raw ?? "");
-    if (n.length >= 4) out.add(n);
+    if (n.length < 4) return;
+    // Screen size is not a model number (was causing Exact Match on generic TVs).
+    if (/^\d{2,3}INCH(?:ES)?$/.test(n) || /^\d{2,3}$/.test(n)) return;
+    out.add(n);
   };
   add(inferTvFamilyFromFullModel(s.fullModelNorm));
   add(s.modelFamilyNorm);
   add(s.fullModelNorm);
   for (const t of s.tvModelFamilyTokens) add(t);
   for (const t of s.modelTokensNorm) {
-    const u = normSku(t);
-    if (u.length >= 4) out.add(u);
+    add(t);
   }
   return [...out];
 }

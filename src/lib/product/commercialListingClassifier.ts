@@ -49,6 +49,15 @@ const RENTAL_MERCHANT_HOST_PATTERNS: RegExp[] = [
 const TITLE_NON_PURCHASE_RE =
   /\b(rent[\s-]?to[\s-]?own|rent2own|\brto\b|rental|for\s+rent|\blease\b|leasing|installment|financing|finance\s+plan|payment\s+plan|monthly\s+payment|weekly\s+payment|per\s+month|per\s+week|\/\s*mo\b|\/\s*month\b|\/\s*wk\b|\/\s*week\b|subscription|membership\s+fee|down\s+payment|deposit\s+only|security\s+deposit|pay\s+weekly|pay\s+monthly)\b/i;
 
+/** Incomplete / parts / repair listings — never Exact Match or Best Deal for new-product compares. */
+const INCOMPLETE_OR_PARTS_LISTING_RE =
+  /\b(no\s+screws|screws?\s+not\s+included|without\s+screws|missing\s+screws|parts?\s*[- ]?only|for\s+parts|broken|repair|not\s+working|as[\s-]?is\s+for\s+parts|missing\s+parts|incomplete)\b/i;
+
+export function isIncompleteOrPartsListingTitle(title: string | null | undefined): boolean {
+  if (!title?.trim()) return false;
+  return INCOMPLETE_OR_PARTS_LISTING_RE.test(title);
+}
+
 const PAYMENT_PERIOD_PRICE_RE =
   /\$\s*[\d,.]+\s*(?:\/|\s*per\s*)(?:mo|month|wk|week|yr|year)\b|\b(?:weekly|monthly)\b[\s\S]{0,24}\$\s*[\d,.]+/i;
 

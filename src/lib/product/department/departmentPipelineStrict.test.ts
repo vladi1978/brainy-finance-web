@@ -165,7 +165,7 @@ test("strict mode scopes pool vs electronics user reason lines", () => {
   });
 });
 
-test("strict mode caps search URL confidence bands", () => {
+test("search URL Exact Match is always demoted; strict also demotes High Confidence", () => {
   withStrictFlag(true, () => {
     assert.equal(capConfidenceBandForSearchUrl("exact_match"), "possible_alternative");
     assert.equal(
@@ -178,7 +178,9 @@ test("strict mode caps search URL confidence bands", () => {
     );
   });
   withStrictFlag(false, () => {
-    assert.equal(capConfidenceBandForSearchUrl("exact_match"), "exact_match");
+    // Product-identity safety: Exact Match never sticks on search/category URLs.
+    assert.equal(capConfidenceBandForSearchUrl("exact_match"), "possible_alternative");
+    assert.equal(capConfidenceBandForSearchUrl("high_confidence"), "high_confidence");
   });
 });
 
@@ -270,7 +272,7 @@ test("strict mode caps category/homepage outbound URLs and keeps PDP uncapped", 
   });
 });
 
-test("legacy mode keeps non-PDP URLs uncapped", () => {
+test("legacy mode demotes Exact Match on search URLs but does not score-cap", () => {
   withStrictFlag(false, () => {
     const searchCandidate = buildStrictCapCandidate({
       outboundUrl: "https://www.walmart.com/search?q=tv",
@@ -282,8 +284,8 @@ test("legacy mode keeps non-PDP URLs uncapped", () => {
     });
     const out = applyStrictSearchUrlCapToCandidate(searchCandidate);
     assert.equal(out.displayMatchScore, 100);
-    assert.equal(out.confidenceBand, "exact_match");
-    assert.equal(out.confidenceBandLabel, "Exact Match");
+    assert.equal(out.confidenceBand, "possible_alternative");
+    assert.notEqual(out.confidenceBand, "exact_match");
   });
 });
 

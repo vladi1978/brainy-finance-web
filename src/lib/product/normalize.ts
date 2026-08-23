@@ -111,19 +111,33 @@ export function extractBrand(title: string): string | null {
   return m ? m[1]!.toLowerCase().replace(/\s+/g, " ") : null;
 }
 
+/** Size / dimension fragments that must never count as model identifiers. */
+function isSizeLikeModelToken(token: string): boolean {
+  const t = token.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return /^\d{2,3}inch(?:es)?$/.test(t) || /^\d{2,3}$/.test(t);
+}
+
 /**
- * Model-like tokens: SKU fragments, alnum codes (e.g. QN65, XR-55X90K, air-max-270).
+ * Model-like tokens: SKU fragments, alnum codes (e.g. QN65, XR-55X90K, V4K65M-0804).
+ * Excludes screen-size tokens such as `65inch`.
  */
 export function extractModelTokens(title: string): string[] {
   const norm = normalizeTitle(title);
   const out = new Set<string>();
 
+  // Hyphenated retail SKUs (Vizio V4K65M-0804, etc.) before loose digit fragments.
+  for (const m of title.toUpperCase().matchAll(/\b([A-Z]\d[A-Z0-9]*(?:-\d{2,8})+)\b/g)) {
+    const t = m[1]!.replace(/-/g, "").toLowerCase();
+    if (t.length >= 6 && !isSizeLikeModelToken(t)) out.add(t);
+  }
+
   for (const m of norm.matchAll(/\b[a-z]{0,3}\d{2,5}[a-z0-9-]*\b/gi)) {
     const t = m[0]!.replace(/-/g, "").toLowerCase();
-    if (t.length >= 4) out.add(t);
+    if (t.length >= 4 && !isSizeLikeModelToken(t)) out.add(t);
   }
   for (const m of norm.matchAll(/\b(qn|un|qn|xr|oled|qled|u\d|serie)\w*\d{2,4}\w*\b/gi)) {
-    out.add(m[0]!.replace(/\s+/g, "").toLowerCase());
+    const t = m[0]!.replace(/\s+/g, "").toLowerCase();
+    if (!isSizeLikeModelToken(t)) out.add(t);
   }
   return [...out].slice(0, 12);
 }
@@ -214,7 +228,7 @@ export function extractTvModelFamilyTokens(title: string): string[] {
 }
 
 /**
- * Retail SKU token when present (Samsung UN… / QN… style).
+ * Retail SKU token when present (Samsung UN… / QN…, Vizio V4K65M-0804, etc.).
  */
 export function extractTvFullModel(title: string): string | null {
   const upper = title.toUpperCase().replace(/\u2033/g, '"');
@@ -224,6 +238,24 @@ export function extractTvFullModel(title: string): string | null {
   }
   for (const m of upper.matchAll(/\b(UN\d{2}[A-Z0-9]{6,18})\b/g)) {
     found.push(m[1]!);
+  }
+  // Vizio / generic: letter+digit retail codes with optional numeric suffix (V4K65M-0804).
+  for (const m of upper.matchAll(/\b([A-Z]\d[A-Z0-9]{2,}(?:-\d{2,8})+)\b/g)) {
+    const compact = m[1]!.replace(/[^A-Z0-9]/g, "");
+    if (compact.length >= 8 && /[A-Z]/.test(compact) && /\d/.test(compact)) {
+      found.push(compact);
+    }
+  }
+  for (const m of upper.matchAll(/\b([A-Z]\d[A-Z0-9]{6,18})\b/g)) {
+    const compact = m[1]!.replace(/[^A-Z0-9]/g, "");
+    if (
+      compact.length >= 8 &&
+      /[A-Z]/.test(compact) &&
+      /\d/.test(compact) &&
+      !/^\d/.test(compact)
+    ) {
+      found.push(compact);
+    }
   }
   if (found.length === 0) return null;
   return [...new Set(found)].sort((a, b) => b.length - a.length)[0]!;

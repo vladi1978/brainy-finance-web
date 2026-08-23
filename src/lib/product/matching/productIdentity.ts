@@ -93,6 +93,15 @@ function normSku(s: string | null | undefined): string {
   return normAlnum(s);
 }
 
+/** Strong retail model / SKU — letter+digit, length ≥ 6 (e.g. V4K65M0804). */
+export function isStrongModelIdentifier(id: string): boolean {
+  const u = normAlnum(id);
+  if (u.length < 6) return false;
+  if (!/[A-Z]/.test(u) || !/\d/.test(u)) return false;
+  if (/^\d{2,3}INCH(?:ES)?$/.test(u)) return false;
+  return true;
+}
+
 function extractMaterial(title: string): string | null {
   const m = normalizeTitle(title).match(MATERIAL_RE);
   return m ? m[1]!.toLowerCase() : null;
@@ -151,7 +160,7 @@ export function extractUniversalProductIdentity(
   if (hints?.modelOrMpn) modelIds.add(normSku(hints.modelOrMpn));
   for (const t of norm.modelTokens) {
     const u = normSku(t);
-    if (u.length >= 4) modelIds.add(u);
+    if (u.length >= 4 && !/^\d{2,3}INCH(?:ES)?$/.test(u)) modelIds.add(u);
   }
 
   return {
@@ -197,7 +206,10 @@ function modelOverlap(
   if (source.modelIdentifiers.length === 0) {
     return { matched: false, partial: false, reason: "model:source_unknown" };
   }
-  const srcNeedles = source.modelIdentifiers.filter((n) => n.length >= 4);
+  const strongSrc = source.modelIdentifiers.filter(isStrongModelIdentifier);
+  const srcNeedles = (
+    strongSrc.length > 0 ? strongSrc : source.modelIdentifiers
+  ).filter((n) => n.length >= 4 && !/^\d{2,3}INCH(?:ES)?$/i.test(n));
   if (srcNeedles.length === 0) {
     return { matched: false, partial: false, reason: "model:no_source_needles" };
   }
@@ -206,8 +218,13 @@ function modelOverlap(
       return { matched: true, partial: false, reason: `model:needle_hit(${n})` };
     }
   }
-  const candSet = new Set(candidate.modelIdentifiers);
-  const inter = srcNeedles.filter((n) => candSet.has(n));
+  const candSet = new Set(
+    (strongSrc.length > 0
+      ? candidate.modelIdentifiers.filter(isStrongModelIdentifier)
+      : candidate.modelIdentifiers
+    ).map((x) => normAlnum(x))
+  );
+  const inter = srcNeedles.filter((n) => candSet.has(normAlnum(n)));
   if (inter.length > 0) {
     return {
       matched: true,
@@ -557,11 +574,22 @@ export function scoreProductIdentity(
       ? Math.max(0, Math.min(100, Math.round((rawScore / maxPossible) * 100)))
       : Math.max(0, Math.min(100, 40 + titleBonus.points * 3));
 
+  const overlap = modelOverlap(source, candidate, candBlob);
+  const strongSourceModels = source.modelIdentifiers.filter(isStrongModelIdentifier);
+  const strongCandidateModels = candidate.modelIdentifiers.filter(
+    isStrongModelIdentifier
+  );
   const modelHit =
-    source.modelIdentifiers.length === 0 ||
-    modelOverlap(source, candidate, candBlob).matched;
+    source.modelIdentifiers.length === 0 || overlap.matched;
+  const strongModelRequired = strongSourceModels.length > 0;
+  const strongModelConfirmed = strongModelRequired && overlap.matched;
+  const differentStrongModel =
+    strongModelRequired &&
+    strongCandidateModels.length > 0 &&
+    !overlap.matched;
   const hasHardConflict =
     categoryOutcome === "miss" ||
+    differentStrongModel ||
     (source.brand &&
       candidate.brand &&
       source.brand !== candidate.brand &&
@@ -578,16 +606,26 @@ export function scoreProductIdentity(
   let matchType: ProductIdentityMatchType;
   if (hasHardConflict) {
     matchType = "alternative";
-    reasons.push("tier:hard_conflict→alternative");
+    reasons.push(
+      differentStrongModel
+        ? "tier:hard_conflict→alternative(different_model)"
+        : "tier:hard_conflict→alternative"
+    );
   } else if (
     identityScore >= 82 &&
     modelHit &&
+    (!strongModelRequired || strongModelConfirmed) &&
     (source.modelIdentifiers.length > 0 ||
       (source.brand && source.sizeInches != null) ||
       (source.brand && source.packCount != null))
   ) {
     matchType = "exact_match";
     reasons.push("tier:exact_match");
+  } else if (strongModelRequired && !strongModelConfirmed) {
+    // Reference has a confirmed retail SKU — missing/unconfirmed candidate model
+    // is never Exact or close identity (brand+size alone is an alternative).
+    matchType = "alternative";
+    reasons.push("tier:alternative(missing_or_unconfirmed_model)");
   } else if (identityScore >= 58 || (modelHit && identityScore >= 48)) {
     matchType = "close_match";
     reasons.push("tier:close_match");

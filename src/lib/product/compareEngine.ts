@@ -68,6 +68,7 @@ import {
 import {
   BAND_HIGH_CONFIDENCE_MIN,
   BAND_POSSIBLE_MIN,
+  applyIdentityMatchTypeToConfidenceBand,
   applyStrictSearchUrlCapToCandidate,
   applyStrictSearchUrlCapToDeal,
   applyStrictSearchUrlCapsToCandidates,
@@ -97,6 +98,7 @@ import {
   commercialListingDisplayLabel,
   hasCommercialNonPurchaseSignals,
   isDurableGoodsCategory,
+  isIncompleteOrPartsListingTitle,
   isSuspiciousPurchasePriceRatio,
   shouldRejectCommercialListing,
 } from "./commercialListingClassifier";
@@ -1330,6 +1332,7 @@ function isBlockedFromExactMatchOrBestDeal(
   referencePrice: number | null,
 ): boolean {
   if (!isPurchasePriceListing(c)) return true;
+  if (isIncompleteOrPartsListingTitle(c.title)) return true;
   if (
     referencePrice != null &&
     isValidComparablePrice(referencePrice) &&
@@ -1346,6 +1349,27 @@ function applyCommercialPriceSafetyToCandidate(
   candidate: CompareApiCandidate,
   referencePrice: number | null,
 ): CompareApiCandidate {
+  if (isIncompleteOrPartsListingTitle(candidate.title)) {
+    let band = candidate.confidenceBand ?? "possible_alternative";
+    if (band === "exact_match" || band === "high_confidence") {
+      band = "possible_alternative";
+    }
+    return {
+      ...candidate,
+      confidenceBand: band,
+      displayMatchScore: Math.min(
+        candidate.displayMatchScore ?? 0,
+        BAND_HIGH_CONFIDENCE_MIN - 1,
+      ),
+      confidenceBandLabel: confidenceBandBadgeLabel(band),
+      savingsVsReference: null,
+      commercialListingLabel:
+        candidate.commercialListingLabel ?? "Incomplete / parts listing",
+      matchType:
+        candidate.matchType === "exact_match" ? "close_match" : candidate.matchType,
+    };
+  }
+
   if (
     candidate.commercialListing &&
     shouldRejectCommercialListing(candidate.commercialListing)
@@ -1462,6 +1486,11 @@ function annotateCandidateConfidence(
     scoreReasons: rel.reasons,
     identityReasons: identity.identityReasons,
   });
+
+  confidenceBand = applyIdentityMatchTypeToConfidenceBand(
+    confidenceBand,
+    identity
+  );
 
   let annotated: CompareApiCandidate = {
     ...c,
@@ -1668,10 +1697,18 @@ function annotateAndOrderCandidates(
     }
     const price = p as number;
     const cheaper = price < referencePrice!;
+    const eligibleSavings =
+      cheaper &&
+      !isIncompleteOrPartsListingTitle(api.title) &&
+      isPurchasePriceListing(api) &&
+      !(
+        isDurableGoodsCategory(api.normalized.category) &&
+        isSuspiciousPurchasePriceRatio(price, referencePrice!)
+      );
     return {
       ...api,
       priceCompareSegment: cheaper ? ("cheaper" as const) : ("not_cheaper" as const),
-      savingsVsReference: cheaper ? referencePrice! - price : null,
+      savingsVsReference: eligibleSavings ? referencePrice! - price : null,
     };
   });
 
@@ -3199,6 +3236,11 @@ export async function compareProduct(
     }
 
     const savingVals = orderedForDisplay
+      .filter(
+        (c) =>
+          c.confidenceBand === "exact_match" &&
+          !isBlockedFromExactMatchOrBestDeal(c, referenceListPrice),
+      )
       .map((c) => c.savingsVsReference)
       .filter((x): x is number => x != null && x > 0);
     savings = savingVals.length > 0 ? Math.max(...savingVals) : null;

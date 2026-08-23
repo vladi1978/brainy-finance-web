@@ -108,6 +108,34 @@ export function refinePossibleBandBadge(
   return "possible_alternative";
 }
 
+/**
+ * Align display confidence bands with product-identity tiers.
+ * Prevents brand+size / department score inflation from labeling Exact or High
+ * when identity is only an alternative (e.g. missing strong model).
+ */
+export function applyIdentityMatchTypeToConfidenceBand(
+  band: MatchConfidenceBand,
+  identity: Pick<ProductIdentityResult, "matchType" | "identityReasons">
+): MatchConfidenceBand {
+  let next = band;
+  if (next === "exact_match" && identity.matchType !== "exact_match") {
+    next =
+      identity.matchType === "close_match" ? "high_confidence" : "possible_alternative";
+  }
+  if (next === "high_confidence" && identity.matchType === "alternative") {
+    next = "possible_alternative";
+  }
+  if (
+    (next === "exact_match" || next === "high_confidence") &&
+    identity.identityReasons.some((r) =>
+      /missing_or_unconfirmed_model|different_model/i.test(r)
+    )
+  ) {
+    next = "possible_alternative";
+  }
+  return next;
+}
+
 export function confidenceBandBadgeLabel(band: MatchConfidenceBand): string {
   switch (band) {
     case "exact_match":
@@ -142,7 +170,11 @@ const SHARED_REASON_PATTERNS: ReasonPattern[] = [
     message: "Some specs missing",
   },
   {
-    test: /same_product_line|tier:exact|tier:close/i,
+    test: /tier:exact_match/i,
+    message: "Confirmed same product identity",
+  },
+  {
+    test: /same_product_line|tier:close/i,
     message: "Same product line or close variant",
   },
 ];
@@ -272,12 +304,16 @@ export function isStrictSearchFallbackOutbound(candidate: {
   return isNonProductOutboundUrlForStrictCap(candidate);
 }
 
-/** Strict mode: search/category outbound URLs cannot use top confidence bands. */
+/** Demote Exact Match for search/category/non-PDP outbound URLs (always). */
 export function capConfidenceBandForSearchUrl(
   band: MatchConfidenceBand
 ): MatchConfidenceBand {
+  // Product-identity safety: never label a search/category URL as Exact Match.
+  if (band === "exact_match") {
+    return "possible_alternative";
+  }
   if (!isDepartmentPipelineStrict()) return band;
-  if (band === "exact_match" || band === "high_confidence") {
+  if (band === "high_confidence") {
     return "possible_alternative";
   }
   return band;
@@ -342,11 +378,41 @@ export function applyStrictSearchUrlScoreCap(
   };
 }
 
-/** Apply search URL score cap to a serialized API candidate (strict mode only). */
+/** Apply search URL score cap to a serialized API candidate. */
 export function applyStrictSearchUrlCapToCandidate(
   c: CompareApiCandidate
 ): CompareApiCandidate {
-  if (!isDepartmentPipelineStrict() || !isStrictSearchFallbackOutbound(c)) {
+  const isSearchOutbound = isStrictSearchFallbackOutbound(c);
+
+  // Always demote Exact Match on search/category URLs (product-identity safety).
+  if (isSearchOutbound && !isDepartmentPipelineStrict()) {
+    if (c.confidenceBand === "exact_match") {
+      const band = capConfidenceBandForSearchUrl("exact_match");
+      return {
+        ...c,
+        confidenceBand: band,
+        confidenceBandLabel: confidenceBandBadgeLabel(band),
+        matchType:
+          c.matchType === "exact_match" ? "close_match" : c.matchType,
+      };
+    }
+    if (c.confidenceBandLabel) return c;
+    const displayBefore =
+      c.displayMatchScore ??
+      displayMatchScore({
+        relevanceScore: c.relevanceScore,
+        identityScore: c.identityScore,
+        departmentScore: c.departmentScore,
+      });
+    const band = c.confidenceBand ?? classifyConfidenceBand(displayBefore);
+    return {
+      ...c,
+      confidenceBand: band,
+      confidenceBandLabel: confidenceBandBadgeLabel(band),
+    };
+  }
+
+  if (!isDepartmentPipelineStrict() || !isSearchOutbound) {
     if (c.confidenceBandLabel) return c;
     const displayBefore =
       c.displayMatchScore ??
@@ -442,16 +508,25 @@ export function partitionCandidatesIntoMatchGroups(
 export function applyStrictSearchUrlCapsToCandidates(
   candidates: CompareApiCandidate[]
 ): CompareApiCandidate[] {
-  if (!isDepartmentPipelineStrict()) return candidates;
   return candidates.map(applyStrictSearchUrlCapToCandidate);
 }
 
-/** Apply search URL score cap to best-deal / alternative rows (strict mode only). */
+/** Apply search URL score cap to best-deal / alternative rows. */
 export function applyStrictSearchUrlCapToDeal(
   deal: CompareProductDeal
 ): CompareProductDeal {
-  if (!isDepartmentPipelineStrict()) return deal;
   if (!isStrictSearchFallbackOutbound(deal)) return deal;
+  if (!isDepartmentPipelineStrict()) {
+    if (deal.confidenceBand !== "exact_match") return deal;
+    const band = capConfidenceBandForSearchUrl("exact_match");
+    return {
+      ...deal,
+      confidenceBand: band,
+      confidenceBandLabel: confidenceBandBadgeLabel(band),
+      matchType:
+        deal.matchType === "exact_match" ? "close_match" : deal.matchType,
+    };
+  }
 
   const displayBefore =
     deal.displayMatchScore ??
@@ -553,6 +628,13 @@ export function buildUserMatchReasons(args: {
 
   for (const { test, message } of patterns) {
     if (strictTools && message === "Tool platform appears compatible" && !voltageMentioned) {
+      continue;
+    }
+    // Never show "close variant" copy under Exact Match.
+    if (
+      args.confidenceBand === "exact_match" &&
+      message === "Same product line or close variant"
+    ) {
       continue;
     }
     if (test.test(technical) && !lines.includes(message)) {
