@@ -187,7 +187,7 @@ export async function resolveCanonicalInputUrl(
   const trimmed = rawHttpUrl.trim();
   const originalInputUrl = stripFragment(trimmed);
 
-  let working = applyParamUnwrap(originalInputUrl);
+  const working = applyParamUnwrap(originalInputUrl);
 
   let resolvedFinalUrl: string | null = null;
 

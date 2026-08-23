@@ -346,7 +346,22 @@ export function applyStrictSearchUrlScoreCap(
 export function applyStrictSearchUrlCapToCandidate(
   c: CompareApiCandidate
 ): CompareApiCandidate {
-  if (!isDepartmentPipelineStrict() || !isStrictSearchFallbackOutbound(c)) return c;
+  if (!isDepartmentPipelineStrict() || !isStrictSearchFallbackOutbound(c)) {
+    if (c.confidenceBandLabel) return c;
+    const displayBefore =
+      c.displayMatchScore ??
+      displayMatchScore({
+        relevanceScore: c.relevanceScore,
+        identityScore: c.identityScore,
+        departmentScore: c.departmentScore,
+      });
+    const band = c.confidenceBand ?? classifyConfidenceBand(displayBefore);
+    return {
+      ...c,
+      confidenceBand: band,
+      confidenceBandLabel: confidenceBandBadgeLabel(band),
+    };
+  }
 
   const displayBefore =
     c.displayMatchScore ??

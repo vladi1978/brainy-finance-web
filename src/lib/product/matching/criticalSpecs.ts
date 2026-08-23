@@ -492,6 +492,19 @@ function checkScreenDepartmentGate(
       reason: evaluation.hardRejectReason ?? evaluation.reason,
     };
   }
+  // Strong mismatches (3–5") stay soft-penalties in scoring, but are not valid
+  // Compare matches when both sizes are known (e.g. 65" vs 60").
+  if (
+    evaluation.action === "penalty" &&
+    evaluation.softPenalties.some((p) =>
+      /screen_size_(?:close_)?strong|department_screen_size_strong/i.test(p)
+    )
+  ) {
+    return {
+      ok: false,
+      reason: evaluation.reason,
+    };
+  }
   return { ok: true, softPenalties: evaluation.softPenalties };
 }
 

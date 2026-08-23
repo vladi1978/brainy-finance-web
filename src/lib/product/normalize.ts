@@ -37,7 +37,7 @@ const STOPWORDS = new Set([
 
 /** Known consumer brands — extend as needed (non-TV and general fallback). */
 const BRAND_PATTERN =
-  /\b(samsung|lg|sony|tcl|hisense|vizio|insignia|onn|apple|google|beats|bose|jbl|sonos|anker|nike|adidas|reebok|puma|new balance|asics|crocs|ugg|hanes|gildan|champion|microsoft|dell|hp|lenovo|asus|acer|msi|intex|bestway|coleman)\b/i;
+  /\b(samsung|lg|sony|tcl|hisense|vizio|insignia|onn|apple|google|beats|bose|jbl|sonos|anker|nike|adidas|reebok|puma|new balance|asics|crocs|ugg|hanes|gildan|champion|microsoft|dell|hp|lenovo|asus|acer|msi|intex|bestway|coleman|dewalt|milwaukee|makita|ryobi|bosch|craftsman|ridgid)\b/i;
 
 /** TV panel OEM brands — includes Roku hardware; excludes platform-only mentions. */
 const OEM_TV_BRAND_PATTERN =

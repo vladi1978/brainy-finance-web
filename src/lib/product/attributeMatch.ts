@@ -572,7 +572,7 @@ export function scoreAttributeMatch(
     };
   }
 
-  let tier1 =
+  const tier1 =
     blended >= TIER1_BLEND_MIN &&
     (sameProductLineSignals ||
       attrScore >= TIER1_STRUCTURED_MIN ||

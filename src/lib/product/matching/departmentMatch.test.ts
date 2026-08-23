@@ -16,15 +16,13 @@ test("pool 18x52 allows 20x51 as possible alternative (not hard reject)", () => 
   assert.equal(gate.ok, true);
 });
 
-test("65 inch tv allows 60 inch tv with strong penalty not hard reject", () => {
+test("65 inch tv rejects 60 inch tv at department gate (strong size mismatch)", () => {
   const source = normWithCritical("Samsung 65 inch smart tv DU7200");
   const candidate = normWithCritical("Samsung 60 inch smart tv DU7200");
   const gate = checkDepartmentCriticalSpecsGate(source, candidate, candidate.structured.title);
   assert.ok(gate);
-  assert.equal(gate.ok, true);
-  assert.ok(
-    gate.softPenalties.some((p) => p.includes("screen_size_strong") || p.includes("department_screen_size_strong"))
-  );
+  assert.equal(gate.ok, false);
+  assert.match(gate.reason ?? "", /screen_size|strong/i);
 });
 
 test("50 inch tv allows candidate with missing screen size via soft penalty", () => {

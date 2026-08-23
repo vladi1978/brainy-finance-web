@@ -342,7 +342,8 @@ function resolveHref(base: URL, href: string): string | null {
 
 function anchorTextNearHref(html: string, hrefIndex: number): string {
   const windowStart = Math.max(0, hrefIndex - 420);
-  const chunk = html.slice(windowStart, hrefIndex + 80);
+  // Long absolute hrefs + indented anchor text often sit beyond +80 chars.
+  const chunk = html.slice(windowStart, hrefIndex + 280);
   const attrs = [
     ...chunk.matchAll(/(?:aria-label|title|data-name|alt)=["']([^"']{3,200})["']/gi),
   ];

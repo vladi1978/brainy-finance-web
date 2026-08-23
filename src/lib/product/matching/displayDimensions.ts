@@ -104,7 +104,8 @@ export function extractDiagonalInches(
     if (v != null) candidates.push(v);
   };
 
-  for (const m of norm.matchAll(/\b(\d{2,3})\s*(?:"|″)\b/g)) push(m[1]);
+  // Do not require a word-boundary after " — `"75" Class` has no \b between " and space.
+  for (const m of norm.matchAll(/\b(\d{2,3})\s*(?:"|″)/g)) push(m[1]);
   for (const m of norm.matchAll(/\b(\d{2,3})\s*-?\s*in(?:ch(?:es)?)?\b/gi)) push(m[1]);
   for (const m of norm.matchAll(/\b(\d{2,3})in\b/gi)) push(m[1]);
   for (const m of norm.matchAll(/\b(\d{2,3})\s*-?\s*class\b/gi)) push(m[1]);
@@ -114,12 +115,15 @@ export function extractDiagonalInches(
     for (const m of norm.matchAll(/\b(\d{1,2}(?:\.\d)?)\s*-?\s*in(?:ch(?:es)?)?\b/gi)) {
       push(m[1]);
     }
-    for (const m of norm.matchAll(/\b(\d{1,2}(?:\.\d)?)\s*(?:"|″)\b/g)) push(m[1]);
+    for (const m of norm.matchAll(/\b(\d{1,2}(?:\.\d)?)\s*(?:"|″)/g)) push(m[1]);
   }
 
   const oledInline = norm.match(/\b(?:oled|qled|neo\s*qled|mini\s*led)\s*(\d{2,3})\b/i);
   if (oledInline) push(oledInline[1]);
-  for (const m of norm.matchAll(/\b(oled|qled|neoqled)(\d{2,3})\b/gi)) push(m[2]);
+  // OLED55C4 / QLED65x — size digits may be followed by series letters.
+  for (const m of norm.matchAll(/\b(oled|qled|neoqled)(\d{2,3})[a-z0-9]*\b/gi)) {
+    push(m[2]);
+  }
 
   const qn = norm.match(/\bQN(\d{2,3})\b/i);
   if (qn) push(qn[1]);
@@ -128,7 +132,8 @@ export function extractDiagonalInches(
   const xr = norm.match(/\bXR(\d{2,3})\b/i);
   if (xr) push(xr[1]);
 
-  for (const m of norm.matchAll(/\b(\d{2,3})([A-Z]\d[A-Z0-9]{2,})\b/g)) {
+  // Size-leading model codes: 75U6SF, 65QN90C (letter run then digit, not only Letter+Digit).
+  for (const m of norm.matchAll(/\b(\d{2,3})([A-Za-z]{1,4}\d[A-Za-z0-9]{0,6})\b/g)) {
     push(m[1]);
   }
 

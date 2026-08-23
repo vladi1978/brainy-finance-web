@@ -241,7 +241,7 @@ export function scoreDepartmentMatch(
 
   scoreReasons.push(`department_score=${score}`);
 
-  let tier = tierFromScore(score, config.scoreTierThresholds);
+  const tier = tierFromScore(score, config.scoreTierThresholds);
   const matchExplanation = buildMatchExplanation(
     config,
     tier,
