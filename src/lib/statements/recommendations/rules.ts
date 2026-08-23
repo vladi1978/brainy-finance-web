@@ -183,9 +183,9 @@ export function applyRecommendationRules(
       makeRec(
         {
           id: "action-telecom-compare",
-          title: "Compare phone and internet providers",
+          title: "Compare phone and internet plans at renewal",
           description:
-            "Telecom or utility bills are a material share of recurring spend. Shop plans at renewal—promotional rates often beat legacy pricing.",
+            "Phone or internet bills are a material expected cost. At renewal, comparing plans is optional — promotional rates sometimes beat legacy pricing. This is not a recommendation to cancel service.",
           estimatedMonthlySavings: monthly,
           estimatedYearlySavings: yearly,
           severity: telecomMonthly >= 120 ? "high" : "medium",
@@ -311,9 +311,9 @@ export function applyRecommendationRules(
         makeRec(
           {
             id: "action-insurance-compare",
-            title: "Shop insurance quotes before renewal",
+            title: "Optional: compare insurance quotes before renewal",
             description:
-              "Insurance premiums are material recurring costs. Comparing quotes at renewal often yields savings without changing coverage needs.",
+              "Insurance is an expected recurring cost. Comparing quotes at renewal can be worthwhile for some households, without changing coverage needs. Savings shown are optimization ranges, not guaranteed.",
             estimatedMonthlySavings: monthly,
             estimatedYearlySavings: yearly,
             severity: annual >= 1200 ? "medium" : "low",

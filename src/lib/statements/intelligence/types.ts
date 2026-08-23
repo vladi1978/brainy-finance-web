@@ -9,6 +9,7 @@ import type {
   StatementPeriod,
   SubscriptionInsight,
 } from "../types";
+import type { ActivityPresentationGroups } from "./presentationGroups";
 
 export type InsightSeverity =
   | "positive"
@@ -81,6 +82,8 @@ export type StatementIntelligence = {
   visibleRecurring: EnrichedSpendingRow[];
   visibleInsights: EnrichedSpendingRow[];
   lowConfidenceRows: EnrichedSpendingRow[];
+  /** Consumer-facing presentation partitions (no new detection). */
+  presentationGroups: ActivityPresentationGroups;
 };
 
 export type IntelligenceInput = {

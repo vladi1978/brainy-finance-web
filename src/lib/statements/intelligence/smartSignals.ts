@@ -67,38 +67,38 @@ export function deriveSmartSignal(
   }
 
   if (row.categoryKey === "convenience" && n >= 3) {
-    return "Frequent convenience spending";
+    return "Repeated convenience purchases";
   }
 
   if (
     (row.categoryKey === "restaurants" || row.categoryKey === "cafes") &&
     n >= 3
   ) {
-    if (isDeliveryMerchant(blob)) return "Frequent food delivery activity";
-    return "Dining spending trend";
+    if (isDeliveryMerchant(blob)) return "Repeated food delivery purchases";
+    return "Repeated dining purchases";
   }
 
   if (row.categoryKey === "retail" && n >= 2) {
-    return "Retail spending trend";
+    return "Repeated retail purchases";
   }
 
   if (row.kind === "frequent_spending" && n >= 4) {
-    return "Weekly spending pattern";
+    return "Repeated weekly purchases";
   }
 
   if (
     row.kind === "possible_recurring_expense" &&
     row.recommendation === "Possible savings opportunity"
   ) {
-    return "Possible savings opportunity";
+    return "Possible savings opportunity — review if useful";
   }
 
   if (n >= 3 && row.recurringExpenseScore >= 0.55) {
-    return "Merchant frequency increasing";
+    return "Merchant appears often in this window";
   }
 
   if (row.kind === "frequent_spending") {
-    return "Frequent spending";
+    return "Repeated discretionary spending";
   }
 
   if (row.kind === "possible_recurring_expense") {
@@ -106,7 +106,7 @@ export function deriveSmartSignal(
   }
 
   if (row.kind === "needs_review") {
-    return "Unusual activity — review";
+    return "Review this activity";
   }
 
   return row.recommendation;

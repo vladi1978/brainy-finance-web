@@ -14,6 +14,11 @@ import { SavingsAcceptedSummary } from "@/components/statements/actions/SavingsA
 import { useRecommendationActions } from "@/components/statements/actions/useRecommendationActions";
 import { SUBSCRIPTION_CONFIDENCE_MIN, TRUE_SUBSCRIPTION_SCORE_MIN } from "@/lib/statements/heuristics";
 import type { RecommendationActionType } from "@/lib/statements/recommendations/types";
+import {
+  buildActivityPresentationGroups,
+  PRESENTATION_GROUP_COPY,
+  type ActivityPresentationCard,
+} from "@/lib/statements/intelligence/presentationGroups";
 
 type SubscriptionFlags = {
   forgotten: boolean;
@@ -151,8 +156,37 @@ type StatementIntelligencePayload = {
   visibleRecurring: SpendingInsightRow[];
   visibleInsights: SpendingInsightRow[];
   lowConfidenceRows: SpendingInsightRow[];
+  presentationGroups?: {
+    expectedRecurringBills: ActivityPresentationCardPayload[];
+    subscriptions: ActivityPresentationCardPayload[];
+    repeatedDiscretionary: ActivityPresentationCardPayload[];
+    unusualRecurring: ActivityPresentationCardPayload[];
+  };
   copilot?: CopilotTimelinePayload;
   copilotAssistant?: CopilotAssistantContext;
+};
+
+type ActivityPresentationCardPayload = {
+  id: string;
+  clusterId: string;
+  groupId: string;
+  status: "confirmed" | "possible" | "expected" | "unusual";
+  merchant: string;
+  normalizedName: string;
+  categoryLabel: string;
+  currency: string;
+  chargeCount: number;
+  periodTotal: number;
+  averageCharge: number;
+  latestCharge: number;
+  dateRange: { start: string; end: string } | null;
+  estimatedCadence: string | null;
+  confidence: number | null;
+  reason: string;
+  summaryLine: string;
+  showMonthlyEstimate: boolean;
+  monthlyEstimate: number | null;
+  source: "subscription" | "spending";
 };
 
 type CopilotFeedItemPayload = {
@@ -374,7 +408,10 @@ export default function StatementsClient() {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<AnalyzeOk | null>(null);
   const [actions, setActions] = useState<
-    Record<string, "cancel" | "review" | "keep" | "alt" | undefined>
+    Record<
+      string,
+      "review" | "expected" | "not_mine" | "keep" | "alt" | "cancel" | undefined
+    >
   >({});
 
   const onFile = useCallback(async (file: File | null) => {
@@ -451,6 +488,25 @@ export default function StatementsClient() {
     () => intelligence?.visibleInsights ?? data?.spendingInsights ?? [],
     [data, intelligence]
   );
+
+  const presentationGroups = useMemo(() => {
+    if (!data) return null;
+    if (intelligence?.presentationGroups) {
+      return intelligence.presentationGroups;
+    }
+    return buildActivityPresentationGroups({
+      subscriptions: data.subscriptions as unknown as Parameters<
+        typeof buildActivityPresentationGroups
+      >[0]["subscriptions"],
+      visibleRecurring: displayRecurring as unknown as Parameters<
+        typeof buildActivityPresentationGroups
+      >[0]["visibleRecurring"],
+      visibleInsights: displayInsights as unknown as Parameters<
+        typeof buildActivityPresentationGroups
+      >[0]["visibleInsights"],
+      clusters: [],
+    });
+  }, [data, intelligence, displayRecurring, displayInsights]);
 
   return (
     <main className="flex-1 bg-black px-6 py-10 text-white">
@@ -853,33 +909,24 @@ export default function StatementsClient() {
 
             <section className="space-y-4">
               <SectionIntro
-                title="Detected subscriptions"
-                description="Streaming, software, insurance, phone and internet, fitness, music, cloud storage, AI tools, and similar recurring services. Each row includes a subscription fit score so only strong matches appear here."
+                title={PRESENTATION_GROUP_COPY.expected_recurring_bills.title}
+                description={
+                  PRESENTATION_GROUP_COPY.expected_recurring_bills.description
+                }
               />
-              {data.subscriptions.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-white/15 bg-white/[0.02] px-5 py-8 text-center">
-                  <p className="text-sm font-medium text-white/75">
-                    No subscriptions matched this statement
-                  </p>
-                  <p className="mx-auto mt-2 max-w-lg text-sm text-white/45">
-                    Items need both a healthy model confidence (≥{" "}
-                    {SUBSCRIPTION_CONFIDENCE_MIN}) and a high subscription fit
-                    score (≥ {TRUE_SUBSCRIPTION_SCORE_MIN}). Gas, groceries,
-                    transfers, and similar spend never count toward subscription
-                    totals. Try a longer PDF export if your window is very short.
-                  </p>
-                </div>
+              {(presentationGroups?.expectedRecurringBills.length ?? 0) === 0 ? (
+                <EmptyGroup note="No expected utility, phone, internet, or insurance-style bills were separated for this upload." />
               ) : (
                 <ul className="space-y-4">
-                  {data.subscriptions.map((s) => (
-                    <li key={s.clusterId}>
-                      <SubscriptionCard
-                        row={s}
-                        action={actions[s.clusterId]}
+                  {presentationGroups!.expectedRecurringBills.map((card) => (
+                    <li key={card.id}>
+                      <ActivityPresentationCardView
+                        card={card}
+                        action={actions[card.clusterId]}
                         onAction={(key) =>
                           setActions((prev) => ({
                             ...prev,
-                            [s.clusterId]: key,
+                            [card.clusterId]: key,
                           }))
                         }
                       />
@@ -891,21 +938,25 @@ export default function StatementsClient() {
 
             <section className="space-y-4">
               <SectionIntro
-                title="Recurring expenses"
-                description="Repeated merchants that are not classified as subscription bills: fuel, groceries, dining, convenience runs, retail, fee patterns, and recurring transfers. These never flow into subscription totals."
+                title={PRESENTATION_GROUP_COPY.subscriptions.title}
+                description={PRESENTATION_GROUP_COPY.subscriptions.description}
               />
-              {displayRecurring.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-violet-400/20 bg-violet-500/[0.03] px-5 py-8 text-center">
-                  <p className="text-sm text-white/60">
-                    No recurring non-subscription patterns crossed the reporting
-                    threshold for this upload.
-                  </p>
-                </div>
+              {(presentationGroups?.subscriptions.length ?? 0) === 0 ? (
+                <EmptyGroup note="No streaming, software, or membership-style subscriptions matched this statement." />
               ) : (
                 <ul className="space-y-4">
-                  {displayRecurring.map((row) => (
-                    <li key={row.clusterId}>
-                      <RecurringExpenseCard row={row} />
+                  {presentationGroups!.subscriptions.map((card) => (
+                    <li key={card.id}>
+                      <ActivityPresentationCardView
+                        card={card}
+                        action={actions[card.clusterId]}
+                        onAction={(key) =>
+                          setActions((prev) => ({
+                            ...prev,
+                            [card.clusterId]: key,
+                          }))
+                        }
+                      />
                     </li>
                   ))}
                 </ul>
@@ -914,21 +965,54 @@ export default function StatementsClient() {
 
             <section className="space-y-4">
               <SectionIntro
-                title="Spending insights"
-                description="One-time debits, large transfers, bank fees, unusual activity, and merchants flagged for review or possible savings—aggregated separately from subscriptions and recurring everyday spend."
+                title={PRESENTATION_GROUP_COPY.repeated_discretionary.title}
+                description={
+                  PRESENTATION_GROUP_COPY.repeated_discretionary.description
+                }
               />
-              {displayInsights.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-sky-400/20 bg-sky-500/[0.03] px-5 py-8 text-center">
-                  <p className="text-sm text-white/60">
-                    No additional insight rows were promoted after routing recurring
-                    patterns elsewhere.
-                  </p>
-                </div>
+              {(presentationGroups?.repeatedDiscretionary.length ?? 0) === 0 ? (
+                <EmptyGroup note="No repeated rideshare, dining, or convenience patterns crossed the reporting threshold." />
               ) : (
                 <ul className="space-y-4">
-                  {displayInsights.map((row) => (
-                    <li key={row.clusterId}>
-                      <SpendingInsightCard row={row} />
+                  {presentationGroups!.repeatedDiscretionary.map((card) => (
+                    <li key={card.id}>
+                      <ActivityPresentationCardView
+                        card={card}
+                        action={actions[card.clusterId]}
+                        onAction={(key) =>
+                          setActions((prev) => ({
+                            ...prev,
+                            [card.clusterId]: key,
+                          }))
+                        }
+                      />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <section className="space-y-4">
+              <SectionIntro
+                title={PRESENTATION_GROUP_COPY.unusual_recurring.title}
+                description={PRESENTATION_GROUP_COPY.unusual_recurring.description}
+              />
+              {(presentationGroups?.unusualRecurring.length ?? 0) === 0 ? (
+                <EmptyGroup note="No unusual recurring activity was flagged for review in this window." />
+              ) : (
+                <ul className="space-y-4">
+                  {presentationGroups!.unusualRecurring.map((card) => (
+                    <li key={card.id}>
+                      <ActivityPresentationCardView
+                        card={card}
+                        action={actions[card.clusterId]}
+                        onAction={(key) =>
+                          setActions((prev) => ({
+                            ...prev,
+                            [card.clusterId]: key,
+                          }))
+                        }
+                      />
                     </li>
                   ))}
                 </ul>
@@ -1251,264 +1335,149 @@ function SummaryCard(props: {
   );
 }
 
-function SpendingInsightCard(props: { row: SpendingInsightRow }) {
-  const { row: r } = props;
-  const kind =
-    insightKindLabel[r.kind] ?? r.kind.replaceAll("_", " ");
 
+function EmptyGroup(props: { note: string }) {
   return (
-    <div className="rounded-2xl border border-sky-400/15 bg-gradient-to-br from-sky-400/[0.07] to-white/[0.02] p-5">
-      <div className="flex flex-wrap gap-4">
-        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-black/40 text-lg font-bold text-sky-200">
-          {merchantInitial(r.normalizedName)}
-        </div>
-        <div className="min-w-0 flex-1">
-          <h3 className="truncate text-base font-semibold text-white">
-            {r.normalizedName}
-          </h3>
-          {r.normalizedName.trim().toUpperCase() !==
-          r.merchant.trim().toUpperCase() ? (
-            <p className="text-xs text-white/40">Descriptor: {r.merchant}</p>
-          ) : null}
-          <p className="mt-1 text-xs text-white/45">
-            Category ·{" "}
-            <span className="text-white/70">{r.categoryLabel}</span>
-            {" · "}
-            <span className="text-white/55">{kind}</span>
-          </p>
-          <p className="mt-1 text-xs text-white/45">
-            Latest charge {r.lastCharged}
-            {" · "}
-            Frequency {freqLabel[r.frequency] ?? r.frequency}
-            {" · "}
-            Insight score{" "}
-            <span className="text-sky-200/90">
-              {(r.spendingInsightScore * 100).toFixed(0)}%
-            </span>
-          </p>
-          <p className="mt-2 rounded-lg border border-white/10 bg-black/25 px-3 py-2 text-xs text-sky-100/95">
-            <span className="font-semibold text-sky-200/95">Signal:</span>{" "}
-            {r.smartSignal ?? r.recommendation}
-          </p>
-          {r.confidenceTier === "confirmed" ? (
-            <span className="mt-2 inline-block rounded-full border border-emerald-400/35 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-100">
-              Confirmed
-            </span>
-          ) : r.confidenceTier === "recurring_pattern" ? (
-            <span className="mt-2 inline-block rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-100">
-              Recurring pattern
-            </span>
-          ) : null}
-        </div>
-        <div className="text-right">
-          <p className="text-lg font-semibold text-white">
-            {formatMoney(r.amount, r.currency)}
-          </p>
-          <p className="text-xs text-white/45">Latest debit</p>
-          <p className="mt-2 text-xs font-medium text-white/65">
-            Period total{" "}
-            <span className="text-white">
-              {formatMoney(r.totalSpentInPeriod, r.currency)}
-            </span>
-          </p>
-        </div>
-      </div>
+    <div className="rounded-2xl border border-dashed border-white/15 bg-white/[0.02] px-5 py-8 text-center">
+      <p className="text-sm text-white/60">{props.note}</p>
     </div>
   );
 }
 
-function RecurringExpenseCard(props: { row: SpendingInsightRow }) {
-  const { row: r } = props;
-  const kind =
-    insightKindLabel[r.kind] ?? r.kind.replaceAll("_", " ");
-
-  return (
-    <div className="rounded-2xl border border-violet-400/20 bg-gradient-to-br from-violet-500/[0.08] to-white/[0.02] p-5">
-      <div className="flex flex-wrap gap-4">
-        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-black/40 text-lg font-bold text-violet-200">
-          {merchantInitial(r.normalizedName)}
-        </div>
-        <div className="min-w-0 flex-1">
-          <h3 className="truncate text-base font-semibold text-white">
-            {r.normalizedName}
-          </h3>
-          <p className="mt-1 text-xs text-white/45">
-            <span className="rounded-md bg-white/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-100/95">
-              {r.categoryLabel}
-            </span>
-            <span className="mx-2 text-white/30">·</span>
-            <span className="text-white/55">{kind}</span>
-          </p>
-          <p className="mt-1 text-xs text-white/45">
-            Latest {r.lastCharged} · {freqLabel[r.frequency] ?? r.frequency}{" "}
-            · Recurring pattern score{" "}
-            <span className="text-violet-200/90">
-              {(r.recurringExpenseScore * 100).toFixed(0)}%
-            </span>
-          </p>
-          <p className="mt-2 rounded-lg border border-white/10 bg-black/25 px-3 py-2 text-xs text-violet-100/95">
-            <span className="font-semibold text-violet-200/95">Signal:</span>{" "}
-            {r.smartSignal ?? r.recommendation}
-          </p>
-          {r.confidenceTier === "confirmed" ? (
-            <span className="mt-2 inline-block rounded-full border border-emerald-400/35 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-100">
-              Confirmed
-            </span>
-          ) : r.confidenceTier === "recurring_pattern" ? (
-            <span className="mt-2 inline-block rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-100">
-              Recurring pattern
-            </span>
-          ) : null}
-        </div>
-        <div className="text-right">
-          <p className="text-lg font-semibold text-white">
-            {formatMoney(r.amount, r.currency)}
-          </p>
-          <p className="text-xs text-white/45">Latest debit</p>
-          <p className="mt-2 text-xs font-medium text-white/65">
-            Period total{" "}
-            <span className="text-white">
-              {formatMoney(r.totalSpentInPeriod, r.currency)}
-            </span>
-          </p>
-        </div>
-      </div>
-    </div>
-  );
+function statusBadge(status: ActivityPresentationCardPayload["status"]) {
+  switch (status) {
+    case "confirmed":
+      return {
+        label: "Confirmed",
+        className:
+          "border-emerald-400/35 bg-emerald-500/10 text-emerald-100",
+      };
+    case "possible":
+      return {
+        label: "Possible",
+        className: "border-amber-400/30 bg-amber-500/10 text-amber-100",
+      };
+    case "expected":
+      return {
+        label: "Expected",
+        className: "border-sky-400/30 bg-sky-500/10 text-sky-100",
+      };
+    case "unusual":
+      return {
+        label: "Review",
+        className: "border-orange-400/35 bg-orange-500/10 text-orange-100",
+      };
+  }
 }
 
-function SubscriptionCard(props: {
-  row: SubscriptionRow;
-  action?: "cancel" | "review" | "keep" | "alt";
-  onAction: (key: "cancel" | "review" | "keep" | "alt") => void;
+function ActivityPresentationCardView(props: {
+  card: ActivityPresentationCardPayload | ActivityPresentationCard;
+  action?: "review" | "expected" | "not_mine" | "keep" | "alt" | "cancel";
+  onAction: (
+    key: "review" | "expected" | "not_mine" | "keep" | "alt"
+  ) => void;
 }) {
-  const { row: s, action, onAction } = props;
-  const badges: Array<{ key: string; label: string; tone: string }> = [];
-  if (s.flags.confirmed)
-    badges.push({
-      key: "ok",
-      label: "CONFIRMED",
-      tone: "border-emerald-400/50 bg-emerald-500/15 text-emerald-100",
-    });
-  if (s.flags.reviewSuggested)
-    badges.push({
-      key: "rv",
-      label: "REVIEW",
-      tone: "border-sky-400/45 bg-sky-500/15 text-sky-100",
-    });
-  if (s.flags.priceIncreased)
-    badges.push({
-      key: "p",
-      label: "PRICE INCREASE",
-      tone: "border-amber-400/40 bg-amber-500/15 text-amber-100",
-    });
-  if (s.flags.duplicate)
-    badges.push({
-      key: "d",
-      label: "DUPLICATE",
-      tone: "border-amber-400/40 bg-amber-500/15 text-amber-100",
-    });
-  if (s.flags.forgotten)
-    badges.push({
-      key: "f",
-      label: "FORGOTTEN",
-      tone: "border-orange-400/40 bg-orange-500/15 text-orange-100",
-    });
-  if (s.flags.trialConverted)
-    badges.push({
-      key: "t",
-      label: "TRIAL → PAYING",
-      tone: "border-fuchsia-400/35 bg-fuchsia-500/15 text-fuchsia-100",
-    });
-  if (s.flags.suspicious)
-    badges.push({
-      key: "s",
-      label: "SUSPICIOUS",
-      tone: "border-red-400/40 bg-red-500/15 text-red-100",
-    });
-
-  const compareHref = `/compare?subscriptionMerchant=${encodeURIComponent(s.normalizedName)}`;
+  const { card, action, onAction } = props;
+  const badge = statusBadge(card.status);
+  const compareHref = `/compare?subscriptionMerchant=${encodeURIComponent(card.normalizedName)}`;
+  const showExpectedAction = card.groupId === "expected_recurring_bills";
+  const showNotMine =
+    card.groupId === "subscriptions" || card.groupId === "unusual_recurring";
 
   return (
-    <div className="rounded-2xl border border-emerald-400/15 bg-gradient-to-br from-emerald-500/[0.06] to-white/[0.02] p-5">
+    <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.04] to-white/[0.01] p-5">
       <div className="flex flex-wrap gap-4">
-        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-black/40 text-lg font-bold text-emerald-200">
-          {merchantInitial(s.normalizedName)}
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-black/40 text-lg font-bold text-white/80">
+          {merchantInitial(card.normalizedName)}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-baseline gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <h3 className="truncate text-base font-semibold text-white">
-              {s.normalizedName}
+              {card.normalizedName}
             </h3>
+            <span
+              className={[
+                "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                badge.className,
+              ].join(" ")}
+            >
+              {badge.label}
+            </span>
           </div>
-          {s.normalizedName.trim().toUpperCase() !==
-          s.merchant.trim().toUpperCase() ? (
+          {card.normalizedName.trim().toUpperCase() !==
+          card.merchant.trim().toUpperCase() ? (
             <p className="mt-0.5 text-xs text-white/40">
-              Statement text: {s.merchant}
+              Statement text: {card.merchant}
             </p>
           ) : null}
           <p className="mt-1 text-xs text-white/45">
             <span className="rounded-md bg-white/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white/80">
-              {catLabel[s.category] ?? s.category}
+              {catLabel[card.categoryLabel] ?? card.categoryLabel}
             </span>
-            <span className="mx-2 text-white/30">·</span>
-            Confidence {(s.confidence * 100).toFixed(0)}%
-            <span className="text-white/30"> · </span>
-            Subscription fit {(s.trueSubscriptionScore * 100).toFixed(0)}%
+            {card.confidence != null ? (
+              <>
+                <span className="mx-2 text-white/30">·</span>
+                Confidence {(card.confidence * 100).toFixed(0)}%
+              </>
+            ) : null}
+            {card.estimatedCadence ? (
+              <>
+                <span className="mx-2 text-white/30">·</span>
+                {card.estimatedCadence}
+              </>
+            ) : null}
           </p>
-          <p className="mt-1 text-xs text-white/45">
-            Latest charge {s.lastCharged}
-            {s.daysSinceLastCharge != null
-              ? ` · ${s.daysSinceLastCharge} day(s) ago`
-              : ""}
+          <p className="mt-2 text-sm text-white/80">{card.summaryLine}</p>
+          <p className="mt-1 text-xs text-white/50">
+            {card.chargeCount} charge{card.chargeCount === 1 ? "" : "s"}
             {" · "}
-            Period debits sum:{" "}
-            {formatMoney(s.totalSpentInPeriod, s.currency)}
+            Period total {formatMoney(card.periodTotal, card.currency)}
+            {" · "}
+            Avg {formatMoney(card.averageCharge, card.currency)}
+            {" · "}
+            Latest {formatMoney(card.latestCharge, card.currency)}
+            {card.dateRange
+              ? ` · ${card.dateRange.start} → ${card.dateRange.end}`
+              : ""}
           </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {badges.map((b) => (
-              <span
-                key={b.key}
-                className={[
-                  "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-                  b.tone,
-                ].join(" ")}
-              >
-                {b.label.trim()}
-              </span>
-            ))}
-          </div>
-        </div>
-        <div className="text-right">
-          <p className="text-lg font-semibold text-white">
-            {formatMoney(s.amount, s.currency)}
+          <p className="mt-2 rounded-lg border border-white/10 bg-black/25 px-3 py-2 text-xs text-white/80">
+            {card.reason}
           </p>
-          <p className="text-xs text-white/45">
-            {freqLabel[s.frequency] ?? s.frequency}
-          </p>
-          <p className="text-xs text-emerald-200/90">
-            ≈ {formatMoney(s.monthlyEquivalent, s.currency)}/mo ·{" "}
-            {formatMoney(s.annualEquivalent, s.currency)}/yr
-          </p>
+          {card.showMonthlyEstimate && card.monthlyEstimate != null ? (
+            <p className="mt-2 text-xs text-emerald-200/90">
+              Estimated monthly from supported cadence:{" "}
+              {formatMoney(card.monthlyEstimate, card.currency)}/mo
+            </p>
+          ) : null}
         </div>
       </div>
 
       <div className="mt-5 flex flex-wrap gap-2 border-t border-white/10 pt-4">
         <ActionChip
-          label="Cancel"
-          pressed={action === "cancel"}
-          onClick={() => onAction("cancel")}
-        />
-        <ActionChip
-          label="Review"
+          label={card.groupId === "unusual_recurring" ? "Review this activity" : "Review"}
           pressed={action === "review"}
           onClick={() => onAction("review")}
         />
-        <ActionChip
-          label="Keep"
-          pressed={action === "keep"}
-          onClick={() => onAction("keep")}
-        />
+        {showExpectedAction ? (
+          <ActionChip
+            label="Expected"
+            pressed={action === "expected"}
+            onClick={() => onAction("expected")}
+          />
+        ) : (
+          <ActionChip
+            label="Keep"
+            pressed={action === "keep"}
+            onClick={() => onAction("keep")}
+          />
+        )}
+        {showNotMine ? (
+          <ActionChip
+            label="Not mine"
+            pressed={action === "not_mine"}
+            onClick={() => onAction("not_mine")}
+          />
+        ) : null}
         <Link
           href={compareHref}
           className={[
@@ -1522,6 +1491,10 @@ function SubscriptionCard(props: {
           Find alternative
         </Link>
       </div>
+      <p className="mt-2 text-[11px] text-white/35">
+        Choices stay on this device for this session — alerts are not sent or
+        stored on a server.
+      </p>
     </div>
   );
 }

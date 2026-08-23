@@ -638,7 +638,8 @@ export function equivalentsForFrequency(
         annualEquivalent: amount,
       };
     default:
-      return { monthlyEquivalent: amount, annualEquivalent: amount * 12 };
+      // Never invent a monthly bill from an unknown cadence / latest charge alone.
+      return { monthlyEquivalent: 0, annualEquivalent: 0 };
   }
 }
 

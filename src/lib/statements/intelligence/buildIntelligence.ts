@@ -7,6 +7,7 @@ import { buildRecommendations } from "../recommendations";
 import { buildFinancialSummary } from "./buildFinancialSummary";
 import { buildSavingsOpportunities } from "./savings";
 import { deriveSmartSignal } from "./smartSignals";
+import { buildActivityPresentationGroups } from "./presentationGroups";
 import { buildCopilotAssistantContext } from "../copilot/buildAssistantContext";
 import { buildCopilotTimeline } from "../timeline/buildTimeline";
 import type {
@@ -93,6 +94,13 @@ export function buildStatementIntelligence(
     ...insightParts.hidden,
   ].sort((a, b) => b.totalSpentInPeriod - a.totalSpentInPeriod);
 
+  const visibleRecurring = recurringParts.visible.sort(
+    (a, b) => b.totalSpentInPeriod - a.totalSpentInPeriod
+  );
+  const visibleInsights = insightParts.visible.sort(
+    (a, b) => b.spendingInsightScore - a.spendingInsightScore
+  );
+
   const merchantGroups = buildMerchantGroups({
     clusters: result.clusters,
     spendingRows: allSpendRows,
@@ -110,6 +118,13 @@ export function buildStatementIntelligence(
     financialSummary,
   });
 
+  const presentationGroups = buildActivityPresentationGroups({
+    subscriptions: result.subscriptions,
+    visibleRecurring,
+    visibleInsights,
+    clusters: result.clusters,
+  });
+
   return {
     insights: buildInsightsFeed(input),
     healthScore,
@@ -119,12 +134,9 @@ export function buildStatementIntelligence(
     copilot,
     copilotAssistant,
     merchantGroups,
-    visibleRecurring: recurringParts.visible.sort(
-      (a, b) => b.totalSpentInPeriod - a.totalSpentInPeriod
-    ),
-    visibleInsights: insightParts.visible.sort(
-      (a, b) => b.spendingInsightScore - a.spendingInsightScore
-    ),
+    visibleRecurring,
+    visibleInsights,
     lowConfidenceRows,
+    presentationGroups,
   };
 }
