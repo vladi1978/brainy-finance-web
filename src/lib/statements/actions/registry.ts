@@ -184,7 +184,7 @@ export function getActionsForStatus(
   actionType: RecommendationActionType,
   status: string
 ): FinancialActionDefinition[] {
-  if (status === "accepted") {
+  if (status === "accepted" || status === "tracked") {
     return [
       COMPLETE_ACTION,
       ...getActionsForType(actionType).filter((action) => action.id === "dismiss"),
