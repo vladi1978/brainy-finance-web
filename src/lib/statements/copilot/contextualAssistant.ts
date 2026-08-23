@@ -120,8 +120,12 @@ function replyCancelFirst(ctx: CopilotAssistantContext, seed: string): string {
   if (ctx.fees.overdraftCount > 0) {
     const feeItem = feeItems.find((i) => i.signalId.includes("overdraft")) ?? feeItems[0];
     const amt = ctx.fees.total;
+    const feeLead =
+      ctx.fees.overdraftCount === 1
+        ? `Stop the overdraft fee first — one NSF/overdraft-style charge cost about ${formatAmount(amt, currency)} this period.`
+        : `Stop overdraft bleed first — ${ctx.fees.overdraftCount} NSF/overdraft-style charges cost about ${formatAmount(amt, currency)} this period.`;
     lines.push(
-      `${rank}. Stop overdraft bleed first — ${ctx.fees.overdraftCount} NSF/overdraft-style charge(s) cost about ${formatAmount(amt, currency)} this period. That's pure leakage, not lifestyle spend.${feeItem ? ` ${feeItem.recommendation}` : " Enable low-balance alerts and a small buffer before touching subscriptions."}`
+      `${rank}. ${feeLead} That's pure leakage, not lifestyle spend.${feeItem ? ` ${feeItem.recommendation}` : " Enable low-balance alerts and a small buffer before touching subscriptions."}`
     );
     rank++;
   } else if (ctx.fees.total > 0) {
@@ -321,8 +325,10 @@ function replyFees(ctx: CopilotAssistantContext): string {
   const avoidable = ctx.financialSummary.avoidableFees.yearlyHigh;
 
   let text = `Fees totaled ${formatAmount(ctx.fees.total, currency)} this period`;
-  if (ctx.fees.overdraftCount > 0) {
-    text += `, including ${ctx.fees.overdraftCount} overdraft/NSF-style hit(s). These are urgent — they often repeat monthly until balance mechanics change.`;
+  if (ctx.fees.overdraftCount > 1) {
+    text += `, including ${ctx.fees.overdraftCount} overdraft/NSF-style hits. These are urgent — they often repeat monthly until balance mechanics change.`;
+  } else if (ctx.fees.overdraftCount === 1) {
+    text += `, including one overdraft/NSF-style fee. Enable balance alerts so a one-time hit does not become a habit.`;
   } else {
     text += ". They're likely avoidable with balance alerts or a fee-free account tier.";
   }
@@ -339,7 +345,7 @@ function replyFees(ctx: CopilotAssistantContext): string {
 
 function replyOverdraft(ctx: CopilotAssistantContext): string {
   if (ctx.fees.overdraftCount === 0) {
-    return "No overdraft or NSF pattern on this statement — keep low-balance alerts on anyway; one surprise debit can change that quickly.";
+    return "No overdraft or NSF fees on this statement — keep low-balance alerts on anyway; one surprise debit can change that quickly.";
   }
 
   const item =
@@ -347,7 +353,10 @@ function replyOverdraft(ctx: CopilotAssistantContext): string {
     feedByTag(ctx, "fee")[0];
 
   const amt = formatAmount(ctx.fees.total, ctx.copilot.currency);
-  let text = `Overdraft/NSF activity showed up ${ctx.fees.overdraftCount} time(s) for ${amt} in fees this window. That's the highest-urgency item — it hits before any subscription trim.`;
+  let text =
+    ctx.fees.overdraftCount === 1
+      ? `One overdraft or NSF-style fee was observed in this statement (${amt}). That's the highest-urgency item — it hits before any subscription trim.`
+      : `Overdraft/NSF activity showed up ${ctx.fees.overdraftCount} times for ${amt} in fees this window. That's the highest-urgency item — it hits before any subscription trim.`;
 
   if (item) {
     text += ` ${item.insight} ${item.recommendation}`;

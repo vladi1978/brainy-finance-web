@@ -449,7 +449,10 @@ export default function StatementsClient() {
   const periodLabel = useMemo(() => {
     if (!data?.meta.statementPeriod) return null;
     const { start, end } = data.meta.statementPeriod;
-    return `${start} → ${end}`;
+    if (!start || !end) return null;
+    // Always render ascending min → max; omit if either side is unusable.
+    if (start <= end) return `${start} → ${end}`;
+    return `${end} → ${start}`;
   }, [data]);
 
   const summaryCurrency = useMemo(() => {

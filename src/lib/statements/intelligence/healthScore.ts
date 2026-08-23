@@ -2,6 +2,11 @@ import type { HealthScoreLabel, HealthScoreResult, IntelligenceInput } from "./t
 import { buildSavingsOpportunities } from "./savings";
 import { buildGuardedSubscriptionTotals } from "../evidenceGuarded";
 import { collectDedupedFees } from "../feeDedupe";
+import {
+  canEmitHalfPeriodTrend,
+  chronologicalWeeklyDebitTotals,
+  halfPeriodAverages,
+} from "./period";
 
 function labelForScore(score: number): HealthScoreLabel {
   if (score >= 85) return "Excellent";
@@ -10,38 +15,24 @@ function labelForScore(score: number): HealthScoreLabel {
   return "Needs Attention";
 }
 
-function weeklyDebitTotals(clusters: IntelligenceInput["clusters"]): number[] {
-  const byWeek = new Map<string, number>();
-  for (const c of clusters) {
-    for (const ch of c.charges) {
-      if (ch.type !== "debit") continue;
-      const d = Date.parse(ch.date + "T00:00:00Z");
-      if (!Number.isFinite(d)) continue;
-      const dt = new Date(d);
-      const weekKey = `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-W${String(Math.ceil(dt.getUTCDate() / 7)).padStart(2, "0")}`;
-      byWeek.set(weekKey, (byWeek.get(weekKey) ?? 0) + ch.amount);
-    }
-  }
-  return [...byWeek.values()];
-}
-
-function spendingGrowthPenalty(weekTotals: number[]): number {
-  if (weekTotals.length < 3) return 0;
-  const mid = Math.floor(weekTotals.length / 2);
-  const first = weekTotals.slice(0, mid);
-  const second = weekTotals.slice(mid);
-  const avg = (a: number[]) =>
-    a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0;
-  const a0 = avg(first);
-  if (a0 < 25) return 0;
-  const ratio = avg(second) / a0;
+function spendingGrowthPenalty(
+  weekTotals: number[],
+  period: IntelligenceInput["statementPeriod"]
+): number {
+  if (!canEmitHalfPeriodTrend(period, weekTotals.length)) return 0;
+  const halves = halfPeriodAverages(weekTotals);
+  if (!halves || halves.first < 25) return 0;
+  const ratio = halves.second / halves.first;
   if (ratio > 1.35) return 12;
   if (ratio > 1.15) return 6;
   return 0;
 }
 
-function consistencyBonus(weekTotals: number[]): number {
-  if (weekTotals.length < 3) return 0;
+function consistencyBonus(
+  weekTotals: number[],
+  period: IntelligenceInput["statementPeriod"]
+): number {
+  if (!canEmitHalfPeriodTrend(period, weekTotals.length)) return 0;
   const mean = weekTotals.reduce((s, x) => s + x, 0) / weekTotals.length;
   if (mean <= 0) return 0;
   const variance =
@@ -99,8 +90,11 @@ export function buildHealthScore(input: IntelligenceInput): HealthScoreResult {
     });
   }
 
-  const weekTotals = weeklyDebitTotals(input.clusters);
-  const growthPenalty = spendingGrowthPenalty(weekTotals);
+  const weekTotals = chronologicalWeeklyDebitTotals(input.clusters);
+  const growthPenalty = spendingGrowthPenalty(
+    weekTotals,
+    input.statementPeriod
+  );
   if (growthPenalty > 0) {
     score -= growthPenalty;
     factors.push({
@@ -110,7 +104,7 @@ export function buildHealthScore(input: IntelligenceInput): HealthScoreResult {
     });
   }
 
-  const consistency = consistencyBonus(weekTotals);
+  const consistency = consistencyBonus(weekTotals, input.statementPeriod);
   if (consistency > 0) {
     score += consistency;
     factors.push({

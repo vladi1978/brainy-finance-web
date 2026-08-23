@@ -228,7 +228,10 @@ test("one fee never annualized across savings, insights, recommendations, copilo
   const feeInsight = insights.find((c) => c.id.includes("fee") || c.id.includes("overdraft"));
   assert.ok(feeInsight);
   assert.equal(feeInsight!.annualImpact, undefined);
-  assert.match(feeInsight!.explanation, /Annual estimate unavailable/i);
+  assert.match(
+    feeInsight!.explanation,
+    /One overdraft or NSF-style fee was observed|Annual estimate unavailable/i
+  );
 
   const recs = buildRecommendations(input);
   for (const item of recs.items.filter((i) => i.id.includes("fee") || i.id.includes("overdraft"))) {

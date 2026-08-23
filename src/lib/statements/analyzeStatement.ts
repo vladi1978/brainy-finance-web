@@ -24,7 +24,11 @@ import {
 import type { MerchantNormalizationResult } from "./merchantNormalization";
 import { clusterLooksSubscriptionMerchant } from "./subscriptionSignals";
 import { analyzeClustersWithOpenAI } from "./openaiAnalyze";
-import { deriveStatementPeriod, parseTransactionsFromText } from "./parseTransactions";
+import {
+  deriveStatementPeriod,
+  normalizeStatementPeriod,
+  parseTransactionsFromText,
+} from "./parseTransactions";
 import { buildStatementIntelligence } from "./intelligence/buildIntelligence";
 import {
   buildGuardedSubscriptionTotals,
@@ -313,7 +317,9 @@ export async function analyzeStatementPdf(
     transactions = [];
   }
 
-  const statementPeriod = deriveStatementPeriod(transactions);
+  const statementPeriod = normalizeStatementPeriod(
+    deriveStatementPeriod(transactions)
+  );
   const clusters = buildMerchantClusters(transactions);
   const heuristicRefDate = heuristicReferenceDate(statementPeriod);
   const displayRefDate = isoTodayUtc();

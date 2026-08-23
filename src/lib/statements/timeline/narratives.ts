@@ -98,6 +98,15 @@ export function narrativeForSignal(signal: TimelineSignal): NarrativeCopy {
       };
 
     case "overdraft_pattern":
+      if (signal.id === "overdraft-fee" || (signal.eventCount ?? 0) < 2) {
+        return {
+          title: "Overdraft fee detected",
+          insight:
+            "One overdraft or NSF-style fee was observed in this statement.",
+          recommendation:
+            "Enable low-balance alerts and review fee-free account options before the next cycle.",
+        };
+      }
       return {
         title: "Overdraft pattern detected",
         insight:
@@ -108,9 +117,12 @@ export function narrativeForSignal(signal: TimelineSignal): NarrativeCopy {
 
     case "fee_escalation":
       return {
-        title: "Bank fees on the rise",
+        title:
+          signal.id === "bank-fees" || (signal.eventCount ?? 0) < 2
+            ? "Bank fee detected"
+            : "Bank fees on the rise",
         insight:
-          signal.id === "fee-escalation"
+          signal.id === "fee-escalation" && (signal.eventCount ?? 0) >= 2
             ? "Multiple fee charges suggest escalating account costs this period."
             : "Account or service fees were identified on this statement.",
         recommendation:

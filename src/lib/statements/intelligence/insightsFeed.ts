@@ -9,6 +9,18 @@ import {
   resolveChargeCount,
 } from "../evidenceGuarded";
 import { collectDedupedFees } from "../feeDedupe";
+import {
+  bankFeeExplanation,
+  bankFeeTitle,
+  isRepeatedFeeClaim,
+  overdraftFeeExplanation,
+  overdraftFeeTitle,
+} from "../feeClaims";
+import {
+  canEmitHalfPeriodTrend,
+  chronologicalWeeklyDebitTotals,
+  halfPeriodAverages,
+} from "./period";
 
 function sumCategory(
   rows: IntelligenceInput["recurringExpenses"],
@@ -29,32 +41,14 @@ function sumCategory(
   return { count: matched.length, total, chargeCount };
 }
 
-function weeklyDebitTotals(
-  clusters: IntelligenceInput["clusters"]
-): number[] {
-  const byWeek = new Map<string, number>();
-  for (const c of clusters) {
-    for (const ch of c.charges) {
-      if (ch.type !== "debit") continue;
-      const d = Date.parse(ch.date + "T00:00:00Z");
-      if (!Number.isFinite(d)) continue;
-      const week =
-        new Date(d).toISOString().slice(0, 10).slice(0, 7) +
-        "-W" +
-        String(Math.ceil(new Date(d).getUTCDate() / 7));
-      byWeek.set(week, (byWeek.get(week) ?? 0) + ch.amount);
-    }
-  }
-  return [...byWeek.values()].sort((a, b) => a - b);
-}
-
-function hasRisingWeeklyPattern(weekTotals: number[]): boolean {
-  if (weekTotals.length < 3) return false;
-  const first = weekTotals.slice(0, Math.floor(weekTotals.length / 2));
-  const second = weekTotals.slice(Math.floor(weekTotals.length / 2));
-  const avg = (arr: number[]) =>
-    arr.length ? arr.reduce((s, x) => s + x, 0) / arr.length : 0;
-  return avg(second) > avg(first) * 1.2;
+function hasRisingWeeklyPattern(
+  weekTotals: number[],
+  period: IntelligenceInput["statementPeriod"]
+): boolean {
+  if (!canEmitHalfPeriodTrend(period, weekTotals.length)) return false;
+  const halves = halfPeriodAverages(weekTotals);
+  if (!halves || halves.first <= 0) return false;
+  return halves.second > halves.first * 1.2;
 }
 
 export function buildInsightsFeed(input: IntelligenceInput): FinancialInsightCard[] {
@@ -137,19 +131,13 @@ export function buildInsightsFeed(input: IntelligenceInput): FinancialInsightCar
     cards.push({
       id: fees.hasOverdraft ? "overdraft-fees" : "bank-fees",
       title: fees.hasOverdraft
-        ? fees.annualizeEligible
-          ? "Repeated overdraft fees detected"
-          : "Overdraft fee detected"
-        : fees.annualizeEligible
-          ? "Bank fees detected"
-          : "Bank fee detected",
-      explanation: fees.annualizeEligible
-        ? fees.hasOverdraft
-          ? "Overdraft or NSF-style fees appear repeatedly on this statement."
-          : "Account or service fees were identified in your debits."
-        : `$${amt} observed in this statement. ${ANNUAL_ESTIMATE_UNAVAILABLE}.`,
+        ? overdraftFeeTitle(fees)
+        : bankFeeTitle(fees),
+      explanation: fees.hasOverdraft
+        ? overdraftFeeExplanation(fees)
+        : bankFeeExplanation(fees, amt),
       severity: "important",
-      annualImpact: fees.annualizeEligible
+      annualImpact: isRepeatedFeeClaim(fees)
         ? annualizePeriodAmount(fees.observedPeriodTotal, statementPeriod)
         : undefined,
     });
@@ -235,8 +223,8 @@ export function buildInsightsFeed(input: IntelligenceInput): FinancialInsightCar
     });
   }
 
-  const weekTotals = weeklyDebitTotals(clusters);
-  if (hasRisingWeeklyPattern(weekTotals)) {
+  const weekTotals = chronologicalWeeklyDebitTotals(clusters);
+  if (hasRisingWeeklyPattern(weekTotals, statementPeriod)) {
     cards.push({
       id: "weekly-rise",
       title: "Spending was higher in the second half",

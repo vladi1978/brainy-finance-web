@@ -8,6 +8,7 @@ import {
   resolveChargeCount,
 } from "../evidenceGuarded";
 import { collectDedupedFees } from "../feeDedupe";
+import { isRepeatedFeeClaim, isRepeatedOverdraftClaim } from "../feeClaims";
 import { isExpectedBillSubscription } from "../expectedBills";
 import type { ActionRecommendation, RecommendationSeverity } from "./types";
 import {
@@ -106,7 +107,7 @@ export function applyRecommendationRules(
       .filter(Boolean)
       .slice(0, 3)
       .join(", ");
-    if (feeSet.annualizeEligible) {
+    if (feeSet.annualizeEligible && isRepeatedFeeClaim(feeSet)) {
       const monthly =
         Math.round(feeSet.observedPeriodTotal * 0.85 * 100) / 100;
       const yearly = roundMoney(monthly * 12);
@@ -120,7 +121,9 @@ export function applyRecommendationRules(
               ? "Enable balance alerts or move to fee-free banking"
               : "Review account fees and alert settings",
             description: feeSet.hasOverdraft
-              ? "Repeated overdraft or NSF-style fees appeared on this statement. Low-balance notifications or an account without overdraft fees can stop repeat charges."
+              ? isRepeatedOverdraftClaim(feeSet)
+                ? "Repeated overdraft or NSF-style fees appeared on this statement. Low-balance notifications or an account without overdraft fees can stop repeat charges."
+                : `A $${amt} fee was observed in this statement. Consider enabling balance alerts or reviewing fee-free options. ${ANNUAL_ESTIMATE_UNAVAILABLE}.`
               : "Bank or service fees were detected repeatedly. Compare fee schedules and turn on alerts before small balances trigger charges.",
             estimatedMonthlySavings: monthly,
             estimatedYearlySavings: yearly,
@@ -146,7 +149,9 @@ export function applyRecommendationRules(
             title: feeSet.hasOverdraft
               ? "Enable balance alerts or move to fee-free banking"
               : "Review account fees and alert settings",
-            description: `A $${amt} fee was observed in this statement. Consider enabling balance alerts or reviewing fee-free options. ${ANNUAL_ESTIMATE_UNAVAILABLE}.`,
+            description: feeSet.hasOverdraft
+              ? `A $${amt} fee was observed in this statement. Consider enabling balance alerts or reviewing fee-free options. ${ANNUAL_ESTIMATE_UNAVAILABLE}.`
+              : `A $${amt} fee was observed in this statement. Consider enabling balance alerts or reviewing fee-free options. ${ANNUAL_ESTIMATE_UNAVAILABLE}.`,
             estimatedMonthlySavings: 0,
             estimatedYearlySavings: 0,
             severity: "high",

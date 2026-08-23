@@ -21,6 +21,8 @@ export type TimelineSignal = {
   evidence: string;
   tags: Array<"trend" | "priority" | "recurring" | "fee" | "subscription">;
   baseConfidence: number;
+  /** Distinct dated fee events when kind is overdraft/fee (after dedupe). */
+  eventCount?: number;
 };
 
 export type PriorityScores = {

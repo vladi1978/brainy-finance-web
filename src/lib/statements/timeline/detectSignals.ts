@@ -4,45 +4,33 @@ import type { TimelineSignal, TimelineSignalKind } from "./types";
 import {
   computeMeaningfulTrendPct,
   filterEvidenceConfirmedSubscriptions,
-  hasRecurrenceEvidence,
   resolveChargeCount,
 } from "../evidenceGuarded";
+import { collectDedupedFees } from "../feeDedupe";
+import {
+  distinctDatedFeeCount,
+  isRepeatedFeeClaim,
+  isRepeatedOverdraftClaim,
+} from "../feeClaims";
+import {
+  canEmitHalfPeriodTrend,
+  chronologicalWeeklyDebitTotals,
+  halfPeriodAverages,
+} from "../intelligence/period";
 
-function weekKey(isoDate: string): string | null {
-  const d = Date.parse(isoDate + "T00:00:00Z");
-  if (!Number.isFinite(d)) return null;
-  const dt = new Date(d);
-  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-W${String(Math.ceil(dt.getUTCDate() / 7)).padStart(2, "0")}`;
-}
-
-function weeklyDebitTotals(clusters: MerchantCluster[]): number[] {
-  const byWeek = new Map<string, number>();
-  for (const c of clusters) {
-    for (const ch of c.charges) {
-      if (ch.type !== "debit") continue;
-      const wk = weekKey(ch.date);
-      if (!wk) continue;
-      byWeek.set(wk, (byWeek.get(wk) ?? 0) + ch.amount);
-    }
-  }
-  return [...byWeek.values()].sort((a, b) => a - b);
-}
-
-function halfDelta(values: number[]): {
+function halfDelta(
+  values: number[],
+  period: IntelligenceInput["statementPeriod"]
+): {
   pct: number | null;
   first: number;
   second: number;
   useNeutralWording: boolean;
 } | null {
-  if (values.length < 3) return null;
-  const mid = Math.floor(values.length / 2);
-  const first = values.slice(0, mid);
-  const second = values.slice(mid);
-  const avg = (arr: number[]) =>
-    arr.length ? arr.reduce((s, x) => s + x, 0) / arr.length : 0;
-  const a0 = avg(first);
-  const a1 = avg(second);
-  if (a0 <= 0 && a1 <= 0) return null;
+  if (!canEmitHalfPeriodTrend(period, values.length)) return null;
+  const halves = halfPeriodAverages(values);
+  if (!halves) return null;
+  const { first: a0, second: a1 } = halves;
   const trend = computeMeaningfulTrendPct(a0, a1);
   return {
     pct: trend.pct,
@@ -140,8 +128,8 @@ export function detectTimelineSignals(input: IntelligenceInput): TimelineSignal[
     byCluster
   );
 
-  const weekTotals = weeklyDebitTotals(clusters);
-  const weekDelta = halfDelta(weekTotals);
+  const weekTotals = chronologicalWeeklyDebitTotals(clusters);
+  const weekDelta = halfDelta(weekTotals, input.statementPeriod);
   if (weekDelta && weekDelta.second > weekDelta.first) {
     pushSignal(
       signals,
@@ -277,46 +265,49 @@ export function detectTimelineSignals(input: IntelligenceInput): TimelineSignal[
     );
   }
 
-  const fees = allSpend.filter(
-    (r) => r.categoryKey === "fees" || r.kind === "fee"
-  );
-  const feeTotal = fees.reduce((s, r) => s + r.totalSpentInPeriod, 0);
-  const feeCharges = fees.reduce(
-    (n, r) => n + spendChargeCount(r, byCluster),
-    0
-  );
-  const overdraft = fees.filter((r) =>
-    /\b(OVERDRAFT|OD\s+F|NSF)\b/ui.test(`${r.merchant} ${r.normalizedName}`)
-  );
-  if (overdraft.length > 0) {
+  const feeSet = collectDedupedFees({
+    recurringExpenses,
+    spendingInsights,
+    clusters,
+  });
+  const feeTotal = feeSet.observedPeriodTotal;
+  const feeCharges = distinctDatedFeeCount(feeSet);
+  if (feeSet.hasOverdraft) {
+    const repeated = isRepeatedOverdraftClaim(feeSet);
     pushSignal(
       signals,
       {
-        id: "overdraft-pattern",
+        id: repeated ? "overdraft-pattern" : "overdraft-fee",
         kind: "overdraft_pattern",
-        amount: overdraft.reduce((s, r) => s + r.totalSpentInPeriod, 0),
-        evidence: `${overdraft.length} overdraft or NSF-style fee charge(s) detected.`,
+        amount: feeSet.events
+          .filter((e) => e.isOverdraft)
+          .reduce((s, e) => s + e.amount, 0),
+        evidence: repeated
+          ? `${feeSet.overdraftCount} overdraft or NSF-style fee charges detected.`
+          : "One overdraft or NSF-style fee was observed in this statement.",
         tags: ["fee", "priority"],
         baseConfidence: 0.9,
+        eventCount: feeCharges,
       },
       currency
     );
   }
 
-  if (hasRecurrenceEvidence(feeCharges) && feeTotal > 0) {
+  if (isRepeatedFeeClaim(feeSet) && feeTotal > 0) {
     pushSignal(
       signals,
       {
         id: "fee-escalation",
         kind: "fee_escalation",
         amount: feeTotal,
-        evidence: `Multiple fee charges (${fees.length}) totaling ${feeTotal.toFixed(2)} in this window.`,
+        evidence: `Multiple fee charges (${feeCharges}) totaling ${feeTotal.toFixed(2)} in this window.`,
         tags: ["fee", "priority"],
         baseConfidence: 0.85,
+        eventCount: feeCharges,
       },
       currency
     );
-  } else if (feeTotal > 0 && overdraft.length === 0) {
+  } else if (feeTotal > 0 && !feeSet.hasOverdraft) {
     pushSignal(
       signals,
       {
@@ -327,6 +318,7 @@ export function detectTimelineSignals(input: IntelligenceInput): TimelineSignal[
           "Account or service fee identified on this statement (single-period observation).",
         tags: ["fee"],
         baseConfidence: 0.75,
+        eventCount: feeCharges,
       },
       currency
     );
