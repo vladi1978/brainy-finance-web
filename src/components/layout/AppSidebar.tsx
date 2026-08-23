@@ -27,6 +27,12 @@ const PRIMARY: NavItem[] = [
   },
 ];
 
+const PLAN: NavItem = {
+  label: "Brainy Plus",
+  href: "/pricing",
+  description: "$7.99/mo · founding preview",
+};
+
 function isPrimaryActive(pathname: string, href: string): boolean {
   if (href === "/compare") {
     return pathname === "/compare" || pathname === "/dashboard";
@@ -100,6 +106,10 @@ export default function AppSidebar() {
               />
             ))}
           </div>
+        </div>
+        <div>
+          <p className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wider text-white/35">Plan preview</p>
+          <NavButton item={PLAN} active={pathname === PLAN.href} />
         </div>
       </nav>
 

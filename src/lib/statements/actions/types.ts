@@ -7,6 +7,7 @@ export type RecommendationStatus =
   | "pending"
   | "dismissed"
   | "accepted"
+  | "completed"
   | "tracked"
   | "essential";
 
@@ -60,9 +61,14 @@ export type FinancialActionAnalyticsEvent = {
   confidence: number;
 };
 
-export type AcceptedSavingsSummary = {
-  count: number;
-  monthly: number;
-  yearly: number;
+export type SavingsLedgerSummary = {
+  plannedCount: number;
+  plannedMonthly: number;
+  plannedYearly: number;
+  confirmedCount: number;
+  confirmedMonthly: number;
+  confirmedYearly: number;
   currency: string;
 };
+
+export type AcceptedSavingsSummary = SavingsLedgerSummary;

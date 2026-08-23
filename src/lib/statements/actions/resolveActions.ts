@@ -1,4 +1,4 @@
-import { getActionsForType } from "./registry";
+import { getActionsForStatus } from "./registry";
 import type {
   EnrichedRecommendation,
   RecommendationInput,
@@ -15,7 +15,7 @@ export function resolveRecommendation(
     ...rec,
     merchant: rec.merchantReference,
     status,
-    actions: getActionsForType(rec.actionType),
+    actions: getActionsForStatus(rec.actionType, status),
   };
 }
 

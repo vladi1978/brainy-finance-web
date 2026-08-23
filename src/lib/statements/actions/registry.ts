@@ -4,7 +4,7 @@ import type { FinancialActionDefinition } from "./types";
 const DEFAULT_ACTIONS: FinancialActionDefinition[] = [
   {
     id: "accept_savings",
-    label: "Accept savings",
+    label: "Add to my plan",
     kind: "primary",
     resolvesTo: "accepted",
   },
@@ -36,7 +36,7 @@ const REGISTRY: Partial<
       id: "keep",
       label: "Keep",
       kind: "secondary",
-      resolvesTo: "accepted",
+      resolvesTo: "essential",
     },
     {
       id: "dismiss",
@@ -62,7 +62,7 @@ const REGISTRY: Partial<
       id: "keep_plan",
       label: "Keep current plan",
       kind: "ghost",
-      resolvesTo: "accepted",
+      resolvesTo: "essential",
     },
   ],
   setup_balance_alerts: [
@@ -167,15 +167,37 @@ const REGISTRY: Partial<
   ],
 };
 
+const COMPLETE_ACTION: FinancialActionDefinition = {
+  id: "mark_completed",
+  label: "Mark completed",
+  kind: "primary",
+  resolvesTo: "completed",
+};
+
 export function getActionsForType(
   actionType: RecommendationActionType
 ): FinancialActionDefinition[] {
   return REGISTRY[actionType] ?? DEFAULT_ACTIONS;
 }
 
+export function getActionsForStatus(
+  actionType: RecommendationActionType,
+  status: string
+): FinancialActionDefinition[] {
+  if (status === "accepted") {
+    return [
+      COMPLETE_ACTION,
+      ...getActionsForType(actionType).filter((action) => action.id === "dismiss"),
+    ];
+  }
+  if (status === "completed") return [];
+  return getActionsForType(actionType);
+}
+
 export function getActionDefinition(
   actionType: RecommendationActionType,
   actionId: FinancialActionDefinition["id"]
 ): FinancialActionDefinition | undefined {
+  if (actionId === COMPLETE_ACTION.id) return COMPLETE_ACTION;
   return getActionsForType(actionType).find((a) => a.id === actionId);
 }

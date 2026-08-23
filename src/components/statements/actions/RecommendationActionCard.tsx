@@ -25,8 +25,12 @@ const statusBadge: Partial<
   Record<EnrichedRecommendation["status"], { label: string; className: string }>
 > = {
   accepted: {
-    label: "Accepted",
+    label: "Planned",
     className: "border-emerald-400/35 bg-emerald-500/15 text-emerald-100",
+  },
+  completed: {
+    label: "Completed",
+    className: "border-emerald-300/45 bg-emerald-400/20 text-emerald-50",
   },
   dismissed: {
     label: "Dismissed",
@@ -45,6 +49,7 @@ const statusBadge: Partial<
 const statusAnimation: Record<EnrichedRecommendation["status"], string> = {
   pending: "",
   accepted: "bf-accept-glow",
+  completed: "ring-1 ring-emerald-300/40",
   dismissed: "bf-dismiss-fade",
   tracked: "bf-tracked-highlight",
   essential: "ring-1 ring-fuchsia-400/30",

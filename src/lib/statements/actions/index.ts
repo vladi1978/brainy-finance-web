@@ -7,6 +7,7 @@ export type {
   FinancialActionId,
   RecommendationInput,
   RecommendationStatus,
+  SavingsLedgerSummary,
   StoredRecommendationState,
 } from "./types";
 export { logFinancialAction } from "./analytics";

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useMemo, useState } from "react";
 
 import { CopilotFeedSection } from "@/components/statements/copilot/CopilotFeedSection";
+import { GuidedStatementStart } from "@/components/statements/GuidedStatementStart";
 import { FinancialIntelligenceSummaryPanel } from "@/components/statements/FinancialIntelligenceSummary";
 import type { FinancialIntelligenceSummary } from "@/lib/statements/intelligence/financialCategories";
 import type { CopilotAssistantContext } from "@/lib/statements/copilot/types";
@@ -547,6 +548,8 @@ export default function StatementsClient() {
           </a>
           .
         </p>
+
+        <GuidedStatementStart />
 
         <label className="mb-4 flex cursor-pointer items-start gap-3 rounded-xl border border-white/15 bg-white/[0.03] px-4 py-3 text-sm text-white/80">
           <input
