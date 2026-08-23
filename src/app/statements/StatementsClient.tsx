@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import { CopilotFeedSection } from "@/components/statements/copilot/CopilotFeedSection";
 import { GuidedStatementStart } from "@/components/statements/GuidedStatementStart";
@@ -13,6 +13,7 @@ import { ProviderComparisonModal } from "@/components/statements/actions/Provide
 import { RecommendationActionCard } from "@/components/statements/actions/RecommendationActionCard";
 import { SavingsAcceptedSummary } from "@/components/statements/actions/SavingsAcceptedSummary";
 import { useRecommendationActions } from "@/components/statements/actions/useRecommendationActions";
+import { findRecommendationReviewTarget } from "@/lib/statements/actions/recommendationNavigation";
 import { SUBSCRIPTION_CONFIDENCE_MIN, TRUE_SUBSCRIPTION_SCORE_MIN } from "@/lib/statements/heuristics";
 import type { RecommendationActionType } from "@/lib/statements/recommendations/types";
 import {
@@ -413,6 +414,8 @@ export default function StatementsClient() {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<AnalyzeOk | null>(null);
   const [documentConsent, setDocumentConsent] = useState(false);
+  const [highlightedClusterId, setHighlightedClusterId] = useState<string | null>(null);
+  const activityCardRefs = useRef(new Map<string, HTMLDivElement>());
   const [actions, setActions] = useState<
     Record<
       string,
@@ -528,6 +531,30 @@ export default function StatementsClient() {
       clusters: [],
     });
   }, [data, intelligence, displayRecurring, displayInsights]);
+
+  const openRecommendationReview = useCallback(
+    (merchantReference?: string) => {
+      const target = findRecommendationReviewTarget(
+        merchantReference,
+        presentationGroups?.subscriptions ?? []
+      );
+      if (!target) return false;
+
+      const element = activityCardRefs.current.get(target.clusterId);
+      if (!element) return false;
+
+      setHighlightedClusterId(target.clusterId);
+      element.scrollIntoView({ behavior: "smooth", block: "center" });
+      element.focus({ preventScroll: true });
+      window.setTimeout(() => {
+        setHighlightedClusterId((current) =>
+          current === target.clusterId ? null : current
+        );
+      }, 2200);
+      return true;
+    },
+    [presentationGroups]
+  );
 
   return (
     <main className="flex-1 bg-black px-6 py-10 text-white">
@@ -919,9 +946,16 @@ export default function StatementsClient() {
                           severityLabel={recommendationSeverityLabel}
                           formatMoney={formatMoney}
                           lastActionId={getLastActionId(rec.id)}
-                          onAction={(actionId) =>
-                            dispatchAction(rec.id, actionId)
-                          }
+                          onAction={(actionId) => {
+                            if (
+                              rec.actionType === "review_subscription" &&
+                              actionId === "review_merchant" &&
+                              openRecommendationReview(rec.merchantReference)
+                            ) {
+                              return;
+                            }
+                            dispatchAction(rec.id, actionId);
+                          }}
                         />
                       ))}
                     </ul>
@@ -1046,6 +1080,14 @@ export default function StatementsClient() {
                     <li key={card.id}>
                       <ActivityPresentationCardView
                         card={card}
+                        highlighted={highlightedClusterId === card.clusterId}
+                        cardRef={(element) => {
+                          if (element) {
+                            activityCardRefs.current.set(card.clusterId, element);
+                          } else {
+                            activityCardRefs.current.delete(card.clusterId);
+                          }
+                        }}
                         action={actions[card.clusterId]}
                         onAction={(key) =>
                           setActions((prev) => ({
@@ -1496,12 +1538,14 @@ function statusBadge(status: ActivityPresentationCardPayload["status"]) {
 
 function ActivityPresentationCardView(props: {
   card: ActivityPresentationCardPayload | ActivityPresentationCard;
+  highlighted?: boolean;
+  cardRef?: (element: HTMLDivElement | null) => void;
   action?: "review" | "expected" | "not_mine" | "keep" | "alt" | "cancel";
   onAction: (
     key: "review" | "expected" | "not_mine" | "keep" | "alt"
   ) => void;
 }) {
-  const { card, action, onAction } = props;
+  const { card, action, onAction, highlighted = false, cardRef } = props;
   const badge = statusBadge(card.status);
   const compareHref = `/compare?subscriptionMerchant=${encodeURIComponent(card.normalizedName)}`;
   const showExpectedAction = card.groupId === "expected_recurring_bills";
@@ -1509,7 +1553,16 @@ function ActivityPresentationCardView(props: {
     card.groupId === "subscriptions" || card.groupId === "unusual_recurring";
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.04] to-white/[0.01] p-5">
+    <div
+      ref={cardRef}
+      tabIndex={-1}
+      className={[
+        "rounded-2xl border bg-gradient-to-br from-white/[0.04] to-white/[0.01] p-5 outline-none transition duration-300",
+        highlighted
+          ? "border-violet-300/70 ring-2 ring-violet-400/35"
+          : "border-white/10",
+      ].join(" ")}
+    >
       <div className="flex flex-wrap gap-4">
         <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-black/40 text-lg font-bold text-white/80">
           {merchantInitial(card.normalizedName)}
