@@ -6,6 +6,10 @@ import {
   peekPriceAlertNotificationsForUser,
   runSimulatedPriceAlertSweep,
 } from "@/lib/premium/priceAlerts";
+import {
+  DEV_BACKGROUND_TASKS_DISABLED_REASON,
+  isDevBackgroundTasksDisabled,
+} from "@/lib/dev/runtimeControls";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +18,15 @@ export async function GET(req: Request) {
   const userId = url.searchParams.get("userId")?.trim();
   if (!userId) {
     return NextResponse.json({ error: "Missing userId" }, { status: 400 });
+  }
+
+  if (isDevBackgroundTasksDisabled()) {
+    return NextResponse.json({
+      alerts: [],
+      notifications: [],
+      skipped: true,
+      reason: DEV_BACKGROUND_TASKS_DISABLED_REASON,
+    });
   }
 
   const sweep = url.searchParams.get("sweep") === "1";
@@ -34,6 +47,13 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  if (isDevBackgroundTasksDisabled()) {
+    return NextResponse.json({
+      skipped: true,
+      reason: DEV_BACKGROUND_TASKS_DISABLED_REASON,
+    });
+  }
+
   try {
     const body = (await req.json()) as Record<string, unknown>;
     const userId = String(body.userId ?? "").trim();

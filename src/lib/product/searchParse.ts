@@ -453,6 +453,80 @@ export async function fetchParsedWalmartSearch(
   return parseWalmartSearchHtml(html, limit);
 }
 
+/**
+ * Product tiles from an eBay search HTML page.
+ */
+export function parseEbaySearchHtml(
+  html: string,
+  limit = 12
+): ParsedSearchCandidate[] {
+  const out: ParsedSearchCandidate[] = [];
+  const seen = new Set<string>();
+
+  const tileRe =
+    /href="(https:\/\/www\.ebay\.com\/itm\/\d+[^"]*)"[^>]*class="[^"]*s-item__link[^"]*"[^>]*>[\s\S]*?class="[^"]*s-item__title[^"]*"[^>]*>[\s\S]*?<span[^>]*>([^<]{3,500})<\/span>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = tileRe.exec(html)) !== null && out.length < limit) {
+    const productUrl = m[1]!.split("#")[0]?.split("?")[0]?.trim() ?? "";
+    const title = stripTags(m[2]!.replace(/\s+/g, " ").trim());
+    if (!productUrl || title.length < 3) continue;
+    const lk = productUrl.toLowerCase();
+    if (seen.has(lk)) continue;
+    if (!isValidProductDetailUrl("ebay", productUrl)) continue;
+    seen.add(lk);
+    out.push({
+      title,
+      price: null,
+      currency: "USD",
+      productUrl,
+    });
+  }
+
+  const fallbackRe =
+    /class="[^"]*s-item__title[^"]*"[^>]*>[\s\S]*?<span[^>]*>([^<]{3,500})<\/span>[\s\S]*?href="(https:\/\/www\.ebay\.com\/itm\/\d+[^"]*)"/gi;
+  while ((m = fallbackRe.exec(html)) !== null && out.length < limit) {
+    const title = stripTags(m[1]!.replace(/\s+/g, " ").trim());
+    const productUrl = m[2]!.split("#")[0]?.split("?")[0]?.trim() ?? "";
+    if (!productUrl || title.length < 3) continue;
+    const lk = productUrl.toLowerCase();
+    if (seen.has(lk)) continue;
+    if (!isValidProductDetailUrl("ebay", productUrl)) continue;
+    seen.add(lk);
+    out.push({
+      title,
+      price: null,
+      currency: "USD",
+      productUrl,
+    });
+  }
+
+  return dedupeByProductUrl(out).slice(0, limit);
+}
+
+export async function fetchParsedEbaySearch(
+  query: string,
+  limit = 12
+): Promise<ParsedSearchCandidate[]> {
+  const q = query.trim();
+  if (!q) return [];
+  const url = `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(q)}`;
+  const html = await fetchSearchPageHtml(url);
+  if (!html) return [];
+  return parseEbaySearchHtml(html, limit);
+}
+
+export async function fetchParsedBestBuySearch(
+  query: string,
+  limit = 12
+): Promise<ParsedSearchCandidate[]> {
+  const q = query.trim();
+  if (!q) return [];
+  const url = `https://www.bestbuy.com/site/searchpage.jsp?st=${encodeURIComponent(q)}`;
+  const html = await fetchSearchPageHtml(url);
+  if (!html) return [];
+  return parseBestBuySearchHtml(html, limit);
+}
+
 /** Structured SERP fetch outcome for logs and scaling. */
 export type StoreSerpDiagnostics = {
   store: "amazon" | "walmart" | "target" | "temu";

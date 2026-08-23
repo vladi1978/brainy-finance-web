@@ -10,20 +10,27 @@ export function logRecommendationGeneration(
     totalMonthlySavings: number;
   }
 ): void {
+  const production = process.env.NODE_ENV === "production";
   console.log("[recommendations/engine] generated", {
     count: items.length,
-    totalMonthlySavings: meta.totalMonthlySavings,
     currency: meta.currency,
     subscriptionCount: meta.subscriptionCount,
     recurringExpenseCount: meta.recurringExpenseCount,
     spendingInsightCount: meta.spendingInsightCount,
+    ...(production
+      ? {}
+      : { totalMonthlySavings: meta.totalMonthlySavings }),
     actions: items.map((r) => ({
       id: r.id,
       actionType: r.actionType,
       severity: r.severity,
       confidence: Math.round(r.confidence * 100),
-      monthlySavings: r.estimatedMonthlySavings,
-      merchantReference: r.merchantReference ?? null,
+      ...(production
+        ? {}
+        : {
+            monthlySavings: r.estimatedMonthlySavings,
+            merchantReference: r.merchantReference ?? null,
+          }),
     })),
   });
 }

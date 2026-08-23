@@ -1,4 +1,6 @@
 import { parseDimensionPairs } from "./matching/criticalSpecs";
+import { extractDiagonalInches } from "./matching/displayDimensions";
+import { cleanRetailerSearchQuery } from "./matching/searchQueryCleanup";
 import { normalizeTitle } from "./normalize";
 import type { CriticalListingAttributes, NormalizedProduct } from "./types";
 
@@ -147,8 +149,11 @@ export function buildCriticalShoppingCoreSegments(
   for (const d of dimensionSignaturesFromText(raw)) {
     if (d.includes("x")) segs.push(d);
   }
-  const inch = raw.match(/\b(\d{2,3})\s*(?:"|inch|inches)\b/i);
-  if (inch?.[1]) segs.push(`${inch[1]} inch`);
+  const diagonal =
+    norm.sizeInches ??
+    norm.structured.sizeInches ??
+    extractDiagonalInches(raw);
+  if (diagonal != null) segs.push(`${diagonal} inch`);
 
   for (const p of accessoryMustIncludeFromText(raw, norm.category)) {
     segs.push(p);
@@ -161,5 +166,11 @@ export function buildCriticalShoppingCoreSegments(
   if (norm.category === "tv" && norm.structured.displayType) {
     segs.push(String(norm.structured.displayType).replace(/_/g, " "));
   }
-  return [...new Set(segs.map((s) => s.trim()).filter(Boolean))];
+  return [
+    ...new Set(
+      segs
+        .map((s) => cleanRetailerSearchQuery(s.trim()))
+        .filter((s) => s.length > 0)
+    ),
+  ];
 }

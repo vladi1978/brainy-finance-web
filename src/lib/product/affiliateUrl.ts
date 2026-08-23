@@ -3,7 +3,7 @@ import type { UniversalStoreId } from "./types";
 /**
  * Strip noisy tracking params while keeping legitimate retailer query strings.
  */
-function scrubKnownNoiseParams(url: string): string {
+export function scrubKnownNoiseParams(url: string): string {
   try {
     const u = new URL(url);
     for (const k of [

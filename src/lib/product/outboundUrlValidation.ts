@@ -125,6 +125,11 @@ function hostIsTrackingOrShortener(host: string): boolean {
   return false;
 }
 
+/** Whether the host is a known link shortener or affiliate tracking hop (needs redirect resolve). */
+export function hostnameIsTrackingOrShortener(hostname: string): boolean {
+  return hostIsTrackingOrShortener(hostname);
+}
+
 function hostHasGoogleLabel(host: string): boolean {
   const h = normalizeHostname(host);
   return h.split(".").includes("google");

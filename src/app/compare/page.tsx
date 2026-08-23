@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useState } from "react";
 import type {
   CompareApiCandidate,
+  CompareMatchResultGroups,
   CompareProductDeal,
   CompareProductResponse,
+  MatchConfidenceBand,
   PremiumCouponOffer,
 } from "@/lib/product/types";
 import {
@@ -18,6 +20,15 @@ import {
   buildBrainyRedirectUrl,
   isOutboundRedirectTargetValid,
 } from "@/lib/product/outboundRedirect";
+import {
+  COMPARE_FLOW_DEPARTMENTS,
+  type CompareFlowDepartment,
+} from "@/lib/product/compareFlowDepartment";
+import {
+  NO_EXACT_WITH_ALTERNATIVES_MESSAGE,
+  POSSIBLE_ALTERNATIVES_EXPLANATION,
+} from "@/lib/product/matching/confidenceBands";
+import { isClientDevBackgroundTasksDisabled } from "@/lib/dev/runtimeControls";
 
 const USER_STORAGE_KEY = "brainy_finance_uid";
 
@@ -54,25 +65,91 @@ function candidateRetailerName(c: { store: string; storeLabel?: string }): strin
   return storeDisplayLabel(c.store);
 }
 
-function MatchBadge({ type }: { type: CompareApiCandidate["matchType"] }) {
-  const colors = {
+function ConfidenceBandBadge({
+  band,
+  label,
+}: {
+  band?: MatchConfidenceBand;
+  label?: string;
+}) {
+  const resolved = label ?? "Match";
+  const styles: Record<MatchConfidenceBand, string> = {
     exact_match: "bg-green-500/20 text-green-300 border-green-500/40",
-    close_match: "bg-emerald-500/18 text-emerald-200 border-emerald-500/35",
-    alternative: "bg-sky-500/15 text-sky-200 border-sky-500/35",
+    high_confidence: "bg-emerald-500/18 text-emerald-200 border-emerald-500/35",
+    similar_specs: "bg-cyan-500/15 text-cyan-200 border-cyan-500/35",
+    possible_alternative: "bg-sky-500/15 text-sky-200 border-sky-500/35",
+    below_threshold: "bg-white/10 text-white/50 border-white/20",
   };
-  const labels: Record<CompareApiCandidate["matchType"], string> = {
-    exact_match: "Best Deal",
-    close_match: "Similar Product",
-    alternative: "Alternative Option",
-  };
+  const bandKey = band ?? "below_threshold";
   return (
     <span
-      className={`text-xs font-medium px-2 py-0.5 rounded-md border ${colors[type]}`}
+      className={`text-xs font-medium px-2 py-0.5 rounded-md border ${styles[bandKey]}`}
     >
-      {labels[type]}
+      {resolved}
     </span>
   );
 }
+
+function MatchBadge({ type }: { type: CompareApiCandidate["matchType"] }) {
+  const map: Record<
+    CompareApiCandidate["matchType"],
+    { band: MatchConfidenceBand; label: string }
+  > = {
+    exact_match: { band: "exact_match", label: "Exact Match" },
+    close_match: { band: "high_confidence", label: "High Confidence" },
+    alternative: { band: "possible_alternative", label: "Possible Alternative" },
+  };
+  const entry = map[type];
+  return <ConfidenceBandBadge band={entry.band} label={entry.label} />;
+}
+
+function resolveMatchGroups(
+  result: CompareProductResponse
+): CompareMatchResultGroups {
+  if (result.matchGroups) return result.matchGroups;
+  return {
+    exactMatches: result.candidates.filter((c) => c.confidenceBand === "exact_match"),
+    highConfidenceMatches: result.candidates.filter(
+      (c) => c.confidenceBand === "high_confidence"
+    ),
+    possibleAlternatives: result.candidates.filter(
+      (c) =>
+        c.confidenceBand === "possible_alternative" ||
+        c.confidenceBand === "similar_specs"
+    ),
+  };
+}
+
+function countMatchGroupItems(groups: CompareMatchResultGroups): number {
+  return (
+    (groups.exactMatches?.length ?? 0) +
+    (groups.highConfidenceMatches?.length ?? 0) +
+    (groups.possibleAlternatives?.length ?? 0)
+  );
+}
+
+const MATCH_GROUP_SECTIONS: {
+  key: keyof CompareMatchResultGroups;
+  title: string;
+  description: string;
+}[] = [
+  {
+    key: "exactMatches",
+    title: "Exact Matches",
+    description: "Score 90+ — strongest alignment with your product.",
+  },
+  {
+    key: "highConfidenceMatches",
+    title: "High Confidence Matches",
+    description: "Score 75–89 — key specs align for price comparison.",
+  },
+  {
+    key: "possibleAlternatives",
+    title: "Possible Alternatives",
+    description:
+      "Score 55–74 — related listings; verify size, model, and accessories before buying.",
+  },
+];
 
 function StoreLogo({
   store,
@@ -217,16 +294,43 @@ function renderCandidateCard(
                   Product listing
                 </span>
               ) : null}
-              <MatchBadge type={c.matchType} />
-              <span className="text-white/40 text-sm">{c.identityScore}/100</span>
-              {savingsVs != null && savingsVs > 0 ? (
+              <ConfidenceBandBadge
+                band={c.confidenceBand}
+                label={c.confidenceBandLabel}
+              />
+              <span className="text-white/40 text-sm">
+                {typeof c.displayMatchScore === "number"
+                  ? c.displayMatchScore
+                  : c.identityScore}
+                /100
+              </span>
+              {savingsVs != null && savingsVs > 0 && !c.commercialListingLabel ? (
                 <span className="text-xs font-semibold text-green-400 rounded-md border border-green-500/40 bg-green-500/15 px-2 py-0.5">
                   Save {formatPrice(savingsVs)}
+                </span>
+              ) : null}
+              {c.commercialListingLabel ? (
+                <span
+                  className="text-[11px] font-medium uppercase tracking-wide rounded-md border border-amber-500/45 bg-amber-500/12 px-2 py-0.5 text-amber-200/95"
+                  title="This price may be a payment plan or rental — not a full purchase price."
+                >
+                  {c.commercialListingLabel}
                 </span>
               ) : null}
             </div>
           </div>
           <p className="font-medium text-white line-clamp-2">{c.title}</p>
+          {c.matchReasons && c.matchReasons.length > 0 ? (
+            <ul className="text-white/55 text-sm mt-1 space-y-0.5 list-disc list-inside">
+              {c.matchReasons.map((reason) => (
+                <li key={reason}>{reason}</li>
+              ))}
+            </ul>
+          ) : (c.matchExplanation ?? c.relevanceReason) ? (
+            <p className="text-white/55 text-sm mt-1 line-clamp-2">
+              {c.matchExplanation ?? c.relevanceReason}
+            </p>
+          ) : null}
           <p className="text-green-400 font-semibold mt-1">{formatPrice(c.price)}</p>
           <div className="mt-3 flex flex-wrap gap-2">
             {redirectHref ? (
@@ -263,7 +367,85 @@ function renderCandidateCard(
 
 
 
+function CompareDepartmentDebugLine({
+  selectedDepartment,
+}: {
+  selectedDepartment: CompareFlowDepartment | null;
+}) {
+  if (process.env.NODE_ENV !== "development") return null;
+
+  const activeLabel =
+    COMPARE_FLOW_DEPARTMENTS.find((dept) => dept.id === selectedDepartment)
+      ?.label ?? "None";
+
+  return (
+    <p className="mt-2 text-xs font-mono text-white/40">
+      Selected department:{" "}
+      <span className={selectedDepartment ? "text-green-300" : undefined}>
+        {activeLabel}
+      </span>
+    </p>
+  );
+}
+
+function DepartmentIcon({ id }: { id: CompareFlowDepartment }) {
+  const common = "h-6 w-6";
+  if (id === "electronics") {
+    return (
+      <svg className={common} viewBox="0 0 24 24" fill="none" aria-hidden>
+        <rect
+          x="3"
+          y="5"
+          width="18"
+          height="12"
+          rx="2"
+          stroke="currentColor"
+          strokeWidth="1.5"
+        />
+        <path d="M8 21h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  if (id === "pools_outdoor") {
+    return (
+      <svg className={common} viewBox="0 0 24 24" fill="none" aria-hidden>
+        <path
+          d="M4 14c3-4 13-4 16 0"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+        />
+        <path
+          d="M6 18h12"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+        />
+        <circle cx="12" cy="9" r="3" stroke="currentColor" strokeWidth="1.5" />
+      </svg>
+    );
+  }
+  return (
+    <svg className={common} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M14.5 6.5l3 3L9 18H6v-3l8.5-8.5z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M13 8l3 3"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 export default function ComparePage() {
+  const [selectedDepartment, setSelectedDepartment] =
+    useState<CompareFlowDepartment | null>(null);
   const [inputMode, setInputMode] = useState<InputMode>("link");
   const [linkValue, setLinkValue] = useState("");
   const [linkPricePaid, setLinkPricePaid] = useState("");
@@ -302,7 +484,25 @@ export default function ComparePage() {
       pricePaid: manualPricePaid.trim() || null,
     });
 
-  const canCompare = linkInputReady && manualInputReady && pricePaidValid && !loading;
+  const canCompare =
+    selectedDepartment !== null &&
+    linkInputReady &&
+    manualInputReady &&
+    pricePaidValid &&
+    !loading;
+
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "development") return;
+    console.log(
+      "[DEPARTMENT_STATE]",
+      JSON.stringify({
+        selectedDepartment,
+        label:
+          COMPARE_FLOW_DEPARTMENTS.find((dept) => dept.id === selectedDepartment)
+            ?.label ?? null,
+      })
+    );
+  }, [selectedDepartment]);
 
   useEffect(() => {
     try {
@@ -318,6 +518,7 @@ export default function ComparePage() {
   }, []);
 
   const refreshPriceFeed = useCallback(async () => {
+    if (isClientDevBackgroundTasksDisabled()) return;
     if (!userId) return;
     try {
       const res = await fetch(
@@ -339,6 +540,7 @@ export default function ComparePage() {
   }, [refreshPriceFeed]);
 
   const runSweepAndRefresh = useCallback(async () => {
+    if (isClientDevBackgroundTasksDisabled()) return;
     if (!userId) return;
     try {
       await fetch("/api/cron/price-alerts", { method: "POST" });
@@ -408,6 +610,10 @@ export default function ComparePage() {
 
   const handleCompare = async () => {
     setErrorMessage("");
+    if (!selectedDepartment) {
+      setErrorMessage("Choose a department before comparing.");
+      return;
+    }
     if (!validatePricePaid()) return;
 
     const pricePaid = currentPricePaid.trim();
@@ -418,6 +624,7 @@ export default function ComparePage() {
       body = {
         input: linkValue.trim(),
         pricePaid,
+        department: selectedDepartment,
       };
     } else {
       const manualProduct = {
@@ -435,7 +642,27 @@ export default function ComparePage() {
         );
         return;
       }
-      body = { manualProduct, pricePaid };
+      body = { manualProduct, pricePaid, department: selectedDepartment };
+    }
+
+    if (process.env.NODE_ENV === "development") {
+      console.log(
+        "[DEPARTMENT_REQUEST]",
+        JSON.stringify({
+          selectedDepartment,
+          label:
+            COMPARE_FLOW_DEPARTMENTS.find((dept) => dept.id === selectedDepartment)
+              ?.label ?? null,
+          departmentPayload: body.department ?? null,
+          inputMode,
+        })
+      );
+      console.log("[compare] request body", {
+        body,
+        selectedDepartment,
+        productUrl: inputMode === "link" ? linkValue.trim() : null,
+        price: pricePaid,
+      });
     }
 
     setLoading(true);
@@ -521,6 +748,13 @@ export default function ComparePage() {
 
   const best = result?.bestDeal;
   const showBest = Boolean(result?.showBestDeal && best);
+  const matchGroups = result ? resolveMatchGroups(result) : null;
+  const visibleMatchCount = matchGroups ? countMatchGroupItems(matchGroups) : 0;
+  const hasExactOrHigh =
+    (matchGroups?.exactMatches?.length ?? 0) > 0 ||
+    (matchGroups?.highConfidenceMatches?.length ?? 0) > 0;
+  const onlyPossibleAlternatives =
+    visibleMatchCount > 0 && !hasExactOrHigh;
 
   return (
     <main className="flex-1 bg-black text-white px-6 py-10">
@@ -595,7 +829,98 @@ export default function ComparePage() {
         </div>
 
         <div className="rounded-2xl border border-white/10 p-6 bg-white/5">
-          <h2 className="text-2xl font-bold mb-4">Compare a Product</h2>
+          <h2 className="text-2xl font-bold mb-2">Compare a Product</h2>
+          <p className="text-white/60 text-sm mb-6">
+            Start by choosing what you&apos;re shopping for — then paste a link or describe
+            the item.
+          </p>
+
+          <div className="mb-8">
+            <p className="text-sm font-semibold text-white/90 mb-1">
+              Step 1 · Choose a department
+            </p>
+            <p className="text-xs text-white/50 mb-4">
+              Brainy uses department-specific rules to find safer matches across stores.
+            </p>
+            <div
+              className="grid gap-4 sm:grid-cols-3"
+              role="radiogroup"
+              aria-label="Product department"
+            >
+              {COMPARE_FLOW_DEPARTMENTS.map((dept) => {
+                const isSelected = selectedDepartment === dept.id;
+                return (
+                  <button
+                    key={dept.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={isSelected}
+                    onClick={() => {
+                      if (selectedDepartment !== dept.id) {
+                        setResult(null);
+                        setErrorMessage("");
+                        setTrackMessage(null);
+                      }
+                      setSelectedDepartment(dept.id);
+                      if (process.env.NODE_ENV === "development") {
+                        console.log(
+                          "[DEPARTMENT_SELECTED]",
+                          JSON.stringify({
+                            selectedDepartment: dept.id,
+                            label: dept.label,
+                            previousDepartment: selectedDepartment,
+                          })
+                        );
+                      }
+                    }}
+                    className={`group flex h-full flex-col rounded-2xl border p-4 text-left transition ${
+                      isSelected
+                        ? "border-green-500/50 bg-green-500/10 ring-1 ring-green-500/30"
+                        : "border-white/10 bg-black/30 hover:border-white/25 hover:bg-white/[0.03]"
+                    }`}
+                  >
+                    <div
+                      className={`mb-3 flex h-10 w-10 items-center justify-center rounded-xl border ${
+                        isSelected
+                          ? "border-green-500/40 bg-green-500/15 text-green-300"
+                          : "border-white/10 bg-white/5 text-white/70 group-hover:text-white"
+                      }`}
+                    >
+                      <DepartmentIcon id={dept.id} />
+                    </div>
+                    <span className="text-base font-semibold text-white">{dept.label}</span>
+                    <span className="mt-1 text-xs font-medium text-green-300/90">
+                      {dept.headline}
+                    </span>
+                    <p className="mt-2 text-xs leading-relaxed text-white/55">
+                      {dept.description}
+                    </p>
+                    <ul className="mt-3 space-y-1 border-t border-white/10 pt-3">
+                      {dept.examples.map((example) => (
+                        <li
+                          key={example}
+                          className="text-[11px] text-white/45 before:mr-1.5 before:content-['·']"
+                        >
+                          {example}
+                        </li>
+                      ))}
+                    </ul>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div
+            className={
+              selectedDepartment
+                ? ""
+                : "pointer-events-none opacity-40 select-none"
+            }
+          >
+            <p className="text-sm font-semibold text-white/90 mb-4">
+              Step 2 · Add your product
+            </p>
 
           <div className="flex flex-wrap gap-3 mb-6">
             <button
@@ -656,6 +981,9 @@ export default function ComparePage() {
               >
                 {loading ? "Searching..." : "Compare Now"}
               </button>
+              <CompareDepartmentDebugLine
+                selectedDepartment={selectedDepartment}
+              />
             </div>
           ) : (
             <div className="space-y-4 mb-6">
@@ -722,8 +1050,18 @@ export default function ComparePage() {
               >
                 {loading ? "Searching..." : "Compare Now"}
               </button>
+              <CompareDepartmentDebugLine
+                selectedDepartment={selectedDepartment}
+              />
             </div>
           )}
+          </div>
+
+          {!selectedDepartment ? (
+            <p className="mb-4 text-sm text-amber-200/80">
+              Select a department above to unlock product input.
+            </p>
+          ) : null}
 
           {errorMessage && (
             <div className="mb-4 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-red-300">
@@ -836,47 +1174,70 @@ export default function ComparePage() {
                 </div>
               )}
 
-              {(result.candidates.length > 0 ||
+              {onlyPossibleAlternatives ? (
+                <p className="text-amber-100/90 text-sm rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2">
+                  {POSSIBLE_ALTERNATIVES_EXPLANATION}
+                </p>
+              ) : null}
+
+              {(visibleMatchCount > 0 ||
                 (result.similarButNotCheaper?.length ?? 0) > 0 ||
                 result.comparisonMessage ||
                 result.message) && (
                 <div>
                   <h3 className="text-xl font-semibold text-white mb-1">
-                    {result.candidates.length > 0
-                      ? result.comparisonMessage ?? "Best savings"
-                      : result.comparisonMessage ??
+                    {visibleMatchCount > 0
+                      ? onlyPossibleAlternatives
+                        ? NO_EXACT_WITH_ALTERNATIVES_MESSAGE
+                        : (result.comparisonMessage ?? "Best savings")
+                      : (result.comparisonMessage ??
+                        result.message ??
+                        "No cheaper matching products found yet.")}
+                  </h3>
+                  {visibleMatchCount > 0 ? (
+                    <>
+                      {!onlyPossibleAlternatives ? (
+                        <p className="text-white/50 text-sm mb-4">
+                          {visibleMatchCount}{" "}
+                          {visibleMatchCount === 1 ? "listing" : "listings"}{" "}
+                          cheaper than your reference price.
+                        </p>
+                      ) : null}
+                      {matchGroups
+                        ? MATCH_GROUP_SECTIONS.map((section) => {
+                            const items = matchGroups[section.key];
+                            if (!items?.length) return null;
+                            return (
+                              <section key={section.key} className="mb-8">
+                                <h4 className="text-lg font-semibold text-white/90">
+                                  {section.title} ({items.length})
+                                </h4>
+                                <p className="text-white/45 text-sm mt-1 mb-3">
+                                  {section.description}
+                                </p>
+                                <ul className="space-y-3">
+                                  {items.map((c) =>
+                                    renderCandidateCard(c, {
+                                      isWinner:
+                                        Boolean(showBest && best) &&
+                                        c.productUrl === best!.productUrl &&
+                                        c.store === best!.store,
+                                      best,
+                                      onTrack: trackPrice,
+                                    })
+                                  )}
+                                </ul>
+                              </section>
+                            );
+                          })
+                        : null}
+                    </>
+                  ) : (
+                    <p className="text-amber-100/90 text-sm mb-4 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2">
+                      {result.comparisonMessage ??
                         result.message ??
                         "No cheaper matching products found yet."}
-                  </h3>
-                  {result.candidates.length === 0 ? (
-                    <p className="text-amber-100/90 text-sm mb-4 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2">
-                      No cheaper matching products found yet.
                     </p>
-                  ) : (
-                    <>
-                      <p className="text-white/50 text-sm mb-2">
-                        {result.candidates.length}{" "}
-                        {result.candidates.length === 1
-                          ? "listing"
-                          : "listings"}{" "}
-                        cheaper than your reference price.
-                      </p>
-                      <h4 className="text-lg font-semibold mb-3 text-white/90">
-                        Best savings ({result.candidates.length})
-                      </h4>
-                      <ul className="space-y-3">
-                        {result.candidates.map((c) =>
-                          renderCandidateCard(c, {
-                            isWinner:
-                              Boolean(showBest && best) &&
-                              c.productUrl === best!.productUrl &&
-                              c.store === best!.store,
-                            best,
-                            onTrack: trackPrice,
-                          })
-                        )}
-                      </ul>
-                    </>
                   )}
                   {(result.similarButNotCheaper?.length ?? 0) > 0 ? (
                     <details className="mt-6 rounded-xl border border-white/10 bg-white/5 p-4">

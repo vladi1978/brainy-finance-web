@@ -1,14 +1,34 @@
 /** Active cross-store discovery for compare — Serper or SerpAPI Google Shopping. See `LEGACY.md`. */
+import {
+  resolveShoppingPurchasePrice,
+} from "./commercialListingClassifier";
 import { buildNormalizedProduct, detectStoreFromProductUrl } from "./normalize";
-import { isBlockedUserFacingOutboundUrl } from "./productDetailUrl";
+import { isProductDetailStoreKey } from "./productDetailUrl";
 import { dedupeIdenticalListingUrls } from "./candidateDedupe";
+import { extractBestMerchantProductUrl } from "./merchantProductUrl";
+import { buildRetailerSearchUrlFromTitle } from "./source/buildSearchUrl";
+import {
+  classifyShoppingRawLink,
+  isGoogleShoppingOverlayUrl,
+} from "./source/linkClassification";
+import { fetchSerpApiShoppingJson } from "./source/serpapiSource";
+import { fetchSerperShoppingJson } from "./source/serperSource";
+import { logProductSourceCandidate } from "./source/universalProductSource";
+import { hostFromUrl } from "./source/storeDomains";
 import type {
   CandidateProduct,
   ProviderSearchContext,
   ProviderSearchDiagnostics,
+  ShoppingSourceAdapterId,
   StoreId,
   UniversalStoreId,
 } from "./types";
+
+export {
+  extractBestMerchantProductUrl,
+  unwrapMerchantUrl,
+  finalizeMerchantProductUrlExport as finalizeMerchantProductUrl,
+} from "./merchantProductUrl";
 
 function shoppingLog(payload: Record<string, unknown>): void {
   if (process.env.PRODUCT_SHOPPING_DEBUG !== "1") return;
@@ -19,145 +39,6 @@ const SHOPPING_ROW_VERBOSE =
   process.env.PRODUCT_SHOPPING_DEBUG === "1" ||
   process.env.DEBUG_COMPARE === "true";
 
-type ShoppingJsonOk = { payload: unknown; rawTextLength: number };
-
-const REDIRECT_PARAM_KEYS = [
-  "url",
-  "adurl",
-  "q",
-  "u",
-  "target",
-  "redirect",
-  "r",
-] as const;
-
-const TRACKING_REDIRECT_HOSTS = new Set([
-  "bit.ly",
-  "j.mp",
-  "goo.gl",
-  "t.co",
-  "tinyurl.com",
-  "ow.ly",
-  "buff.ly",
-  "rebrand.ly",
-  "cutt.ly",
-  "is.gd",
-  "adf.ly",
-  "g.co",
-  "amzn.to",
-  "a.co",
-  "click.linksynergy.com",
-  "linksynergy.com",
-  "anrdoezrs.net",
-  "dpbolvw.net",
-  "kqzyfj.com",
-  "awin1.com",
-  "shareasale.com",
-]);
-
-function logMerchantUrlEvent(
-  tag: "MERCHANT_URL_PRESERVED" | "MERCHANT_URL_UNWRAPPED" | "MERCHANT_URL_REJECTED",
-  fields: Record<string, string | null | undefined>,
-): void {
-  const parts = [
-    `[${tag}]`,
-    ...Object.entries(fields)
-      .filter(([, v]) => v != null && v !== "")
-      .map(([k, v]) => `${k}=${v}`),
-  ];
-  console.log(parts.join(" "));
-}
-
-function hostIsTrackingRedirectDomain(host: string): boolean {
-  const h = normUnwrapHost(host);
-  if (TRACKING_REDIRECT_HOSTS.has(h)) return true;
-  for (const blocked of TRACKING_REDIRECT_HOSTS) {
-    if (h.endsWith(`.${blocked}`)) return true;
-  }
-  return false;
-}
-
-function isObviousHomepageOnlyUrl(url: string): boolean {
-  try {
-    const u = new URL(url.trim());
-    const path = u.pathname.replace(/\/+$/, "");
-    return path === "" || path === "/";
-  } catch {
-    return true;
-  }
-}
-
-function normUnwrapHost(host: string): string {
-  return host.replace(/^www\./i, "").toLowerCase();
-}
-
-function hostIsGoogleOrShoppingRedirect(host: string): boolean {
-  const h = normUnwrapHost(host);
-  if (h === "google.com" || h.endsWith(".google.com")) return true;
-  if (h === "shopping.google.com" || h.endsWith(".shopping.google.com")) return true;
-  return false;
-}
-
-function hostIsGoogleAdsOrTrackingRedirect(host: string): boolean {
-  const h = normUnwrapHost(host);
-  if (h === "googleadservices.com" || h.endsWith(".googleadservices.com")) return true;
-  if (h === "googlesyndication.com" || h.endsWith(".googlesyndication.com")) return true;
-  if (h.includes("doubleclick.net")) return true;
-  return false;
-}
-
-function safeDecodeUrlParam(value: string): string {
-  let s = value.trim();
-  for (let i = 0; i < 3; i++) {
-    if (!/%[0-9A-Fa-f]{2}/.test(s)) break;
-    try {
-      const next = decodeURIComponent(s);
-      if (next === s) break;
-      s = next;
-    } catch {
-      break;
-    }
-  }
-  return s;
-}
-
-function pickNestedHttpTarget(u: URL): string | null {
-  for (const key of REDIRECT_PARAM_KEYS) {
-    const raw = u.searchParams.get(key);
-    if (!raw?.trim()) continue;
-    const decoded = safeDecodeUrlParam(raw);
-    if (decoded.startsWith("http://") || decoded.startsWith("https://")) return decoded;
-    if (decoded.startsWith("//")) return `https:${decoded}`;
-  }
-  return null;
-}
-
-function isAcceptableUnwrappedMerchantUrl(url: string): boolean {
-  const trimmed = url.trim();
-  if (!trimmed.startsWith("http")) return false;
-  if (isObviousHomepageOnlyUrl(trimmed)) return false;
-
-  try {
-    const host = normUnwrapHost(new URL(trimmed).hostname);
-    if (hostIsGoogleOrShoppingRedirect(host) || hostIsGoogleAdsOrTrackingRedirect(host)) {
-      return false;
-    }
-    if (host === "schema.org") return false;
-    if (hostIsTrackingRedirectDomain(host)) return false;
-    if (isBlockedUserFacingOutboundUrl(trimmed)) return false;
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function parsePriceLoose(raw: string | null | undefined): number | null {
-  if (raw == null || raw === "") return null;
-  const cleaned = String(raw).replace(/[^0-9.]/g, "");
-  const n = parseFloat(cleaned);
-  return Number.isFinite(n) && n > 0 ? n : null;
-}
-
 /** Loose Serp shopping row flattened for logs / pre-match inspection. */
 export type ParsedSerpShoppingItem = {
   title: string | null;
@@ -167,29 +48,6 @@ export type ParsedSerpShoppingItem = {
   source: string | null;
   thumbnail: string | null;
 };
-
-function coerceExtractedPriceToString(val: unknown): string | null {
-  if (val == null) return null;
-  if (typeof val === "number" && Number.isFinite(val)) return String(val);
-  if (typeof val === "string" && val.trim()) return val.trim();
-  if (typeof val === "object") {
-    const o = val as Record<string, unknown>;
-    const v =
-      typeof o.value === "number"
-        ? o.value
-        : typeof o.extracted_value === "number"
-          ? o.extracted_value
-          : typeof o.price === "string"
-            ? NaN
-            : typeof o.price === "number"
-              ? o.price
-              : NaN;
-    if (Number.isFinite(v)) return String(v);
-    const ps = typeof o.price === "string" ? o.price.trim() : null;
-    if (ps) return ps;
-  }
-  return null;
-}
 
 function inferStoreFromSourceLabel(label: unknown): StoreId | null {
   if (typeof label !== "string") return null;
@@ -281,24 +139,11 @@ function pickRatingFromRow(row: Record<string, unknown>): number | null {
   return null;
 }
 
-function pickPriceRawFromRow(row: Record<string, unknown>): string | null {
-  if (typeof row.price === "string" && row.price.trim()) return row.price.trim();
-  const fromExtracted =
-    coerceExtractedPriceToString(row.extracted_price) ??
-    coerceExtractedPriceToString(
-      typeof row.installment === "object" && row.installment !== null
-        ? (row.installment as Record<string, unknown>).price
-        : null
-    ) ??
-    (typeof row.alternative_price === "string" ? row.alternative_price.trim() : null);
-  if (fromExtracted) return fromExtracted;
-  return coerceExtractedPriceToString(row.alternative_price) ?? null;
-}
-
 function dedupeShoppingRowKey(row: Record<string, unknown>): string {
   const link =
     (typeof row.product_link === "string" ? row.product_link : null) ||
     (typeof row.link === "string" ? row.link : null) ||
+    (typeof row.adurl === "string" ? row.adurl : null) ||
     (typeof row.tracking_link === "string" ? row.tracking_link : null) ||
     (typeof row.url === "string" ? row.url : null);
   const title =
@@ -316,194 +161,35 @@ function dedupeShoppingRowKey(row: Record<string, unknown>): string {
   return (link ?? "").slice(0, 800) || `${title}:${pos}:${typeof row.product_id}`;
 }
 
-/**
- * Unwrap nested Google / ad redirect URLs to a merchant PDP.
- * Tries `url`, `adurl`, `q`, `u`, `target`, `redirect`, and `r` params with safe nested decoding.
- */
-export function unwrapMerchantUrl(raw: string, depth = 0): string | null {
-  if (depth > 6) return null;
-  const t = raw.trim();
-  if (!t.startsWith("http")) return null;
-
-  try {
-    const u = new URL(t);
-    const host = normUnwrapHost(u.hostname);
-    const originalPreview = t.slice(0, 220);
-
-    if (hostIsGoogleOrShoppingRedirect(host) || hostIsGoogleAdsOrTrackingRedirect(host)) {
-      const nested = pickNestedHttpTarget(u);
-      if (nested) {
-        const unwrapped = unwrapMerchantUrl(nested, depth + 1);
-        if (unwrapped) {
-          logMerchantUrlEvent("MERCHANT_URL_UNWRAPPED", {
-            from: originalPreview,
-            to: unwrapped.slice(0, 220),
-          });
-          return unwrapped;
-        }
-      }
-      logMerchantUrlEvent("MERCHANT_URL_REJECTED", {
-        url: originalPreview,
-        reason: u.pathname.includes("/shopping") ? "google_shopping_surface" : "google_redirect_no_target",
-      });
-      return null;
-    }
-
-    if (hostIsTrackingRedirectDomain(host)) {
-      const nested = pickNestedHttpTarget(u);
-      if (nested) {
-        const unwrapped = unwrapMerchantUrl(nested, depth + 1);
-        if (unwrapped) {
-          logMerchantUrlEvent("MERCHANT_URL_UNWRAPPED", {
-            from: originalPreview,
-            to: unwrapped.slice(0, 220),
-          });
-          return unwrapped;
-        }
-      }
-      logMerchantUrlEvent("MERCHANT_URL_REJECTED", {
-        url: originalPreview,
-        reason: "tracking_redirect_no_merchant_target",
-      });
-      return null;
-    }
-
-    if (host === "schema.org") {
-      logMerchantUrlEvent("MERCHANT_URL_REJECTED", {
-        url: originalPreview,
-        reason: "schema_org",
-      });
-      return null;
-    }
-
-    if (isObviousHomepageOnlyUrl(u.toString())) {
-      logMerchantUrlEvent("MERCHANT_URL_REJECTED", {
-        url: originalPreview,
-        reason: "homepage_only",
-      });
-      return null;
-    }
-
-    return u.toString();
-  } catch {
-    logMerchantUrlEvent("MERCHANT_URL_REJECTED", {
-      url: t.slice(0, 220),
-      reason: "malformed",
-    });
-    return null;
-  }
-}
-
-/**
- * Resolve any Google Shopping / Serp row link to a merchant URL.
- * Preserves valid retailer URLs (including tracking/query params); rejects Google hops and malformed links.
- */
-export function finalizeMerchantProductUrl(rawLink: string): string | null {
-  return finalizeMerchantProductUrlWithMeta(rawLink)?.url ?? null;
-}
-
-function finalizeMerchantProductUrlWithMeta(
-  rawLink: string,
-): { url: string; unwrapped: boolean } | null {
-  const trimmed = rawLink.trim();
-  if (!trimmed.startsWith("http")) {
-    logMerchantUrlEvent("MERCHANT_URL_REJECTED", {
-      url: trimmed.slice(0, 220) || null,
-      reason: "empty_or_non_http",
-    });
-    return null;
-  }
-
-  const resolved = unwrapMerchantUrl(trimmed);
-  if (!resolved) return null;
-
-  if (!isAcceptableUnwrappedMerchantUrl(resolved)) {
-    logMerchantUrlEvent("MERCHANT_URL_REJECTED", {
-      url: resolved.slice(0, 220),
-      reason: "invalid_after_unwrap",
-    });
-    return null;
-  }
-
-  const unwrapped = trimmed !== resolved;
-  logMerchantUrlEvent("MERCHANT_URL_PRESERVED", {
-    url: resolved.slice(0, 220),
-    source: unwrapped ? "unwrapped" : "direct",
-  });
-  return { url: resolved, unwrapped };
-}
-
-/**
- * Prefer `link`-like strings on a Serper Shopping nested row (offer / PDP row).
- */
-function pickHttpLinkFromNestedShoppingEntry(entry: Record<string, unknown>): string | null {
+function pickRawHttpLinkFromRow(row: Record<string, unknown>): string | null {
   const keys = [
     "link",
+    "adurl",
     "product_link",
-    "productUrl",
-    "merchantUrl",
-    "offerPageUrl",
-    "directUrl",
     "merchant_link",
-    "direct_link",
-    "url",
-  ];
-  for (const k of keys) {
-    const v = entry[k];
-    if (typeof v === "string" && v.startsWith("http")) return v;
-  }
-  return null;
-}
-
-function pickFirstFinalMerchantUrl(
-  row: Record<string, unknown>,
-): { url: string; unwrapped: boolean } | null {
-  /** 1) Serper nests merchant PDP URLs under shoppingResults[].link (camelCase) or snake_case. */
-  const bundle = row.shoppingResults ?? row.shopping_results;
-  if (Array.isArray(bundle) && bundle.length > 0) {
-    const first = bundle[0];
-    if (first != null && typeof first === "object") {
-      const raw = pickHttpLinkFromNestedShoppingEntry(first as Record<string, unknown>);
-      if (raw != null) {
-        const u = finalizeMerchantProductUrlWithMeta(raw);
-        if (u) return u;
-      }
-    }
-  }
-
-  const serperDirectFields = [
     "productUrl",
     "merchantUrl",
     "offerPageUrl",
     "directUrl",
     "product_url",
     "merchant_url",
-    "offer_page_url",
-    "direct_url",
-  ];
-  for (const k of serperDirectFields) {
-    const v = row[k];
-    if (typeof v !== "string" || !v.startsWith("http")) continue;
-    const u = finalizeMerchantProductUrlWithMeta(v);
-    if (u) return u;
-  }
-
-  const fallbackKeys = [
-    "merchant_link",
-    "direct_link",
-    "product_link_cleaned",
-    "product_link",
-    "offer_url",
-    "source_link",
-    "link",
     "tracking_link",
     "url",
   ];
-  for (const k of fallbackKeys) {
+  for (const k of keys) {
     const v = row[k];
-    if (typeof v !== "string" || !v.startsWith("http")) continue;
-    const u = finalizeMerchantProductUrlWithMeta(v);
-    if (u) return u;
+    if (typeof v === "string" && v.startsWith("http")) return v;
+  }
+  const bundle = row.shoppingResults ?? row.shopping_results;
+  if (Array.isArray(bundle) && bundle.length > 0) {
+    const first = bundle[0];
+    if (first != null && typeof first === "object") {
+      const nested = first as Record<string, unknown>;
+      for (const k of ["link", "product_link", "merchantUrl", "productUrl"]) {
+        const v = nested[k];
+        if (typeof v === "string" && v.startsWith("http")) return v;
+      }
+    }
   }
   return null;
 }
@@ -615,20 +301,36 @@ function parsedItemFromShoppingRow(row: Record<string, unknown>): ParsedSerpShop
           : null;
   if (!title || title.length < 2) return null;
 
-  const priceStr = pickPriceRawFromRow(row);
+  const link =
+    (typeof row.merchant_link === "string" && row.merchant_link.startsWith("http")
+      ? row.merchant_link
+      : null) ||
+    (typeof row.adurl === "string" && row.adurl.startsWith("http") ? row.adurl : null) ||
+    (typeof row.product_link === "string" && row.product_link.startsWith("http")
+      ? row.product_link
+      : null) ||
+    (typeof row.link === "string" && row.link.startsWith("http") ? row.link : null);
+
+  const priceStr = (() => {
+    const resolved = resolveShoppingPurchasePrice({
+      title,
+      price: row.price,
+      extracted_price: row.extracted_price,
+      installment: row.installment,
+      alternative_price: row.alternative_price,
+      url: link,
+      storeLabel: pickSourceLabel(row),
+    });
+    if (resolved.rejected || resolved.purchasePrice == null) {
+      return resolved.rawPriceText ?? null;
+    }
+    return resolved.rawPriceText ?? String(resolved.purchasePrice);
+  })();
   const extractedNum =
     typeof row.extracted_price === "number" && Number.isFinite(row.extracted_price)
       ? row.extracted_price
       : null;
 
-  const link =
-    (typeof row.merchant_link === "string" && row.merchant_link.startsWith("http")
-      ? row.merchant_link
-      : null) ||
-    (typeof row.product_link === "string" && row.product_link.startsWith("http")
-      ? row.product_link
-      : null) ||
-    (typeof row.link === "string" && row.link.startsWith("http") ? row.link : null);
   return {
     title,
     /** Raw display string preferred; fallback to extracted numeric — may be absent for weak rows */
@@ -639,74 +341,6 @@ function parsedItemFromShoppingRow(row: Record<string, unknown>): ParsedSerpShop
   };
 }
 
-
-async function fetchSerperShoppingJson(query: string): Promise<ShoppingJsonOk | null> {
-  const apiKey = process.env.SERPER_API_KEY?.trim();
-  if (!apiKey) return null;
-
-  const endpoint =
-    process.env.PRODUCT_SERPER_SHOPPING_URL?.trim() ?? "https://google.serper.dev/shopping";
-
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      "X-API-KEY": apiKey,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      q: query,
-      gl: process.env.PRODUCT_SHOPPING_GL?.trim() ?? "us",
-      hl: process.env.PRODUCT_SHOPPING_HL?.trim() ?? "en",
-    }),
-  });
-
-  const httpStatus = res.status;
-  const text = await res.text();
-  shoppingLog({
-    provider: "serper",
-    httpStatus,
-    queryPreview: query.slice(0, 120),
-    byteLength: text.length,
-  });
-
-  if (!res.ok) return null;
-  try {
-    const payload = JSON.parse(text) as unknown;
-    return { payload, rawTextLength: text.length };
-  } catch {
-    return null;
-  }
-}
-
-async function fetchSerpApiShoppingJson(query: string): Promise<ShoppingJsonOk | null> {
-  const apiKey = process.env.SERPAPI_API_KEY?.trim();
-  if (!apiKey) return null;
-
-  const u = new URL("https://serpapi.com/search.json");
-  u.searchParams.set("engine", "google_shopping");
-  u.searchParams.set("q", query);
-  u.searchParams.set("api_key", apiKey);
-  u.searchParams.set("gl", process.env.PRODUCT_SHOPPING_GL?.trim() ?? "us");
-  u.searchParams.set("hl", process.env.PRODUCT_SHOPPING_HL?.trim() ?? "en");
-
-  const res = await fetch(u.toString());
-  const httpStatus = res.status;
-  const text = await res.text();
-  shoppingLog({
-    provider: "serpapi",
-    httpStatus,
-    queryPreview: query.slice(0, 120),
-    byteLength: text.length,
-  });
-
-  if (!res.ok) return null;
-  try {
-    const payload = JSON.parse(text) as unknown;
-    return { payload, rawTextLength: text.length };
-  } catch {
-    return null;
-  }
-}
 
 function logShoppingRowSkip(reason: string, detail: Record<string, unknown>): void {
   if (!SHOPPING_ROW_VERBOSE) return;
@@ -732,19 +366,54 @@ function resolveStoreForShoppingRow(
   return { store: "other", mappedKnownStore: false };
 }
 
-function internalListingKey(args: {
+function syntheticListingKey(store: UniversalStoreId, title: string): string {
+  return `shopping:${store}:${title.replace(/\s+/g, " ").trim().toLowerCase()}`;
+}
+
+function resolveShoppingRowProductUrl(args: {
+  merchantUrl: string | null;
   store: UniversalStoreId;
   title: string;
-  shoppingHintUrl: string | null;
-}): string {
-  const hint = args.shoppingHintUrl?.trim();
-  if (hint) return hint;
-  return `shopping:${args.store}:${args.title.replace(/\s+/g, " ").trim().toLowerCase()}`;
+}): { productUrl: string; shoppingHintUrl: string | null; usedSearchFallback: boolean } {
+  const merchantUrl = args.merchantUrl;
+  if (merchantUrl && !isGoogleShoppingOverlayUrl(merchantUrl)) {
+    return {
+      productUrl: merchantUrl,
+      shoppingHintUrl: merchantUrl,
+      usedSearchFallback: false,
+    };
+  }
+
+  if (isProductDetailStoreKey(args.store)) {
+    const searchUrl = buildRetailerSearchUrlFromTitle(args.store, args.title).trim();
+    if (searchUrl.startsWith("http")) {
+      console.log(
+        [
+          "[PRODUCT_URL_FALLBACK_SEARCH_USED]",
+          `store=${args.store}`,
+          `title=${args.title.slice(0, 120)}`,
+          `url=${searchUrl.slice(0, 220)}`,
+        ].join(" "),
+      );
+      return {
+        productUrl: searchUrl,
+        shoppingHintUrl: null,
+        usedSearchFallback: true,
+      };
+    }
+  }
+
+  return {
+    productUrl: syntheticListingKey(args.store, args.title),
+    shoppingHintUrl: null,
+    usedSearchFallback: false,
+  };
 }
 
 function rowToCandidate(
   row: Record<string, unknown>,
-  searchQuery: string
+  searchQuery: string,
+  sourceAdapter: ShoppingSourceAdapterId,
 ): CandidateProduct | null {
   const title =
     typeof row.title === "string"
@@ -757,39 +426,62 @@ function rowToCandidate(
   if (!title || title.length < 3) return null;
 
   const source = pickSourceLabel(row);
-  const merchantPick = pickFirstFinalMerchantUrl(row);
-  const merchantUrl = merchantPick?.url ?? null;
+  const rawLink = pickRawHttpLinkFromRow(row);
+  const merchantUrlForStore = extractBestMerchantProductUrl(row);
+  const rawLinkType = classifyShoppingRawLink(rawLink, merchantUrlForStore);
   const retailerName = source?.trim() || null;
 
   const { store, mappedKnownStore } = resolveStoreForShoppingRow(
-    merchantUrl,
-    source
+    merchantUrlForStore,
+    source,
   );
+  const resolvedUrls = resolveShoppingRowProductUrl({
+    merchantUrl: merchantUrlForStore,
+    store,
+    title,
+  });
+  const productUrl = resolvedUrls.productUrl;
+  const shoppingHintUrl = resolvedUrls.shoppingHintUrl;
 
   if (!mappedKnownStore) {
     logUnknownStoreKept({
       store: "other",
       retailerName,
-      merchantUrlPreview: merchantUrl?.slice(0, 220) ?? null,
+      merchantUrlPreview: merchantUrlForStore?.slice(0, 220) ?? null,
       titlePreview: title.slice(0, 120),
     });
   }
 
-  const priceRaw = pickPriceRawFromRow(row);
-  const price = parsePriceLoose(priceRaw ?? undefined);
-  if (price == null) {
-    logShoppingRowSkip("missing_parseable_price", {
+  const priceResolution = resolveShoppingPurchasePrice({
+    title,
+    price: row.price,
+    extracted_price: row.extracted_price,
+    installment: row.installment,
+    alternative_price: row.alternative_price,
+    url: merchantUrlForStore ?? productUrl,
+    hostname: merchantUrlForStore ? hostFromUrl(merchantUrlForStore) : null,
+    storeLabel: retailerName,
+  });
+
+  if (
+    priceResolution.purchasePrice == null ||
+    priceResolution.rejected &&
+      (priceResolution.rejectReason === "installment_only_no_full_purchase_price" ||
+        priceResolution.rejectReason === "payment_period_price_only" ||
+        priceResolution.rejectReason === "missing_parseable_purchase_price")
+  ) {
+    logShoppingRowSkip(priceResolution.rejectReason ?? "missing_parseable_price", {
       store,
       titlePreview: title.slice(0, 80),
+      listingType: priceResolution.classification.listingType,
+      priceIntent: priceResolution.classification.priceIntent,
     });
     return null;
   }
 
-  const productUrl = internalListingKey({
-    store,
-    title,
-    shoppingHintUrl: merchantUrl,
-  });
+  const price = priceResolution.purchasePrice;
+  const rawPriceText = priceResolution.rawPriceText;
+  const commercialListing = priceResolution.classification;
 
   const imageUrl = pickThumbnailFromRow(row);
   const rating = pickRatingFromRow(row);
@@ -829,10 +521,32 @@ function rowToCandidate(
   };
 
   if (retailerName) out.sourceLabel = retailerName;
-  if (merchantUrl) out.shoppingHintUrl = merchantUrl;
+  if (shoppingHintUrl) out.shoppingHintUrl = shoppingHintUrl;
+  if (rawLink) out.rawShoppingLink = rawLink;
+  out.rawLinkType = rawLinkType;
+  out.sourceAdapter = sourceAdapter;
   out.shoppingQueryUsed = searchQuery.replace(/\s+/g, " ").trim();
   if (rating != null) out.rating = rating;
   if (productId) out.productId = productId;
+  if (rawPriceText) out.rawPriceText = rawPriceText;
+  out.commercialListing = commercialListing;
+
+  logProductSourceCandidate({
+    phase: "shopping_ingest",
+    sourceAdapter,
+    store,
+    title: title.slice(0, 120),
+    price,
+    rawPriceText,
+    listingType: commercialListing.listingType,
+    priceIntent: commercialListing.priceIntent,
+    commercialSignals: commercialListing.signals,
+    rawLinkType,
+    hasPdpUrl: Boolean(shoppingHintUrl),
+    usedSearchFallback: resolvedUrls.usedSearchFallback,
+    rawLinkPreview: rawLink?.slice(0, 160) ?? null,
+    shoppingHintPreview: shoppingHintUrl?.slice(0, 160) ?? null,
+  });
 
   return out;
 }
@@ -847,12 +561,14 @@ async function fetchShoppingForQuery(
   limit: number
 ): Promise<FetchOutcome> {
   const serperRes = await fetchSerperShoppingJson(query);
+  let sourceAdapter: ShoppingSourceAdapterId = "serper";
   let hints: string[] = ["serper"];
   let payload: unknown | null = serperRes?.payload ?? null;
   let rawResponseByteLength = serperRes?.rawTextLength ?? 0;
 
   if (payload == null) {
     const serpapiRes = await fetchSerpApiShoppingJson(query);
+    sourceAdapter = "serpapi";
     hints = ["serpapi"];
     payload = serpapiRes?.payload ?? null;
     rawResponseByteLength = serpapiRes?.rawTextLength ?? 0;
@@ -916,7 +632,7 @@ async function fetchShoppingForQuery(
   const out: CandidateProduct[] = [];
 
   for (const row of rows) {
-    const c = rowToCandidate(row, query);
+    const c = rowToCandidate(row, query, sourceAdapter);
     if (c) out.push(c);
     if (out.length >= limit) break;
   }

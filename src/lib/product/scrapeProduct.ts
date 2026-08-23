@@ -1,5 +1,6 @@
 import { detectStoreFromProductUrl } from "./normalize";
 import type { SourceScrapedHints, StoreId } from "./types";
+import { isUsablePdpTitle } from "./usablePdpTitle";
 import {
   isGenericRetailProductQuery,
   looksLikeAmazonAsinToken,
@@ -803,32 +804,189 @@ function isAmazonHostname(host: string): boolean {
   return /amazon\./i.test(host) || /^a\.co$/i.test(host);
 }
 
+export type PdpTitleSelectionReason =
+  | "visible_pdp_title"
+  | "json_ld_name"
+  | "og_title"
+  | "twitter_title"
+  | "document_title"
+  | "none";
+
+export type PdpTitleSelection = {
+  selectedTitle: string | null;
+  visibleTitle: string | null;
+  jsonLdName: string | null;
+  ogTitle: string | null;
+  documentTitle: string | null;
+  reason: PdpTitleSelectionReason;
+  conflictDetected: boolean;
+};
+
+const PDP_TITLE_DEBUG = process.env.DEBUG_COMPARE === "true";
+
+function normalizeTitleForConflictCompare(title: string): string {
+  return title.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function pdpTitlesConflict(visible: string | null, other: string | null): boolean {
+  if (!visible?.trim() || !other?.trim()) return false;
+  const a = normalizeTitleForConflictCompare(visible);
+  const b = normalizeTitleForConflictCompare(other);
+  if (a === b) return false;
+  const strip = (s: string) => s.replace(/[^\w\s]/g, "").replace(/\s+/g, " ");
+  return strip(a) !== strip(b);
+}
+
+/** Visible on-page product title — retailer-specific selectors, then generic H1 heuristics. */
+function tryVisiblePdpTitle(html: string, host: string): string | null {
+  if (isAmazonHostname(host)) {
+    const t = tryAmazonDirectTitle(html);
+    if (t) return t;
+  }
+  if (/walmart\.com/i.test(host)) {
+    const t = tryWalmartDirectTitle(html);
+    if (t) return t;
+  }
+  return tryRetailStructuredH1(html);
+}
+
+function readDocumentTitle(html: string): string | null {
+  const docMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (!docMatch?.[1]) return null;
+  const t = stripTags(docMatch[1]).trim();
+  return t.length > 0 ? t : null;
+}
+
+function logPdpTitleSelection(host: string, selection: PdpTitleSelection): void {
+  if (!PDP_TITLE_DEBUG) return;
+  console.log(
+    "[PDP_TITLE_SELECTION]",
+    JSON.stringify({
+      store: host,
+      visibleTitle: selection.visibleTitle,
+      jsonLdName: selection.jsonLdName,
+      ogTitle: selection.ogTitle,
+      selectedTitle: selection.selectedTitle,
+      reason: selection.reason,
+      conflictDetected: selection.conflictDetected,
+    })
+  );
+}
+
+/**
+ * Universal PDP title priority: visible on-page title → JSON-LD name → og/twitter → document title.
+ * Visible title wins when usable, even when metadata disagrees (size/model conflicts).
+ */
+export function selectPdpTitleFromHtml(
+  html: string,
+  host: string,
+  jsonLd: { name?: string } = {}
+): PdpTitleSelection {
+  const visibleRaw = tryVisiblePdpTitle(html, host);
+  const visibleTitle = visibleRaw?.replace(/\s+/g, " ").trim() || null;
+  const jsonLdName = jsonLd.name?.replace(/\s+/g, " ").trim() || null;
+  const ogTitle = getMetaProperty(html, "og:title")?.replace(/\s+/g, " ").trim() || null;
+  const documentTitle = readDocumentTitle(html);
+
+  const visibleUsable = visibleTitle != null && isUsablePdpTitle(visibleTitle);
+
+  let selectedTitle: string | null = null;
+  let reason: PdpTitleSelectionReason = "none";
+
+  if (visibleUsable) {
+    selectedTitle = visibleTitle;
+    reason = "visible_pdp_title";
+  } else if (jsonLdName && isUsablePdpTitle(jsonLdName)) {
+    selectedTitle = jsonLdName;
+    reason = "json_ld_name";
+  } else if (jsonLdName && jsonLdName.length > 3) {
+    selectedTitle = jsonLdName;
+    reason = "json_ld_name";
+  } else if (ogTitle && isUsablePdpTitle(ogTitle)) {
+    selectedTitle = ogTitle;
+    reason = "og_title";
+  } else if (ogTitle && ogTitle.length > 3) {
+    selectedTitle = ogTitle;
+    reason = "og_title";
+  } else {
+    const twitterTitle =
+      getMetaProperty(html, "twitter:title")?.replace(/\s+/g, " ").trim() || null;
+    if (twitterTitle && twitterTitle.length > 3) {
+      selectedTitle = twitterTitle;
+      reason = "twitter_title";
+    } else if (documentTitle && documentTitle.length > 3) {
+      selectedTitle = documentTitle;
+      reason = "document_title";
+    }
+  }
+
+  const conflictDetected =
+    visibleUsable &&
+    jsonLdName != null &&
+    pdpTitlesConflict(visibleTitle, jsonLdName);
+
+  const selection: PdpTitleSelection = {
+    selectedTitle,
+    visibleTitle,
+    jsonLdName,
+    ogTitle,
+    documentTitle,
+    reason,
+    conflictDetected,
+  };
+  logPdpTitleSelection(host, selection);
+  return selection;
+}
+
+/** Metadata-only fallback when visible DOM title is unavailable (compact title signals fetch). */
+export function selectPdpTitleFromPageSignals(
+  signals: ProductPageTitleSignals
+): PdpTitleSelection {
+  const jsonLdName = signals.jsonLdProductName?.replace(/\s+/g, " ").trim() || null;
+  const ogTitle = signals.ogTitle?.replace(/\s+/g, " ").trim() || null;
+  const twitterTitle = signals.twitterTitle?.replace(/\s+/g, " ").trim() || null;
+  const documentTitle = signals.documentTitle?.replace(/\s+/g, " ").trim() || null;
+
+  let selectedTitle: string | null = null;
+  let reason: PdpTitleSelectionReason = "none";
+
+  if (jsonLdName && isUsablePdpTitle(jsonLdName)) {
+    selectedTitle = jsonLdName;
+    reason = "json_ld_name";
+  } else if (jsonLdName && jsonLdName.length > 3) {
+    selectedTitle = jsonLdName;
+    reason = "json_ld_name";
+  } else if (ogTitle && isUsablePdpTitle(ogTitle)) {
+    selectedTitle = ogTitle;
+    reason = "og_title";
+  } else if (ogTitle && ogTitle.length > 3) {
+    selectedTitle = ogTitle;
+    reason = "og_title";
+  } else if (twitterTitle && twitterTitle.length > 3) {
+    selectedTitle = twitterTitle;
+    reason = "twitter_title";
+  } else if (documentTitle && documentTitle.length > 3) {
+    selectedTitle = documentTitle;
+    reason = "document_title";
+  }
+
+  return {
+    selectedTitle,
+    visibleTitle: null,
+    jsonLdName,
+    ogTitle,
+    documentTitle,
+    reason,
+    conflictDetected: false,
+  };
+}
+
 function pickTitle(
   html: string,
   host: string,
   jsonLd: { name?: string }
 ): string | null {
-  if (jsonLd.name && jsonLd.name.trim()) return jsonLd.name.trim();
-
-  const isWalmart = /walmart\.com/i.test(host);
-  const isAmazon = isAmazonHostname(host);
-
-  if (isAmazon) {
-    const t = tryAmazonDirectTitle(html);
-    if (t) return t;
-  }
-  if (isWalmart) {
-    const t = tryWalmartDirectTitle(html);
-    if (t) return t;
-  }
-
-  const h1Retail = tryRetailStructuredH1(html);
-  if (h1Retail) return h1Retail;
-
-  const og = getMetaProperty(html, "og:title");
-  if (og && og.trim()) return og.trim();
-
-  return null;
+  return selectPdpTitleFromHtml(html, host, jsonLd).selectedTitle;
 }
 
 /** DOM-only retailer price peek — used to reject bad JSON-LD outliers. */
@@ -967,6 +1125,60 @@ function pickPrice(
  * Fetches a product page with stealth (Chrome/macOS) headers and extracts name/price
  * via DOM/meta patterns first, then JSON-LD in application/ld+json, then og:price.
  */
+/** Compact HTML title/metadata signals — no full page body retained. */
+export type ProductPageTitleSignals = {
+  documentTitle: string | null;
+  ogTitle: string | null;
+  twitterTitle: string | null;
+  jsonLdProductName: string | null;
+  ogDescription: string | null;
+  metaDescription: string | null;
+};
+
+export function extractProductPageTitleSignalsFromHtml(
+  html: string
+): ProductPageTitleSignals {
+  const jsonLd = extractFromJsonLd(html);
+  const docMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const documentTitle = docMatch?.[1]
+    ? stripTags(docMatch[1]).trim() || null
+    : null;
+  return {
+    documentTitle,
+    ogTitle: getMetaProperty(html, "og:title")?.trim() || null,
+    twitterTitle: getMetaProperty(html, "twitter:title")?.trim() || null,
+    jsonLdProductName: jsonLd.name?.trim() || null,
+    ogDescription: getMetaProperty(html, "og:description")?.trim() || null,
+    metaDescription:
+      getMetaProperty(html, "description")?.trim() ||
+      html.match(
+        /<meta\s+name=["']description["']\s+content=["']([^"']*)["']/i
+      )?.[1]?.trim() ||
+      null,
+  };
+}
+
+/**
+ * Fetch a PDP once and return compact metadata for title derivation (no full HTML retained).
+ */
+export async function fetchProductPageTitleSignals(
+  url: string,
+  options?: { headers?: HeadersInit }
+): Promise<ProductPageTitleSignals | null> {
+  try {
+    const res = await fetch(url, {
+      headers: options?.headers ?? STEALTH_HEADERS,
+      cache: "no-store",
+      redirect: "follow",
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    return extractProductPageTitleSignalsFromHtml(html);
+  } catch {
+    return null;
+  }
+}
+
 export async function scrapeProduct(
   url: string,
   options?: { headers?: HeadersInit }

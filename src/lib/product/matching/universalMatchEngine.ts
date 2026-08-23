@@ -10,6 +10,11 @@ import type {
   TvDisplayTechBucket,
 } from "../types";
 import type { UniversalAttributeKey } from "./attributeKeys";
+import {
+  screenSizeGateReason,
+  screenSizeMatchQuality,
+  screenSizeShouldHardReject,
+} from "./displayDimensions";
 import { profileForCategory } from "./weightProfiles";
 import type { CategoryMatchProfile } from "./weightProfiles";
 import {
@@ -226,13 +231,16 @@ export function checkBothGeneralScreenDiagonalGate(
   }
   const sa = source.sizeInches ?? source.structured.sizeInches;
   const sb = candidate.sizeInches ?? candidate.structured.sizeInches;
-  if (sa == null || sb == null || sa === sb) return { ok: true };
+  if (sa == null || sb == null) return { ok: true };
   const t1 = source.structured.title;
   const t2 = candidate.structured.title;
   if (!isLikelyScreenProductTitle(t1) || !isLikelyScreenProductTitle(t2)) {
     return { ok: true };
   }
-  return fail(`general_screen_size_mismatch(source=${sa},candidate=${sb})`);
+  if (screenSizeShouldHardReject(sa, sb)) {
+    return fail(`general_screen_size_mismatch(source=${sa},candidate=${sb})`);
+  }
+  return { ok: true };
 }
 
 export function checkPackHardGate(
@@ -342,8 +350,8 @@ function checkDiagonalGate(
     if (a == null || b == null) return fail(`screen_diagonal_incomplete(source=${a},candidate=${b})`);
   }
   if (a == null || b == null) return { ok: true };
-  if (a !== b) {
-    return fail(`screen_diagonal_mismatch(source=${a},candidate=${b})`);
+  if (screenSizeShouldHardReject(a, b)) {
+    return fail(screenSizeGateReason(a, b));
   }
   return { ok: true };
 }
@@ -484,8 +492,8 @@ function monitorDiagonalStrict(
   if (a == null || b == null) {
     return fail(`monitor_diagonal_incomplete(source=${a},candidate=${b})`);
   }
-  if (a !== b) {
-    return fail(`monitor_diagonal_mismatch(source=${a},candidate=${b})`);
+  if (screenSizeShouldHardReject(a, b)) {
+    return fail(screenSizeGateReason(a, b));
   }
   return { ok: true };
 }
@@ -549,11 +557,14 @@ function diagonalQuality(
   src: UniversalMatchSnapshot,
   cand: UniversalMatchSnapshot
 ): { q: number; detail: string } {
-  const a = src.diagonalInches;
-  const b = cand.diagonalInches;
-  if (a != null && b != null && a === b) return { q: 1, detail: "diagonal_exact" };
-  if (a == null || b == null) return { q: 0.74, detail: "diagonal_unknown_side" };
-  return { q: 0.05, detail: "diagonal_mismatch_should_have_gated" };
+  const scored = screenSizeMatchQuality(src.diagonalInches, cand.diagonalInches);
+  if (scored.detail === "screen_size_exact") {
+    return { q: scored.q, detail: "diagonal_exact" };
+  }
+  if (scored.tier === "unknown") {
+    return { q: scored.q, detail: "diagonal_unknown_side" };
+  }
+  return { q: scored.q, detail: scored.detail };
 }
 
 function modelLineQuality(

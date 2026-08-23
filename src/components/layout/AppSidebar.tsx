@@ -18,6 +18,11 @@ const PRIMARY: NavItem[] = [
     description: "Amazon · Walmart · Target",
   },
   {
+    label: "Shopping assistant",
+    href: "/shopping-assistant",
+    description: "Ask in plain language",
+  },
+  {
     label: "Statements & Subscriptions",
     href: "/statements",
     description: "PDF / Excel",

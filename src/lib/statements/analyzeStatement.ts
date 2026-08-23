@@ -262,7 +262,7 @@ function emitSubscriptionInferenceDebug(opts: {
       return { merchantHint: lab, clusterId: snap.clusterId, reason: snap.reason };
     });
 
-  console.log("[statements/subscriptions] totals", {
+  const totals = {
     transactionsAnalyzed: opts.transactionCount,
     excludedDebitClustersMarkedNonSubscription,
     candidateRecurringOrServiceMerchants: candidateMerchantCount,
@@ -270,9 +270,17 @@ function emitSubscriptionInferenceDebug(opts: {
       opts.gatedSubscriptions.length,
     spendingInsightCount: opts.spendingInsightCount,
     recurringExpenseCount: opts.recurringExpenseCount,
-    firstEligibleCandidatesPreview: firstTenEligible,
     heuristicRowsBeforeConfidenceGate: opts.heuristicRows.length,
-  });
+  };
+
+  if (process.env.NODE_ENV === "production") {
+    console.log("[statements/subscriptions] totals", totals);
+  } else {
+    console.log("[statements/subscriptions] totals", {
+      ...totals,
+      firstEligibleCandidatesPreview: firstTenEligible,
+    });
+  }
 }
 
 export async function analyzeStatementPdf(

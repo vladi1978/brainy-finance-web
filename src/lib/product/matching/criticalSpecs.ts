@@ -1,6 +1,24 @@
+import {
+  compareFlowDepartmentToProductDepartment,
+  type CompareFlowDepartment,
+} from "../compareFlowDepartment";
+import { extractDepartmentAttributes } from "../department/attributeExtractor";
 import { normalizeTitle } from "../normalize";
-import type { NormalizedProduct, ProductCondition } from "../types";
+import type { NormalizedProduct, ProductCondition, ProductDepartment } from "../types";
+import { toProductDepartment } from "../normalize";
+import {
+  evaluateScreenSizeGate,
+  logScreenSizeGate,
+  screenSizeGateReason,
+  screenSizeMatchQuality,
+  screenSizeShouldHardReject,
+} from "./displayDimensions";
 import { buildUniversalMatchSnapshot } from "./snapshot";
+
+export type DepartmentGateOptions = {
+  /** User-selected compare-flow department overrides title-derived department. */
+  selectedDepartment?: CompareFlowDepartment | null;
+};
 
 export type CriticalSpecsGateResult =
   | { ok: true; softPenalties: string[] }
@@ -28,6 +46,8 @@ const DIM_PAIR_RE =
   /\b(\d+(?:\.\d+)?)\s*(?:ft|feet|foot|')?\s*(?:by|x|×)\s*(\d+(?:\.\d+)?)\s*(?:in|inch|inches|"|ft|feet|')?\b/gi;
 
 const DIM_COMPACT_RE = /\b(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\b/gi;
+const DIM_TRIPLE_RE =
+  /\b(\d+(?:\.\d+)?)\s*(?:ft|feet|foot|')?\s*[x×]\s*(\d+(?:\.\d+)?)\s*(?:ft|feet|foot|')?\s*[x×]\s*(\d+(?:\.\d+)?)\s*(?:in|inch|inches|"|ft|feet|')?\b/gi;
 
 const CAPACITY_RE =
   /\b(\d+(?:\.\d+)?)\s*(gal|gallon|gallons|liters?|l|ml|oz|ounce|ounces|lb|lbs|pound|pounds|cu\.?\s*ft|cubic\s*feet|quart|qt|kg|g|gram|grams)\b/i;
@@ -53,6 +73,10 @@ export function parseDimensionPairs(raw: string): DimensionPair[] {
   const t = raw.replace(/\u2033/g, '"').replace(/\u2032/g, "'");
   const out = new Map<string, DimensionPair>();
 
+  for (const m of t.matchAll(DIM_TRIPLE_RE)) {
+    addDimensionPair(out, m[1]!, m[2]!);
+    addDimensionPair(out, m[2]!, m[3]!);
+  }
   for (const m of t.matchAll(DIM_PAIR_RE)) {
     addDimensionPair(out, m[1]!, m[2]!);
   }
@@ -119,6 +143,20 @@ export function buildCriticalSpecsSnapshot(
   }
 
   const st = norm.structured;
+  const isPoolCategory =
+    norm.category === "pool" ||
+    norm.category === "outdoor_pool" ||
+    norm.category === "swimming_pool";
+  if (isPoolCategory) {
+    const dims = [...pairMap.values()].map((p) => p.key);
+    console.log(
+      "[POOL_DIMENSIONS_PARSED]",
+      JSON.stringify({
+        title: title.slice(0, 180),
+        parsedDimensionPairs: dims,
+      })
+    );
+  }
   return {
     dimensionPairs: [...pairMap.values()],
     diagonalInches: snap.diagonalInches,
@@ -161,6 +199,71 @@ function dimensionClose(a: number, b: number): boolean {
   return Math.abs(a - b) / denom <= 0.03;
 }
 
+function parseDimensionKey(key: string): [number, number] | null {
+  const parts = key.replace(/\s+/g, "").split("x");
+  if (parts.length !== 2) return null;
+  const a = parseFloat(parts[0]!);
+  const b = parseFloat(parts[1]!);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return [a, b];
+}
+
+const ROUND_SHAPE_RE = /\b(round|circular|circle)\b/i;
+const RECT_SHAPE_RE =
+  /\b(rectangular|rectangle|rect|oval|square|octagon|oblong)\b/i;
+
+/** Hard reject when pool shapes are incompatible (e.g. round vs rectangular). */
+export function poolShapesIncompatible(
+  sourceShape: string | null | undefined,
+  candidateShape: string | null | undefined
+): boolean {
+  if (!sourceShape || !candidateShape) return false;
+  const srcRound = ROUND_SHAPE_RE.test(sourceShape);
+  const srcRect = RECT_SHAPE_RE.test(sourceShape);
+  const candRound = ROUND_SHAPE_RE.test(candidateShape);
+  const candRect = RECT_SHAPE_RE.test(candidateShape);
+  if (srcRound && candRect) return true;
+  if (srcRect && candRound) return true;
+  return false;
+}
+
+/**
+ * Drastic pool size mismatch (hard reject). Close alternatives (e.g. 15×52 vs 16×52)
+ * should score as possible alternatives, not be filtered out.
+ */
+export function poolDimensionsDrasticallyDifferent(
+  sourceKey: string,
+  candidateKey: string
+): boolean {
+  const pa = parseDimensionKey(sourceKey);
+  const pb = parseDimensionKey(candidateKey);
+  if (!pa || !pb) return false;
+
+  const axisRatio = (x: number, y: number) => {
+    const lo = Math.min(x, y);
+    const hi = Math.max(x, y);
+    if (lo <= 0) return Number.POSITIVE_INFINITY;
+    return hi / lo;
+  };
+
+  const rA = axisRatio(pa[0], pb[0]);
+  const rB = axisRatio(pa[1], pb[1]);
+
+  if (rA > 1.18 && rB > 1.18) return true;
+  if (rA > 1.28 || rB > 1.28) return true;
+  return false;
+}
+
+/** One pool dimension axis is close enough for a possible-alternative band. */
+function poolDimensionAxisClose(a: number, b: number): boolean {
+  if (dimensionClose(a, b)) return true;
+  const delta = Math.abs(a - b);
+  const denom = Math.max(a, b, 1);
+  if (delta <= 1.5 && denom <= 32) return true;
+  if (delta <= 5 && denom >= 40) return true;
+  return delta / denom <= 0.12;
+}
+
 function pairsEquivalent(a: DimensionPair, b: DimensionPair): boolean {
   if (a.key === b.key) return true;
   return dimensionClose(a.a, b.a) && dimensionClose(a.b, b.b);
@@ -171,10 +274,11 @@ function pairsConflict(source: DimensionPair[], candidate: DimensionPair[]): boo
   for (const sp of source) {
     for (const cp of candidate) {
       if (pairsEquivalent(sp, cp)) continue;
-      const shareB = dimensionClose(sp.b, cp.b);
-      const shareA = dimensionClose(sp.a, cp.a);
-      if (shareB && !dimensionClose(sp.a, cp.a)) return true;
-      if (shareA && !dimensionClose(sp.b, cp.b)) return true;
+      if (poolDimensionsDrasticallyDifferent(sp.key, cp.key)) return true;
+      const shareB = poolDimensionAxisClose(sp.b, cp.b);
+      const shareA = poolDimensionAxisClose(sp.a, cp.a);
+      if (shareB && !poolDimensionAxisClose(sp.a, cp.a)) continue;
+      if (shareA && !poolDimensionAxisClose(sp.b, cp.b)) continue;
       if (!shareA && !shareB) {
         const ratioA = Math.max(sp.a, cp.a) / Math.min(sp.a, cp.a);
         const ratioB = Math.max(sp.b, cp.b) / Math.min(sp.b, cp.b);
@@ -226,12 +330,18 @@ export function checkUniversalCriticalSpecsGate(
   }
 
   if (src.diagonalInches != null && cand.diagonalInches != null) {
-    if (src.diagonalInches !== cand.diagonalInches) {
+    if (screenSizeShouldHardReject(src.diagonalInches, cand.diagonalInches)) {
       return fail(
-        `diagonal_inches_mismatch(${src.diagonalInches} vs ${cand.diagonalInches})`,
+        screenSizeGateReason(src.diagonalInches, cand.diagonalInches),
         src,
         cand
       );
+    }
+    const tiered = screenSizeMatchQuality(src.diagonalInches, cand.diagonalInches);
+    if (tiered.tier === "moderate") {
+      softPenalties.push(`screen_size_moderate_penalty(${tiered.detail})`);
+    } else if (tiered.tier === "strong") {
+      softPenalties.push(`screen_size_strong_penalty(${tiered.detail})`);
     }
   }
 
@@ -261,6 +371,263 @@ export function checkUniversalCriticalSpecsGate(
   }
 
   return { ok: true, softPenalties };
+}
+
+function logDepartmentDetected(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct
+): ProductDepartment {
+  const department = toProductDepartment(source.category);
+  console.log(
+    "[DEPARTMENT_DETECTED]",
+    JSON.stringify({
+      sourceCategory: source.category,
+      candidateCategory: candidate.category,
+      department,
+    })
+  );
+  return department;
+}
+
+function resolveDepartmentForGate(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct,
+  options?: DepartmentGateOptions
+): ProductDepartment {
+  if (options?.selectedDepartment) {
+    const department = compareFlowDepartmentToProductDepartment(
+      options.selectedDepartment
+    );
+    console.log(
+      "[DEPARTMENT_SELECTED]",
+      JSON.stringify({
+        selectedDepartment: options.selectedDepartment,
+        productDepartment: department,
+        sourceCategory: source.category,
+        candidateCategory: candidate.category,
+      })
+    );
+    return department;
+  }
+  return logDepartmentDetected(source, candidate);
+}
+
+function logDepartmentGatePass(department: string, detail: string): void {
+  console.log("[DEPARTMENT_GATE_PASS]", JSON.stringify({ department, detail }));
+}
+
+function logDepartmentGateReject(department: string, reason: string): void {
+  console.log("[DEPARTMENT_GATE_REJECT]", JSON.stringify({ department, reason }));
+}
+
+function logUniversalFallbackUsed(department: string, reason: string): void {
+  console.log("[UNIVERSAL_FALLBACK_USED]", JSON.stringify({ department, reason }));
+}
+
+function checkPoolDepartmentGate(
+  source: CriticalSpecsSnapshot,
+  candidate: CriticalSpecsSnapshot,
+  sourceNorm: NormalizedProduct,
+  candidateNorm: NormalizedProduct,
+  sourceTitle: string,
+  candidateTitle: string
+): CriticalSpecsGateResult | null {
+  const srcAttrs = extractDepartmentAttributes(
+    "pools_outdoor",
+    sourceNorm,
+    sourceTitle
+  );
+  const candAttrs = extractDepartmentAttributes(
+    "pools_outdoor",
+    candidateNorm,
+    candidateTitle
+  );
+  const srcShape = srcAttrs.shape;
+  const candShape = candAttrs.shape;
+  if (poolShapesIncompatible(srcShape, candShape)) {
+    return {
+      ok: false,
+      reason: `department_pool_shape_mismatch(source=${srcShape},candidate=${candShape})`,
+    };
+  }
+
+  if (source.dimensionPairs.length === 0) return null;
+  const srcPrimary = source.dimensionPairs[0]!;
+  if (candidate.dimensionPairs.length === 0) {
+    return {
+      ok: true,
+      softPenalties: [`department_pool_dimension_missing_soft(source=${srcPrimary.key})`],
+    };
+  }
+  const candPrimary = candidate.dimensionPairs[0]!;
+  if (poolDimensionsDrasticallyDifferent(srcPrimary.key, candPrimary.key)) {
+    return {
+      ok: false,
+      reason: `department_pool_dimension_mismatch(source=${srcPrimary.key},candidate=${candPrimary.key})`,
+    };
+  }
+  if (!pairsEquivalent(srcPrimary, candPrimary)) {
+    return {
+      ok: true,
+      softPenalties: [
+        `department_pool_dimension_partial(source=${srcPrimary.key},candidate=${candPrimary.key})`,
+      ],
+    };
+  }
+  return { ok: true, softPenalties: [] };
+}
+
+function checkScreenDepartmentGate(
+  source: CriticalSpecsSnapshot,
+  candidate: CriticalSpecsSnapshot
+): CriticalSpecsGateResult {
+  const evaluation = evaluateScreenSizeGate(
+    source.diagonalInches,
+    candidate.diagonalInches
+  );
+  logScreenSizeGate(source.diagonalInches, candidate.diagonalInches, evaluation);
+  if (evaluation.action === "reject") {
+    return {
+      ok: false,
+      reason: evaluation.hardRejectReason ?? evaluation.reason,
+    };
+  }
+  return { ok: true, softPenalties: evaluation.softPenalties };
+}
+
+function checkApparelDepartmentGate(
+  source: CriticalSpecsSnapshot,
+  candidate: CriticalSpecsSnapshot,
+  sourceNorm: NormalizedProduct,
+  candidateNorm: NormalizedProduct
+): CriticalSpecsGateResult | null {
+  let applied = false;
+  if (source.shoeSize != null) {
+    applied = true;
+    if (candidate.shoeSize == null || source.shoeSize !== candidate.shoeSize) {
+      return {
+        ok: false,
+        reason: `department_apparel_shoe_size_mismatch(source=${source.shoeSize},candidate=${candidate.shoeSize})`,
+      };
+    }
+  } else if (source.sizeLabel) {
+    applied = true;
+    if (!candidate.sizeLabel || source.sizeLabel !== candidate.sizeLabel) {
+      return {
+        ok: false,
+        reason: `department_apparel_size_label_mismatch(source=${source.sizeLabel},candidate=${candidate.sizeLabel})`,
+      };
+    }
+  }
+
+  if (sourceNorm.gender) {
+    applied = true;
+    if (!candidateNorm.gender || sourceNorm.gender !== candidateNorm.gender) {
+      return {
+        ok: false,
+        reason: `department_apparel_gender_mismatch(source=${sourceNorm.gender},candidate=${candidateNorm.gender})`,
+      };
+    }
+  }
+
+  const srcType = sourceNorm.structured.productType;
+  if (srcType) {
+    applied = true;
+    const candType = candidateNorm.structured.productType;
+    if (!candType || candType !== srcType) {
+      return {
+        ok: false,
+        reason: `department_apparel_type_mismatch(source=${srcType},candidate=${candType})`,
+      };
+    }
+  }
+  return applied ? { ok: true, softPenalties: [] } : null;
+}
+
+function checkToolsDepartmentGate(
+  source: CriticalSpecsSnapshot,
+  candidate: CriticalSpecsSnapshot,
+  sourceNorm: NormalizedProduct,
+  candidateNorm: NormalizedProduct
+): CriticalSpecsGateResult | null {
+  let applied = false;
+  if (source.modelKeys.length > 0) {
+    applied = true;
+    const candSet = new Set(candidate.modelKeys);
+    const overlap = source.modelKeys.some((k) => candSet.has(k));
+    if (!overlap) {
+      return { ok: false, reason: "department_tools_model_mismatch" };
+    }
+  }
+  if (sourceNorm.structured.toolVoltage) {
+    applied = true;
+    const cv = candidateNorm.structured.toolVoltage;
+    if (!cv || cv !== sourceNorm.structured.toolVoltage) {
+      return {
+        ok: false,
+        reason: `department_tools_voltage_mismatch(source=${sourceNorm.structured.toolVoltage},candidate=${cv})`,
+      };
+    }
+  }
+  if (sourceNorm.structured.toolBatteryKit != null) {
+    applied = true;
+    const cb = candidateNorm.structured.toolBatteryKit;
+    if (cb == null || cb !== sourceNorm.structured.toolBatteryKit) {
+      return {
+        ok: false,
+        reason: `department_tools_battery_kit_mismatch(source=${sourceNorm.structured.toolBatteryKit},candidate=${cb})`,
+      };
+    }
+  }
+  return applied ? { ok: true, softPenalties: [] } : null;
+}
+
+/**
+ * Department-first strict gates. Returns null when no department gate applies,
+ * so the universal matcher can continue unchanged as fallback.
+ */
+export function checkDepartmentCriticalSpecsGate(
+  source: NormalizedProduct,
+  candidate: NormalizedProduct,
+  candidateTitle: string,
+  options?: DepartmentGateOptions
+): CriticalSpecsGateResult | null {
+  const department = resolveDepartmentForGate(source, candidate, options);
+  const sourceTitle = source.structured.title;
+  const src = buildCriticalSpecsSnapshot(source, sourceTitle);
+  const cand = buildCriticalSpecsSnapshot(candidate, candidateTitle);
+
+  let result: CriticalSpecsGateResult | null = null;
+  if (department === "pool") {
+    result = checkPoolDepartmentGate(
+      src,
+      cand,
+      source,
+      candidate,
+      sourceTitle,
+      candidateTitle
+    );
+  } else if (department === "screen") {
+    result = checkScreenDepartmentGate(src, cand);
+  } else if (department === "apparel") {
+    result = checkApparelDepartmentGate(src, cand, source, candidate);
+  } else if (department === "tools") {
+    result = checkToolsDepartmentGate(src, cand, source, candidate);
+  } else {
+    logUniversalFallbackUsed(department, "generic_department");
+    return null;
+  }
+
+  if (result == null) {
+    logUniversalFallbackUsed(department, "missing_department_data");
+    return null;
+  }
+  if (result.ok === true) {
+    logDepartmentGatePass(department, "department_rules_satisfied");
+  } else {
+    logDepartmentGateReject(department, result.reason);
+  }
+  return result;
 }
 
 export function logCriticalSpecRejected(payload: {

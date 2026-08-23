@@ -36,6 +36,15 @@ export function clusterMerchantPresentation(
 }
 
 function logMerchantNormalization(row: MerchantNormalizationDiagnostic): void {
+  if (process.env.NODE_ENV === "production") {
+    console.log("[statements/merchant-normalize]", {
+      clusterId: row.clusterId,
+      confidence: row.confidence,
+      reason: row.reason,
+      source: row.source,
+    });
+    return;
+  }
   console.log("[statements/merchant-normalize]", {
     clusterId: row.clusterId,
     rawMerchant: row.rawMerchant,

@@ -11,7 +11,7 @@ import {
   extractAmazonAsinFromUrl,
   normalizeTitle,
 } from "../normalize";
-import { isUsablePdpTitle } from "../usablePdpTitle";
+import { isAsinPlaceholderTitle, isUsablePdpTitle } from "../usablePdpTitle";
 import { isValidProductDetailUrl } from "../productDetailUrl";
 import type {
   CandidateProduct,
@@ -51,7 +51,7 @@ function slugSegmentBeforeAmazonAsinPath(pathname: string): string | null {
 /**
  * When HTML scraping fails, derive a minimal searchable line from the Amazon URL (slug + ASIN).
  */
-function buildAmazonUrlFallbackTitle(url: string, slugLine: string): string {
+export function buildAmazonUrlFallbackTitle(url: string, slugLine: string): string {
   const asin = extractAmazonAsinFromUrl(url);
   const slugFromUtil = slugLine.replace(/\s+/g, " ").trim();
 
@@ -184,11 +184,24 @@ export const amazonProvider: ProductProvider = {
 
     let urlFallback = false;
     if (!isUsablePdpTitle(title)) {
-      title = buildAmazonUrlFallbackTitle(url, slugLine).trim();
+      const fallbackTitle = buildAmazonUrlFallbackTitle(url, slugLine).trim();
       urlFallback = true;
+      if (!fallbackTitle || isAsinPlaceholderTitle(fallbackTitle)) {
+        logRetailPdpShoppingIdentity({
+          store: STORE,
+          title: fallbackTitle || title,
+          brand: scraped?.brand?.trim() || null,
+          model: scraped?.model?.trim() || scraped?.sku?.trim() || null,
+          fallbackUsed: true,
+        });
+        return null;
+      }
+      title = fallbackTitle;
     }
 
-    if (!title) return null;
+    if (!title || isAsinPlaceholderTitle(title) || !isUsablePdpTitle(title)) {
+      return null;
+    }
 
     const brandLog = scraped?.brand?.trim() || null;
     const modelLog =

@@ -8,6 +8,14 @@ import {
   type AttributeMatchResult,
 } from "./attributeMatch";
 import {
+  buildDepartmentSearchQueryHints,
+  getDepartmentConfig,
+} from "./department";
+import { validateDepartmentInputGate } from "./department/departmentInputGate";
+import { validateDepartmentPreSearchGuard } from "./department/departmentInputGate";
+import { resolveTvDisplayScoreCap } from "./department/tvMatchingPolicy";
+import type { CompareFlowDepartment } from "./compareFlowDepartment";
+import {
   buildReferenceUnderstanding,
   mergeExtraKeySpecsIntoUnderstanding,
 } from "./aiExtractor";
@@ -46,15 +54,53 @@ import {
 } from "./productDescriptionFromUrl";
 import {
   isGenericRetailProductQuery,
-  looksLikeAmazonAsinToken,
 } from "./urlProductQuery";
-import { isUsablePdpTitle } from "./usablePdpTitle";
+import { isAsinPlaceholderTitle, isBlockedAsinSearchQuery, isUsablePdpTitle } from "./usablePdpTitle";
+import {
+  hasManualSearchableIdentity,
+  isWeakSourceIdentityForCompare,
+  WEAK_SOURCE_IDENTITY_MESSAGE,
+} from "./sourceIdentityGuard";
+import {
+  attemptSourceProductRecovery,
+  shouldAttemptSourceRecovery,
+} from "./sourceProductRecovery";
+import {
+  BAND_HIGH_CONFIDENCE_MIN,
+  BAND_POSSIBLE_MIN,
+  applyStrictSearchUrlCapToCandidate,
+  applyStrictSearchUrlCapToDeal,
+  applyStrictSearchUrlCapsToCandidates,
+  buildUserMatchReasons,
+  classifyConfidenceBand,
+  confidenceBandBadgeLabel,
+  dedupeCompareResponseMessages,
+  isStrictSearchFallbackOutbound,
+  partitionCandidatesIntoMatchGroups,
+  searchUrlConfidenceBandLabel,
+  displayMatchScore,
+  FALLBACK_POSSIBLE_COUNT,
+  isHardAttributeRejection,
+  NO_EXACT_WITH_ALTERNATIVES_MESSAGE,
+  POSSIBLE_ALTERNATIVES_EXPLANATION,
+  refinePossibleBandBadge,
+  type MatchResultGroups,
+} from "./matching/confidenceBands";
 import {
   identityMatchLabel,
   rankIdentityMatchTypes,
   scoreProductIdentity,
   type ProductIdentityResult,
 } from "./matching/productIdentity";
+import { cleanRetailerSearchQuery } from "./matching/searchQueryCleanup";
+import {
+  commercialListingDisplayLabel,
+  hasCommercialNonPurchaseSignals,
+  isDurableGoodsCategory,
+  isSuspiciousPurchasePriceRatio,
+  shouldRejectCommercialListing,
+} from "./commercialListingClassifier";
+import { hostFromUrl } from "./source/storeDomains";
 import { getSimulatedStoreCoupons } from "../premium/couponOffers";
 import {
   isBlockedUserFacingOutboundUrl,
@@ -131,6 +177,7 @@ const CATEGORY_TYPE_WORD: Record<ProductCategory, string> = {
   pool: "Pool",
   outdoor_pool: "Pool",
   swimming_pool: "Pool",
+  tools: "Tools",
   footwear: "Shoes",
   audio: "Headphones",
   socks: "Socks",
@@ -298,7 +345,7 @@ function pdpCompactExtractFallback(pdpTitle: string): string {
 function isUsableRetailerQuery(q: string): boolean {
   const t = q.replace(/\s+/g, " ").trim();
   if (t.length < 4) return false;
-  if (looksLikeAmazonAsinToken(t)) return false;
+  if (isBlockedAsinSearchQuery(t)) return false;
   if (isGenericRetailProductQuery(t)) return false;
   if (/^product$/i.test(t)) return false;
   return true;
@@ -396,7 +443,7 @@ export function buildRetailSearchQueryPack(
   const ensure = (s: string) => {
     const t = s.replace(/\s+/g, " ").trim();
     if (t.length < 2) return fallback;
-    if (looksLikeAmazonAsinToken(t)) return fallback;
+    if (isBlockedAsinSearchQuery(t)) return fallback;
     return t;
   };
 
@@ -405,6 +452,265 @@ export function buildRetailSearchQueryPack(
     simplifiedQuery: ensure(simplified),
     specsQuery: ensure(specs),
   };
+}
+
+function formatGenderForQuery(gender: string | null): string | null {
+  if (!gender) return null;
+  const g = gender.toLowerCase();
+  if (g === "men" || g === "mens" || g === "men's") return "men's";
+  if (g === "women" || g === "womens" || g === "women's") return "women's";
+  if (g === "kids" || g === "kid") return "kids'";
+  if (g === "unisex") return "unisex";
+  return gender;
+}
+
+function pickStructuredModelToken(norm: NormalizedProduct): string | null {
+  const family = norm.structured.modelFamily?.trim();
+  if (family && family.length >= 3 && family.length <= 24) {
+    return family.replace(/\s+/g, " ");
+  }
+  const short = pickShortModelForPrimary(norm);
+  if (short && short.length <= 16) return short;
+  for (const t of norm.modelTokens) {
+    if (t.length >= 4 && t.length <= 20) return t;
+  }
+  return null;
+}
+
+function pickDisplayTechPhrase(norm: NormalizedProduct): string | null {
+  const tech = norm.tv?.displayTech ?? norm.structured.displayType;
+  return tech ? tvDisplayTechLabel(tech) : null;
+}
+
+function pickResolutionPhrase(norm: NormalizedProduct): string | null {
+  const res = norm.tv?.resolution ?? norm.structured.resolution;
+  if (!res) return null;
+  if (res === "4k") return "4K";
+  if (res === "8k") return "8K";
+  return "HD";
+}
+
+function pickKindPhrase(norm: NormalizedProduct): string | null {
+  const phrases = norm.critical?.kindPhrases ?? [];
+  if (phrases.length === 0) return null;
+  return [...phrases].sort((a, b) => b.length - a.length)[0] ?? null;
+}
+
+function pickDimensionPhrases(norm: NormalizedProduct): string[] {
+  const dims = norm.critical?.dimensionSignatures ?? [];
+  const out: string[] = [];
+  const sizeInches = norm.sizeInches ?? norm.structured.sizeInches;
+
+  for (const d of dims) {
+    const trimmed = d.replace(/\s+/g, " ").trim();
+    if (trimmed.length < 2) continue;
+    if (sizeInches != null && /^\d{2,3}$/.test(trimmed) && parseInt(trimmed, 10) === sizeInches) {
+      continue;
+    }
+    if (
+      sizeInches != null &&
+      new RegExp(`^${sizeInches}\\s*inch`, "i").test(trimmed)
+    ) {
+      continue;
+    }
+    const normalized =
+      trimmed.includes("x") || /\bx\b/i.test(trimmed)
+        ? trimmed
+        : /^\d{2,3}$/.test(trimmed)
+          ? `${trimmed} inch`
+          : trimmed;
+    if (!out.some((x) => x.toLowerCase() === normalized.toLowerCase())) {
+      out.push(normalized);
+    }
+    if (out.length >= 2) break;
+  }
+  return out;
+}
+
+function pickProductTypePhrase(norm: NormalizedProduct): string | null {
+  const kind = pickKindPhrase(norm);
+  if (kind && kind.length >= 3) return kind;
+  const typeWord = categoryTypeWord(norm.category);
+  if (typeWord !== "Product") return typeWord;
+  return null;
+}
+
+const SMART_QUERY_NOISE_WORDS = new Set([
+  "deep",
+  "hard",
+  "premium",
+  "best",
+  "newest",
+  "ultimate",
+  "luxury",
+  "deluxe",
+  "professional",
+  "commercial",
+  "advanced",
+  "top",
+  "rated",
+]);
+
+const SMART_QUERY_NOISE_PHRASES = [
+  /\bheavy[\s-]+duty\b/gi,
+  /\bhigh[\s-]+performance\b/gi,
+  /\bpro[\s-]+grade\b/gi,
+  /\bcommercial[\s-]+grade\b/gi,
+];
+
+function shouldLogSmartQueryDebug(): boolean {
+  return COMPARE_VERBOSE || process.env.PRODUCT_SHOPPING_DEBUG === "1";
+}
+
+function cleanQueryToken(raw: string): string {
+  let token = raw;
+  for (const phraseRe of SMART_QUERY_NOISE_PHRASES) {
+    token = token.replace(phraseRe, " ");
+  }
+  const words = token
+    .replace(/[^\w\s'-]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  const kept: string[] = [];
+  for (const word of words) {
+    const lower = word.toLowerCase();
+    if (SMART_QUERY_NOISE_WORDS.has(lower)) continue;
+    kept.push(word);
+  }
+  return kept.join(" ").replace(/\s+/g, " ").trim();
+}
+
+function addUniqueToken(parts: string[], seen: Set<string>, token: string | null | undefined): void {
+  if (!token) return;
+  const cleaned = cleanQueryToken(token).replace(/\s+/g, " ").trim();
+  if (cleaned.length < 2) return;
+  const key = cleaned.toLowerCase();
+  if (seen.has(key)) return;
+  seen.add(key);
+  parts.push(cleaned);
+}
+
+function finalizeSearchQuery(parts: string[]): string {
+  const joined = parts.join(" ").replace(/\s+/g, " ").trim();
+  return cleanRetailerSearchQuery(joined);
+}
+
+function buildLegacyStructuredSearchQuery(norm: NormalizedProduct): string {
+  const parts: string[] = [];
+  const seen = new Set<string>();
+
+  addUniqueToken(parts, seen, formatBrandTitleCase(norm.brand));
+  addUniqueToken(parts, seen, pickStructuredModelToken(norm));
+  for (const dim of pickDimensionPhrases(norm)) addUniqueToken(parts, seen, dim);
+
+  const sizeInches = norm.sizeInches ?? norm.structured.sizeInches;
+  if (sizeInches != null) addUniqueToken(parts, seen, `${sizeInches} inch`);
+  else addUniqueToken(parts, seen, norm.structured.sizeLabel);
+
+  addUniqueToken(parts, seen, pickDisplayTechPhrase(norm));
+  addUniqueToken(parts, seen, pickResolutionPhrase(norm));
+  addUniqueToken(parts, seen, norm.structured.color);
+  addUniqueToken(parts, seen, formatGenderForQuery(norm.gender));
+
+  if (norm.packCount != null && norm.packCount > 1) {
+    addUniqueToken(parts, seen, `${norm.packCount} pack`);
+  }
+
+  addUniqueToken(parts, seen, pickProductTypePhrase(norm));
+
+  return finalizeSearchQuery(parts);
+}
+
+function buildDepartmentStructuredSearchQuery(norm: NormalizedProduct): string {
+  const parts: string[] = [];
+  const seen = new Set<string>();
+  const category = norm.category;
+
+  if (category === "pool" || category === "outdoor_pool" || category === "swimming_pool") {
+    for (const dim of pickDimensionPhrases(norm)) addUniqueToken(parts, seen, dim);
+    addUniqueToken(parts, seen, pickKindPhrase(norm));
+    addUniqueToken(parts, seen, "pool");
+    return finalizeSearchQuery(parts);
+  }
+
+  if (category === "tv") {
+    const sizeInches = norm.sizeInches ?? norm.structured.sizeInches;
+    if (sizeInches != null) addUniqueToken(parts, seen, `${sizeInches} inch`);
+    addUniqueToken(parts, seen, pickDisplayTechPhrase(norm));
+    addUniqueToken(parts, seen, "smart tv");
+    return finalizeSearchQuery(parts);
+  }
+
+  if (category === "apparel" || category === "footwear" || category === "socks") {
+    addUniqueToken(parts, seen, norm.structured.productType ?? pickProductTypePhrase(norm));
+    addUniqueToken(parts, seen, norm.structured.sizeLabel);
+    addUniqueToken(parts, seen, formatGenderForQuery(norm.gender ?? norm.structured.gender));
+    return finalizeSearchQuery(parts);
+  }
+
+  if (category === "tools") {
+    addUniqueToken(parts, seen, pickStructuredModelToken(norm));
+    addUniqueToken(parts, seen, norm.structured.toolVoltage);
+    addUniqueToken(parts, seen, norm.structured.productType ?? pickProductTypePhrase(norm));
+    return finalizeSearchQuery(parts);
+  }
+
+  return "";
+}
+
+/**
+ * Universal structured shopping query from normalized attributes — no category branches.
+ */
+export function buildStructuredSearchQuery(norm: NormalizedProduct): string {
+  const legacyQuery = buildLegacyStructuredSearchQuery(norm);
+  const departmentQuery = buildDepartmentStructuredSearchQuery(norm);
+  const smartQuery = departmentQuery.length >= 4 ? departmentQuery : legacyQuery;
+  const finalQuery = cleanRetailerSearchQuery(smartQuery);
+
+  if (shouldLogSmartQueryDebug()) {
+    const legacyTokens = legacyQuery
+      .toLowerCase()
+      .split(/\s+/)
+      .map((t) => t.trim())
+      .filter(Boolean);
+    const smartTokens = new Set(
+      finalQuery
+        .toLowerCase()
+        .split(/\s+/)
+        .map((t) => t.trim())
+        .filter(Boolean)
+    );
+    const removedTokens = [...new Set(legacyTokens.filter((t) => !smartTokens.has(t)))];
+    if (removedTokens.length > 0) {
+      console.log(
+        "[QUERY_TOKENS_REMOVED]",
+        JSON.stringify({
+          category: norm.category,
+          before: legacyQuery,
+          after: finalQuery,
+          removedTokens,
+        })
+      );
+    }
+    console.log(
+      "[SMART_QUERY_BUILT]",
+      JSON.stringify({
+        category: norm.category,
+        before: legacyQuery,
+        after: finalQuery,
+      })
+    );
+  }
+
+  return finalQuery;
+}
+
+function prependStructuredQuery(queries: string[], norm: NormalizedProduct): string[] {
+  const structured = buildStructuredSearchQuery(norm).replace(/\s+/g, " ").trim();
+  if (structured.length < 8 || !isUsableRetailerQuery(structured)) {
+    return queries;
+  }
+  return [structured, ...queries];
 }
 
 /**
@@ -422,6 +728,8 @@ export function buildUniversalShoppingQueryPlan(args: {
    * critical-segment / URL-noise prefixes).
    */
   pdpTitleSearchPlanOnly?: boolean;
+  /** User-selected department — prepends department-specific search hints. */
+  selectedDepartment?: CompareFlowDepartment | null;
 }): string[] {
   const {
     referenceNormalized,
@@ -429,6 +737,7 @@ export function buildUniversalShoppingQueryPlan(args: {
     explicitQueryPack,
     resolvedRetailPack,
     pdpTitleSearchPlanOnly,
+    selectedDepartment,
   } = args;
   const brand = formatBrandTitleCase(referenceNormalized.brand);
   const brandStrippedNorm: NormalizedProduct = {
@@ -446,7 +755,7 @@ export function buildUniversalShoppingQueryPlan(args: {
     referenceNormalized,
     referenceTitle
   ).join(" ");
-  let hardStrict = `${segments} ${core}`.replace(/\s+/g, " ").trim();
+  let hardStrict = cleanRetailerSearchQuery(`${segments} ${core}`);
   if (hardStrict.length < 8) {
     hardStrict = extractSearchQuery(referenceTitle).replace(/\s+/g, " ");
   }
@@ -459,38 +768,77 @@ export function buildUniversalShoppingQueryPlan(args: {
     buildRetailSearchQueryPack(referenceNormalized, referenceTitle);
 
   if (pdpTitleSearchPlanOnly) {
-    const orderedPdp = [
-      pack.primaryQuery,
-      pack.simplifiedQuery,
-      pack.specsQuery,
-    ];
+    const orderedPdp = prependStructuredQuery(
+      [pack.primaryQuery, pack.simplifiedQuery, pack.specsQuery],
+      referenceNormalized
+    );
     const seenPdp = new Set<string>();
     const outPdp: string[] = [];
     for (const q of orderedPdp) {
       const t = q.replace(/\s+/g, " ").trim();
       if (t.length < 4) continue;
+      if (isBlockedAsinSearchQuery(t)) continue;
       if (seenPdp.has(t)) continue;
       seenPdp.add(t);
       outPdp.push(t);
     }
-    return outPdp;
+    return prependDepartmentSearchQueries(
+      outPdp,
+      selectedDepartment,
+      referenceNormalized
+    );
   }
 
-  const ordered = [
-    hardStrict,
-    withBrand,
-    pack.primaryQuery,
-    pack.simplifiedQuery,
-    pack.specsQuery,
-  ];
+  const ordered = prependStructuredQuery(
+    [
+      hardStrict,
+      withBrand,
+      pack.primaryQuery,
+      pack.simplifiedQuery,
+      pack.specsQuery,
+    ],
+    referenceNormalized
+  );
 
   const seen = new Set<string>();
   const out: string[] = [];
   for (const q of ordered) {
     const t = q.replace(/\s+/g, " ").trim();
     if (t.length < 4) continue;
+    if (isBlockedAsinSearchQuery(t)) continue;
     if (seen.has(t)) continue;
     seen.add(t);
+    out.push(t);
+  }
+  return prependDepartmentSearchQueries(out, selectedDepartment, referenceNormalized);
+}
+
+function prependDepartmentSearchQueries(
+  queries: string[],
+  selectedDepartment: CompareFlowDepartment | null | undefined,
+  norm: NormalizedProduct
+): string[] {
+  if (!selectedDepartment) return queries;
+  const hints = buildDepartmentSearchQueryHints(selectedDepartment, norm);
+  if (hints.length === 0) return queries;
+  const deptQuery = hints.join(" ").replace(/\s+/g, " ").trim();
+  if (deptQuery.length < 4) return queries;
+  const config = getDepartmentConfig(selectedDepartment);
+  console.log(
+    "[DEPARTMENT_SEARCH_STRATEGY]",
+    JSON.stringify({
+      department: selectedDepartment,
+      searchStrategy: config.searchStrategy,
+      departmentQuery: deptQuery.slice(0, 120),
+    })
+  );
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const q of [deptQuery, ...queries]) {
+    const t = q.replace(/\s+/g, " ").trim();
+    const key = t.toLowerCase();
+    if (t.length < 4 || seen.has(key)) continue;
+    seen.add(key);
     out.push(t);
   }
   return out;
@@ -544,6 +892,11 @@ const MIN_CHEAPER_RESULTS_TARGET = 10;
 
 /** Max store rows returned in `candidates` / UI lists */
 const DISPLAY_LIMIT = 14;
+
+/** Best-deal highlight requires high-confidence band (75+ display score). */
+const MIN_SCORE_PRODUCT_LISTING_OR_BEST_DEAL = BAND_HIGH_CONFIDENCE_MIN;
+const MIN_SCORE_SIMILAR_PRODUCT = BAND_POSSIBLE_MIN;
+const MIN_SCORE_ALTERNATIVE_OPTION = BAND_POSSIBLE_MIN;
 
 export { buildRetailerSearchUrlFromTitle } from "./source/buildSearchUrl";
 
@@ -710,6 +1063,107 @@ function dedupeByStoreAndUrl(items: CandidateProduct[]): CandidateProduct[] {
   return [...map.values()];
 }
 
+function sizeDistanceOkForComparable(
+  reference: NormalizedProduct,
+  candidate: NormalizedProduct
+): boolean {
+  const refSize = reference.sizeInches ?? reference.structured.sizeInches;
+  const candSize = candidate.sizeInches ?? candidate.structured.sizeInches;
+  if (refSize == null || candSize == null) return true;
+
+  const strictScreen =
+    reference.category === "tv" ||
+    reference.category === "monitor" ||
+    candidate.category === "tv" ||
+    candidate.category === "monitor";
+  if (strictScreen) return refSize === candSize;
+
+  const maxSize = Math.max(refSize, candSize);
+  const minSize = Math.min(refSize, candSize);
+  if (maxSize === 0) return true;
+  return maxSize / minSize <= 1.4;
+}
+
+function criticalDimensionsOverlap(
+  reference: NormalizedProduct,
+  candidate: NormalizedProduct
+): boolean {
+  const refDims = reference.critical?.dimensionSignatures ?? [];
+  if (refDims.length === 0) return true;
+  const candDims = new Set(candidate.critical?.dimensionSignatures ?? []);
+  if (candDims.size === 0) return true;
+  return refDims.some((d) => candDims.has(d));
+}
+
+function attributesComparableForCheaperOption(
+  reference: NormalizedProduct,
+  candidate: NormalizedProduct
+): boolean {
+  if (!sizeDistanceOkForComparable(reference, candidate)) return false;
+  if (!criticalDimensionsOverlap(reference, candidate)) return false;
+  return true;
+}
+
+function attributesComparableForDisplay(
+  reference: NormalizedProduct,
+  candidate: NormalizedProduct,
+  displayScore: number
+): boolean {
+  if (displayScore >= BAND_HIGH_CONFIDENCE_MIN) {
+    return attributesComparableForCheaperOption(reference, candidate);
+  }
+  if (!sizeDistanceOkForComparable(reference, candidate)) return false;
+  return true;
+}
+
+function candidateDisplayScore(c: CompareApiCandidate): number {
+  return (
+    c.displayMatchScore ??
+    displayMatchScore({
+      relevanceScore: c.relevanceScore,
+      identityScore: c.identityScore,
+      departmentScore: c.departmentScore,
+    })
+  );
+}
+
+function isModerateBandScore(score: number): boolean {
+  return score >= BAND_POSSIBLE_MIN && score < BAND_HIGH_CONFIDENCE_MIN;
+}
+
+function mergePriceAnnotations(
+  apis: CompareApiCandidate[],
+  annotated: CompareApiCandidate[]
+): CompareApiCandidate[] {
+  const key = (c: CompareApiCandidate) => `${c.store}\0${c.productUrl}`;
+  const byKey = new Map(annotated.map((c) => [key(c), c]));
+  return apis.map((api) => byKey.get(key(api)) ?? api);
+}
+
+/** Display-only pool for 55–74 scores; does not change scoring. */
+function collectModerateBandForDisplay(
+  pool: CompareApiCandidate[],
+  reference: NormalizedProduct,
+  options?: { relaxAttributeGate?: boolean; limit?: number }
+): CompareApiCandidate[] {
+  const limit = options?.limit ?? FALLBACK_POSSIBLE_COUNT;
+  const relax = options?.relaxAttributeGate === true;
+  return pool
+    .filter((c) => {
+      const score = candidateDisplayScore(c);
+      if (!isModerateBandScore(score)) return false;
+      if (
+        !relax &&
+        !attributesComparableForDisplay(reference, c.normalized, score)
+      ) {
+        return false;
+      }
+      return true;
+    })
+    .sort((a, b) => candidateDisplayScore(b) - candidateDisplayScore(a))
+    .slice(0, limit);
+}
+
 function queryDerivedSourceSummary(
   productQuery: string,
   detectedStore: StoreId | null,
@@ -809,6 +1263,9 @@ function relevanceReasonLine(
   rel: AttributeMatchResult,
   identity: ProductIdentityResult
 ): string {
+  if (rel.matchExplanation?.trim()) {
+    return rel.matchExplanation.trim();
+  }
   const uiLabel = identityMatchLabel(identity.matchType);
   const missing =
     identity.missingCriticalAttributes.length > 0
@@ -833,12 +1290,241 @@ function logCompareCandidateOutbound(candidates: CompareApiCandidate[]): void {
   }
 }
 
+function commercialListingHost(c: CandidateProduct | CompareApiCandidate): string {
+  if ("shoppingHintUrl" in c && c.shoppingHintUrl?.trim()) {
+    return hostFromUrl(c.shoppingHintUrl) ?? "";
+  }
+  const productUrl = c.productUrl?.trim();
+  if (productUrl?.startsWith("http")) {
+    return hostFromUrl(productUrl) ?? "";
+  }
+  if ("outboundUrl" in c && c.outboundUrl?.trim()) {
+    return hostFromUrl(c.outboundUrl) ?? "";
+  }
+  return "";
+}
+
+function logCommercialListingRejected(c: CandidateProduct): void {
+  console.log(
+    "[COMMERCIAL_LISTING_REJECTED]",
+    JSON.stringify({
+      host: commercialListingHost(c),
+      title: c.title.slice(0, 120),
+      rawPrice: c.rawPriceText ?? c.price,
+      listingType: c.commercialListing?.listingType ?? "unknown",
+      priceIntent: c.commercialListing?.priceIntent ?? "unknown",
+      signals: c.commercialListing?.signals ?? [],
+    }),
+  );
+}
+
+function isPurchasePriceListing(
+  c: Pick<CandidateProduct | CompareApiCandidate, "commercialListing">,
+): boolean {
+  if (!c.commercialListing) return true;
+  return !shouldRejectCommercialListing(c.commercialListing);
+}
+
+function isBlockedFromExactMatchOrBestDeal(
+  c: CompareApiCandidate,
+  referencePrice: number | null,
+): boolean {
+  if (!isPurchasePriceListing(c)) return true;
+  if (
+    referencePrice != null &&
+    isValidComparablePrice(referencePrice) &&
+    isValidComparablePrice(c.price) &&
+    isDurableGoodsCategory(c.normalized.category) &&
+    isSuspiciousPurchasePriceRatio(c.price as number, referencePrice)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function applyCommercialPriceSafetyToCandidate(
+  candidate: CompareApiCandidate,
+  referencePrice: number | null,
+): CompareApiCandidate {
+  if (
+    candidate.commercialListing &&
+    shouldRejectCommercialListing(candidate.commercialListing)
+  ) {
+    return {
+      ...candidate,
+      confidenceBand: "below_threshold",
+      displayMatchScore: Math.min(candidate.displayMatchScore ?? 0, BAND_POSSIBLE_MIN - 1),
+      confidenceBandLabel: "Low Match",
+      savingsVsReference: null,
+      commercialListingLabel:
+        commercialListingDisplayLabel(candidate.commercialListing) ??
+        candidate.commercialListingLabel ??
+        null,
+    };
+  }
+
+  if (
+    referencePrice == null ||
+    !isValidComparablePrice(referencePrice) ||
+    !isValidComparablePrice(candidate.price) ||
+    !isDurableGoodsCategory(candidate.normalized.category)
+  ) {
+    return candidate;
+  }
+
+  if (
+    !isSuspiciousPurchasePriceRatio(candidate.price as number, referencePrice)
+  ) {
+    return candidate;
+  }
+
+  if (
+    candidate.commercialListing &&
+    hasCommercialNonPurchaseSignals(candidate.commercialListing)
+  ) {
+    return {
+      ...candidate,
+      confidenceBand: "below_threshold",
+      displayMatchScore: Math.min(candidate.displayMatchScore ?? 0, BAND_POSSIBLE_MIN - 1),
+      confidenceBandLabel: "Low Match",
+      savingsVsReference: null,
+      commercialListingLabel:
+        commercialListingDisplayLabel(candidate.commercialListing) ??
+        candidate.commercialListingLabel ??
+        null,
+    };
+  }
+
+  console.log(
+    "[PRICE_RATIO_SUSPICIOUS]",
+    JSON.stringify({
+      store: candidate.store,
+      host: commercialListingHost(candidate),
+      title: candidate.title.slice(0, 120),
+      candidatePrice: candidate.price,
+      referencePrice,
+      ratio: (candidate.price as number) / referencePrice,
+      listingType: candidate.commercialListing?.listingType ?? "unknown",
+      priceIntent: candidate.commercialListing?.priceIntent ?? "unknown",
+    }),
+  );
+
+  let band = candidate.confidenceBand ?? "possible_alternative";
+  if (band === "exact_match" || band === "high_confidence") {
+    band = "possible_alternative";
+  }
+  const cappedScore = Math.min(
+    candidate.displayMatchScore ?? BAND_HIGH_CONFIDENCE_MIN - 1,
+    BAND_HIGH_CONFIDENCE_MIN - 1,
+  );
+
+  return {
+    ...candidate,
+    displayMatchScore: cappedScore,
+    confidenceBand: band,
+    confidenceBandLabel: confidenceBandBadgeLabel(band),
+    savingsVsReference: null,
+    commercialListingLabel:
+      candidate.commercialListingLabel ?? "Verify purchase price",
+  };
+}
+
+function annotateCandidateConfidence(
+  c: CompareApiCandidate,
+  rel: AttributeMatchResult,
+  identity: ProductIdentityResult,
+  departmentTier?: string | null,
+  selectedDepartment?: CompareFlowDepartment | null,
+  sourceNorm?: NormalizedProduct,
+  sourceTitle?: string
+): CompareApiCandidate {
+  const tvScoreCap =
+    sourceNorm != null
+      ? resolveTvDisplayScoreCap({
+          sourceNorm,
+          candidateNorm: c.normalized,
+          sourceTitle: sourceTitle ?? sourceNorm.structured.title,
+          candidateTitle: c.title,
+          identity,
+          departmentScore: rel.departmentScore,
+        })
+      : null;
+
+  const score = displayMatchScore({
+    relevanceScore: c.relevanceScore,
+    identityScore: c.identityScore,
+    departmentScore: rel.departmentScore,
+    tvScoreCap,
+  });
+  let confidenceBand = classifyConfidenceBand(score);
+  confidenceBand = refinePossibleBandBadge(confidenceBand, {
+    departmentTier,
+    scoreReasons: rel.reasons,
+    identityReasons: identity.identityReasons,
+  });
+
+  let annotated: CompareApiCandidate = {
+    ...c,
+    displayMatchScore: score,
+    confidence: rel.confidence,
+    confidenceBand,
+    confidenceBandLabel: confidenceBandBadgeLabel(confidenceBand),
+    score: c.identityScore,
+  };
+
+  const beforeCap = isStrictSearchFallbackOutbound(annotated)
+    ? candidateDisplayScore(annotated)
+    : null;
+  annotated = applyStrictSearchUrlCapToCandidate(annotated);
+
+  if (
+    beforeCap != null &&
+    isStrictSearchFallbackOutbound(annotated) &&
+    (annotated.displayMatchScore ?? 0) < beforeCap
+  ) {
+    console.log("[SEARCH_URL_CONFIDENCE_CAP]", {
+      store: annotated.store,
+      title: annotated.title.slice(0, 120),
+      scoreBefore: beforeCap,
+      scoreAfter: annotated.displayMatchScore,
+      relevanceScore: annotated.relevanceScore,
+      identityScore: annotated.identityScore,
+      confidenceBand: annotated.confidenceBand,
+    });
+  }
+
+  const searchLabel = isStrictSearchFallbackOutbound(annotated)
+    ? searchUrlConfidenceBandLabel()
+    : null;
+  const matchReasons = buildUserMatchReasons({
+    rel,
+    identity,
+    displayScore: annotated.displayMatchScore ?? score,
+    confidenceBand: annotated.confidenceBand ?? confidenceBand,
+    selectedDepartment,
+  });
+  const primaryReason = matchReasons[0] ?? c.matchExplanation ?? c.relevanceReason;
+  return {
+    ...annotated,
+    confidenceBandLabel:
+      searchLabel ?? confidenceBandBadgeLabel(annotated.confidenceBand ?? confidenceBand),
+    matchReasons,
+    matchExplanation: primaryReason,
+    relevanceReason: primaryReason,
+  };
+}
+
 function toCompareApiCandidate(
   c: CandidateProduct,
   rel: AttributeMatchResult,
   identity: ProductIdentityResult,
   resolution: ResolvedOutboundUrl,
-  premiumCoupons?: PremiumCouponOffer[]
+  premiumCoupons?: PremiumCouponOffer[],
+  departmentTier?: string | null,
+  selectedDepartment?: CompareFlowDepartment | null,
+  sourceNorm?: NormalizedProduct,
+  sourceTitle?: string,
+  referencePrice?: number | null,
 ): CompareApiCandidate {
   const outboundRaw = resolution.outboundUrlRaw.trim();
   const affiliateUrl =
@@ -850,7 +1536,7 @@ function toCompareApiCandidate(
     c.shoppingHintUrl?.trim() ||
     c.productUrl;
 
-  return {
+  const base: CompareApiCandidate = {
     store: c.store,
     storeLabel,
     title: c.title,
@@ -859,6 +1545,7 @@ function toCompareApiCandidate(
     productUrl: navigableProductUrl,
     affiliateUrl,
     imageUrl: c.imageUrl,
+    rating: c.rating ?? null,
     normalized: c.normalized,
     confidence: rel.confidence,
     matchConfidenceLabel: rel.matchConfidenceLabel,
@@ -868,8 +1555,14 @@ function toCompareApiCandidate(
     identityReasons: identity.identityReasons,
     missingCriticalAttributes: identity.missingCriticalAttributes,
     relevanceScore: rel.relevanceScore,
+    departmentScore: rel.departmentScore ?? null,
     score: identity.identityScore,
     relevanceReason: relevanceReasonLine(rel, identity),
+    matchExplanation: rel.matchExplanation ?? relevanceReasonLine(rel, identity),
+    displayMatchScore: 0,
+    confidenceBand: "below_threshold",
+    confidenceBandLabel: "Low Match",
+    matchReasons: [],
     premiumCoupons,
     outboundIsStoreSearch: resolution.urlType === "search",
     resolvedProductUrl: resolution.resolvedProductUrl,
@@ -877,7 +1570,22 @@ function toCompareApiCandidate(
     urlType: resolution.urlType,
     urlConfidence: resolution.urlConfidence,
     urlResolutionReason: resolution.urlResolutionReason,
+    rawPriceText: c.rawPriceText ?? null,
+    commercialListing: c.commercialListing,
+    commercialListingLabel: c.commercialListing
+      ? commercialListingDisplayLabel(c.commercialListing)
+      : null,
   };
+  const annotated = annotateCandidateConfidence(
+    base,
+    rel,
+    identity,
+    departmentTier,
+    selectedDepartment,
+    sourceNorm,
+    sourceTitle
+  );
+  return applyCommercialPriceSafetyToCandidate(annotated, referencePrice ?? null);
 }
 
 function toDeal(
@@ -902,8 +1610,14 @@ function toDeal(
     identityReasons: identity.identityReasons,
     missingCriticalAttributes: identity.missingCriticalAttributes,
     relevanceScore: rel.relevanceScore,
-    score: identity.identityScore,
-    relevanceReason: relevanceReasonLine(rel, identity),
+    departmentScore: row.departmentScore,
+    displayMatchScore: row.displayMatchScore,
+    confidenceBand: row.confidenceBand,
+    confidenceBandLabel: row.confidenceBandLabel,
+    matchReasons: row.matchReasons,
+    score: row.displayMatchScore ?? identity.identityScore,
+    relevanceReason: row.relevanceReason,
+    matchExplanation: row.matchExplanation,
     premiumCoupons: row.premiumCoupons,
     savingsVsReference: row.savingsVsReference,
     priceCompareSegment: row.priceCompareSegment,
@@ -913,6 +1627,9 @@ function toDeal(
     urlType: row.urlType,
     urlConfidence: row.urlConfidence,
     urlResolutionReason: row.urlResolutionReason,
+    rawPriceText: row.rawPriceText,
+    commercialListing: row.commercialListing,
+    commercialListingLabel: row.commercialListingLabel,
   };
 }
 
@@ -1047,11 +1764,13 @@ export async function compareProduct(
     throw new Error("Missing product input");
   }
 
+  const shoppingAssistantMode = Boolean(options.shoppingAssistant);
+
   const rawPricePaid =
     options.pricePaid?.trim() ||
     (useManualForm && manual ? manual.pricePaid?.trim() : null) ||
     "";
-  if (!isValidReferencePriceInput(rawPricePaid)) {
+  if (!shoppingAssistantMode && !isValidReferencePriceInput(rawPricePaid)) {
     throw new Error(REFERENCE_PRICE_REQUIRED_MESSAGE);
   }
 
@@ -1064,10 +1783,17 @@ export async function compareProduct(
     console.log("[compare-product:debug]", first, ...rest);
   };
 
+  const selectedDepartment = options.department ?? null;
+
+  if (!shoppingAssistantMode && !selectedDepartment) {
+    throw new Error("Choose a department before comparing products.");
+  }
+
   pipelineLog("input_received", {
     inputPreview: input.slice(0, 200),
     demoMode,
     manualForm: useManualForm,
+    department: selectedDepartment,
   });
 
   const parsed = await parseProductInput(input);
@@ -1147,7 +1873,7 @@ export async function compareProduct(
     };
   }
 
-  const scrapedOk = Boolean(
+  let scrapedOk = Boolean(
     scrapedSource && isUsablePdpTitle(scrapedSource.title)
   );
   const scrapeBotWalled = attemptedPdpExtract && !scrapedOk;
@@ -1158,23 +1884,32 @@ export async function compareProduct(
     parsed.productQuery.replace(/\s+/g, " ").trim();
 
   if (!referenceProductQuery && canonicalProductUrl) {
-    referenceProductQuery = buildMinimalTitleForCanonicalUrl(canonicalProductUrl);
-    if (!scrapedSource) {
-      const store =
-        detectStoreFromProductUrl(canonicalProductUrl) ?? "unknown";
-      scrapedSource = {
-        sourceUrl: canonicalProductUrl,
-        store,
-        title: referenceProductQuery,
-        originalPrice: priceFromInput,
-        currency: "USD",
-        imageUrl: null,
-        normalized: buildNormalizedProduct(referenceProductQuery, {
-          price: priceFromInput ?? undefined,
-          productUrl: canonicalProductUrl,
-        }),
-        scrapedHints: null,
-      };
+    const minimalTitle = buildMinimalTitleForCanonicalUrl(canonicalProductUrl);
+    if (
+      minimalTitle &&
+      !isAsinPlaceholderTitle(minimalTitle) &&
+      isUsablePdpTitle(minimalTitle) &&
+      !isGenericRetailProductQuery(minimalTitle) &&
+      !/^product from [a-z0-9.-]+$/i.test(minimalTitle)
+    ) {
+      referenceProductQuery = minimalTitle;
+      if (!scrapedSource) {
+        const store =
+          detectStoreFromProductUrl(canonicalProductUrl) ?? "unknown";
+        scrapedSource = {
+          sourceUrl: canonicalProductUrl,
+          store,
+          title: referenceProductQuery,
+          originalPrice: priceFromInput,
+          currency: "USD",
+          imageUrl: null,
+          normalized: buildNormalizedProduct(referenceProductQuery, {
+            price: priceFromInput ?? undefined,
+            productUrl: canonicalProductUrl,
+          }),
+          scrapedHints: null,
+        };
+      }
     }
   }
 
@@ -1203,7 +1938,7 @@ export async function compareProduct(
     };
   }
 
-  const normSourceText = scrapedOk
+  let normSourceText = scrapedOk
     ? scrapedSource!.title
     : parsed.productQuery.trim();
 
@@ -1220,6 +1955,51 @@ export async function compareProduct(
     `${referenceProductQuery} ${normSourceText}`.trim(),
     referenceNormalized
   );
+
+  const departmentInputGate = selectedDepartment
+    ? validateDepartmentInputGate(
+        selectedDepartment,
+        referenceNormalized,
+        referenceProductQuery
+      )
+    : { ok: true as const, detectedDepartment: null };
+  if (!departmentInputGate.ok) {
+    pipelineLog("department_input_mismatch", {
+      selectedDepartment: departmentInputGate.selectedDepartment,
+      detectedDepartment: departmentInputGate.detectedDepartment,
+      action: "blocked_before_search",
+    });
+    const gateMessage = departmentInputGate.message;
+    const blockedSourceProduct =
+      scrapedOk && scrapedSource
+        ? extractedSourceSummary(
+            scrapedSource,
+            canonicalProductUrl ?? undefined
+          )
+        : queryDerivedSourceSummary(
+            referenceProductQuery,
+            parsed.detectedStore,
+            referenceNormalized,
+            canonicalProductUrl ?? undefined
+          );
+    return {
+      query: referenceProductQuery,
+      normalizedQuery: "",
+      candidates: [],
+      resultsByStore: [],
+      bestDeal: null,
+      showBestDeal: false,
+      confidence: null,
+      message: gateMessage,
+      sourceProduct: blockedSourceProduct,
+      alternatives: [],
+      savings: null,
+      comparisonMessage: gateMessage,
+      scrapeBotWalled,
+      aiProductSummary: null,
+      selectedDepartment,
+    };
+  }
 
   let referenceUnderstanding = buildReferenceUnderstanding({
     primaryTitle: referenceProductQuery,
@@ -1283,6 +2063,191 @@ export async function compareProduct(
     });
   }
 
+  const departmentInputGateWithAiDescription = selectedDepartment
+    ? validateDepartmentInputGate(
+        selectedDepartment,
+        referenceNormalized,
+        referenceProductQuery,
+        aiCompareEnrichment.summaryOneLine
+      )
+    : { ok: true as const, detectedDepartment: null };
+  if (!departmentInputGateWithAiDescription.ok) {
+    pipelineLog("department_input_mismatch", {
+      selectedDepartment: departmentInputGateWithAiDescription.selectedDepartment,
+      detectedDepartment: departmentInputGateWithAiDescription.detectedDepartment,
+      action: "blocked_before_search",
+    });
+    const gateMessage = departmentInputGateWithAiDescription.message;
+    const blockedSourceProduct =
+      scrapedOk && scrapedSource
+        ? extractedSourceSummary(
+            scrapedSource,
+            canonicalProductUrl ?? undefined
+          )
+        : queryDerivedSourceSummary(
+            referenceProductQuery,
+            parsed.detectedStore,
+            referenceNormalized,
+            canonicalProductUrl ?? undefined
+          );
+    return {
+      query: referenceProductQuery,
+      normalizedQuery: "",
+      candidates: [],
+      resultsByStore: [],
+      bestDeal: null,
+      showBestDeal: false,
+      confidence: null,
+      message: gateMessage,
+      sourceProduct: blockedSourceProduct,
+      alternatives: [],
+      savings: null,
+      comparisonMessage: gateMessage,
+      scrapeBotWalled,
+      aiProductSummary: aiCompareEnrichment.summaryOneLine,
+      selectedDepartment,
+    };
+  }
+
+  const departmentPreSearchGuard = selectedDepartment
+    ? validateDepartmentPreSearchGuard(
+        selectedDepartment,
+        referenceNormalized,
+        referenceProductQuery,
+        aiCompareEnrichment.summaryOneLine
+      )
+    : { ok: true as const, detectedDepartment: null };
+  if (!departmentPreSearchGuard.ok) {
+    pipelineLog("department_pre_search_guard_blocked", {
+      selectedDepartment: departmentPreSearchGuard.selectedDepartment,
+      detectedDepartment: departmentPreSearchGuard.detectedDepartment,
+      action: "blocked_before_search",
+    });
+    const gateMessage = departmentPreSearchGuard.message;
+    const blockedSourceProduct =
+      scrapedOk && scrapedSource
+        ? extractedSourceSummary(
+            scrapedSource,
+            canonicalProductUrl ?? undefined
+          )
+        : queryDerivedSourceSummary(
+            referenceProductQuery,
+            parsed.detectedStore,
+            referenceNormalized,
+            canonicalProductUrl ?? undefined
+          );
+    return {
+      query: referenceProductQuery,
+      normalizedQuery: "",
+      candidates: [],
+      resultsByStore: [],
+      bestDeal: null,
+      showBestDeal: false,
+      confidence: null,
+      message: gateMessage,
+      sourceProduct: blockedSourceProduct,
+      alternatives: [],
+      savings: null,
+      comparisonMessage: gateMessage,
+      scrapeBotWalled,
+      aiProductSummary: aiCompareEnrichment.summaryOneLine,
+      selectedDepartment,
+    };
+  }
+
+  const manualSearchableIdentity = hasManualSearchableIdentity(
+    useManualForm,
+    manual
+  );
+
+  if (
+    shouldAttemptSourceRecovery({
+      manualSearchableIdentity,
+      demoMode,
+      canonicalProductUrl,
+      scrapedOk,
+      referenceProductQuery,
+      referenceNormalized,
+      supplementalDescription: aiCompareEnrichment.summaryOneLine,
+    })
+  ) {
+    const recovered = await attemptSourceProductRecovery({
+      canonicalProductUrl: canonicalProductUrl!,
+      slugFallbackQuery: parsed.productQuery,
+      userPrice: priceFromInput,
+      partialSource: scrapedSource,
+      supplementalDescription: aiCompareEnrichment.summaryOneLine,
+    });
+    if (recovered) {
+      scrapedSource = recovered.sourceProduct;
+      referenceProductQuery = recovered.title;
+      referenceNormalized = withCriticalAttributes(
+        recovered.title,
+        recovered.sourceProduct.normalized
+      );
+      normSourceText = recovered.title;
+      scrapedOk = isUsablePdpTitle(recovered.title);
+      pipelineLog("source_identity_recovered", {
+        winningPath: recovered.winningPath,
+        pathsAgreed: recovered.pathsAgreed,
+        titlePreview: recovered.title.slice(0, 120),
+      });
+    }
+  }
+
+  if (
+    !manualSearchableIdentity &&
+    isWeakSourceIdentityForCompare(
+      referenceProductQuery,
+      referenceNormalized,
+      { supplementalDescription: aiCompareEnrichment.summaryOneLine }
+    )
+  ) {
+    pipelineLog("source_identity_guard_blocked", {
+      referenceTitlePreview: referenceProductQuery.slice(0, 120),
+      category: referenceNormalized.category,
+      brand: referenceNormalized.brand,
+      scrapeBotWalled,
+    });
+    const blockedSourceProduct =
+      canonicalProductUrl
+        ? queryDerivedSourceSummary(
+            referenceProductQuery,
+            parsed.detectedStore ??
+              detectStoreFromProductUrl(canonicalProductUrl),
+            referenceNormalized,
+            canonicalProductUrl
+          )
+        : scrapedOk && scrapedSource
+          ? extractedSourceSummary(
+              scrapedSource,
+              canonicalProductUrl ?? undefined
+            )
+          : queryDerivedSourceSummary(
+              referenceProductQuery,
+              parsed.detectedStore,
+              referenceNormalized,
+              canonicalProductUrl ?? undefined
+            );
+    return {
+      query: referenceProductQuery,
+      normalizedQuery: "",
+      candidates: [],
+      resultsByStore: [],
+      bestDeal: null,
+      showBestDeal: false,
+      confidence: null,
+      message: WEAK_SOURCE_IDENTITY_MESSAGE,
+      sourceProduct: blockedSourceProduct,
+      alternatives: [],
+      savings: null,
+      comparisonMessage: WEAK_SOURCE_IDENTITY_MESSAGE,
+      scrapeBotWalled,
+      aiProductSummary: aiCompareEnrichment.summaryOneLine,
+      selectedDepartment,
+    };
+  }
+
   const aiMetadataSearchQueries =
     aiProductMetadataSearchQueries(aiProductMetadata);
 
@@ -1309,12 +2274,42 @@ export async function compareProduct(
     explicitQueryPack,
     resolvedRetailPack: searchQueryPack,
     pdpTitleSearchPlanOnly: Boolean(scrapedOk && !explicitQueryPack),
+    selectedDepartment,
   });
+
+  const structuredSearchQuery = buildStructuredSearchQuery(referenceNormalized);
+
+  console.log(
+    "[CATEGORY_QUERY_PROFILE]",
+    JSON.stringify({
+      category: referenceNormalized.category,
+      brand: referenceNormalized.brand,
+      sizeInches: referenceNormalized.sizeInches ?? referenceNormalized.structured.sizeInches,
+      sizeLabel: referenceNormalized.structured.sizeLabel,
+      displayTech: referenceNormalized.tv?.displayTech ?? referenceNormalized.structured.displayType,
+      resolution: referenceNormalized.tv?.resolution ?? referenceNormalized.structured.resolution,
+      modelFamily: referenceNormalized.structured.modelFamily,
+      color: referenceNormalized.structured.color,
+      gender: referenceNormalized.gender,
+      criticalDimensions: referenceNormalized.critical?.dimensionSignatures ?? [],
+      kindPhrases: referenceNormalized.critical?.kindPhrases ?? [],
+    })
+  );
 
   const shoppingQueryPlan = mergeShoppingQueryPlans(
     [...aiCompareEnrichment.shoppingQueries, ...aiMetadataSearchQueries],
     baseShoppingQueryPlan,
     10
+  );
+
+  console.log(
+    "[SEARCH_QUERY_BUILT]",
+    JSON.stringify({
+      category: referenceNormalized.category,
+      structuredQuery: structuredSearchQuery,
+      primaryQuery: searchQueryPack.primaryQuery,
+      shoppingPlan: shoppingQueryPlan.slice(0, 6),
+    })
   );
 
   if (COMPARE_VERBOSE) {
@@ -1340,6 +2335,17 @@ export async function compareProduct(
     brand: referenceNormalized.brand,
     category: referenceNormalized.category,
   });
+
+  console.log(
+    "[DEPARTMENT_INPUT_ACCEPTED]",
+    JSON.stringify({
+      selectedDepartment,
+      detectedDepartment:
+        departmentInputGateWithAiDescription.detectedDepartment ??
+        departmentInputGate.detectedDepartment ??
+        null,
+    })
+  );
 
   let providerQueries = shoppingQueryPlan.map((q) => ({
     store: "google_shopping",
@@ -1512,8 +2518,13 @@ export async function compareProduct(
   const pending: PendingCandidate[] = [];
 
   for (const c of deduped) {
+    const candidateNormalized = withCriticalAttributes(c.title, c.normalized);
+    const candidateWithCritical: CandidateProduct = {
+      ...c,
+      normalized: candidateNormalized,
+    };
     const listingForSameCheck =
-      c.shoppingHintUrl?.trim() || c.productUrl;
+      candidateWithCritical.shoppingHintUrl?.trim() || candidateWithCritical.productUrl;
 
     traceLog("normalized_candidate", {
       store: c.store,
@@ -1602,15 +2613,47 @@ export async function compareProduct(
       continue;
     }
 
+    if (
+      c.commercialListing &&
+      shouldRejectCommercialListing(c.commercialListing)
+    ) {
+      logCommercialListingRejected(c);
+      candidateSteps.push({
+        key: candidateKey(c, candidateSteps.length),
+        store: c.store,
+        title: c.title,
+        price: c.price,
+        productUrl: c.productUrl,
+        outcome: "rejected_hard_gate",
+        rejectionReason: "commercial_listing_not_purchase",
+        detail: `commercial:${c.commercialListing.listingType}:${c.commercialListing.priceIntent}`,
+      });
+      pipelineLog("candidate_rejected", {
+        store: c.store,
+        title: c.title.slice(0, 80),
+        reason: "commercial_listing_not_purchase",
+      });
+      bumpAttributeReject("commercial_listing_not_purchase");
+      continue;
+    }
+
     const rel = scoreAttributeMatch(
       referenceNormalized,
-      c.normalized,
+      candidateWithCritical.normalized,
       queryForMatch,
-      c.title,
-      { referenceUnderstanding }
+      candidateWithCritical.title,
+      {
+        referenceUnderstanding,
+        selectedDepartment,
+        sourceTitle: referenceProductQuery,
+        rejectLogContext: {
+          store: c.store,
+          sourceHints: scrapedSource?.scrapedHints ?? null,
+        },
+      }
     );
 
-    if (rel.rejected) {
+    if (rel.rejected && isHardAttributeRejection(rel.rejectionReason)) {
       candidateSteps.push({
         key: candidateKey(c, candidateSteps.length),
         store: c.store,
@@ -1628,16 +2671,15 @@ export async function compareProduct(
         title: c.title.slice(0, 80),
         reason: rel.rejectionReason ?? "attribute_gate",
       });
-      traceLog("candidate_attribute_rejected", {
-        store: c.store,
-        rejectionReason: rel.rejectionReason,
-      });
       bumpAttributeReject(rel.rejectionReason ?? "attribute_rejected_unknown");
       continue;
     }
 
-    const coupons = getSimulatedStoreCoupons(c.store, c.normalized.category);
-    pending.push({ c, rel, coupons });
+    const coupons = getSimulatedStoreCoupons(
+      candidateWithCritical.store,
+      candidateWithCritical.normalized.category
+    );
+    pending.push({ c: candidateWithCritical, rel, coupons });
   }
 
   const resolvedPending = await Promise.all(
@@ -1688,7 +2730,18 @@ export async function compareProduct(
       }
     );
 
-    const api = toCompareApiCandidate(c, rel, identity, resolution, coupons);
+    const api = toCompareApiCandidate(
+      c,
+      rel,
+      identity,
+      resolution,
+      coupons,
+      rel.departmentTier,
+      selectedDepartment,
+      referenceNormalized,
+      referenceProductQuery,
+      referenceListPrice
+    );
     rows.push({ api, rel, identity });
     rejectionSummary.acceptedRows += 1;
 
@@ -1734,23 +2787,146 @@ export async function compareProduct(
       });
     });
 
-  const orderedAfterPriceAnnot = annotateAndOrderCandidates(
-    baseFiltered,
-    referenceListPrice
+  const orderedAfterPriceAnnot = applyStrictSearchUrlCapsToCandidates(
+    annotateAndOrderCandidates(baseFiltered, referenceListPrice)
   );
 
   const referencePriceComparable =
     referenceListPrice != null && isValidComparablePrice(referenceListPrice);
 
-  const cheaperPool = orderedAfterPriceAnnot.filter(
-    (c) => c.priceCompareSegment === "cheaper"
-  );
+  const cheaperPool = referencePriceComparable
+    ? orderedAfterPriceAnnot.filter((c) => c.priceCompareSegment === "cheaper")
+    : orderedAfterPriceAnnot.filter((c) => isValidComparablePrice(c.price));
   const notCheaperPool = orderedAfterPriceAnnot.filter(
     (c) => c.priceCompareSegment === "not_cheaper"
   );
 
-  const orderedForDisplay = cheaperPool.slice(0, DISPLAY_LIMIT);
-  const similarButNotCheaper = notCheaperPool.slice(0, DISPLAY_LIMIT);
+  const logDisplayReject = (
+    role: string,
+    c: CompareApiCandidate,
+    reason: string
+  ) => {
+    if (process.env.DEBUG_COMPARE !== "true") return;
+    console.log(
+      "[FINAL_RESULT_REJECTED]",
+      JSON.stringify({
+        role,
+        reason,
+        category: c.normalized.category,
+        store: c.store,
+        title: c.title.slice(0, 120),
+        displayMatchScore: c.displayMatchScore,
+        identityScore: c.identityScore,
+        relevanceScore: c.relevanceScore,
+        priceCompareSegment: c.priceCompareSegment ?? "unknown",
+      })
+    );
+  };
+
+  const isDisplayEligible = (c: CompareApiCandidate): boolean => {
+    const score = candidateDisplayScore(c);
+    if (score < BAND_POSSIBLE_MIN) {
+      logDisplayReject("below_band_floor", c, `score=${score}`);
+      return false;
+    }
+    if (
+      !attributesComparableForDisplay(referenceNormalized, c.normalized, score)
+    ) {
+      logDisplayReject("attributes_not_comparable", c, `score=${score}`);
+      return false;
+    }
+    return true;
+  };
+
+  const cheaperEligible = cheaperPool.filter(isDisplayEligible);
+
+  const similarButNotCheaper = notCheaperPool
+    .filter(isDisplayEligible)
+    .slice(0, DISPLAY_LIMIT);
+
+  const sortByDisplayScore = (a: CompareApiCandidate, b: CompareApiCandidate) =>
+    candidateDisplayScore(b) - candidateDisplayScore(a);
+
+  const exactMatches = cheaperEligible
+    .filter((c) => !isBlockedFromExactMatchOrBestDeal(c, referenceListPrice))
+    .filter((c) => c.confidenceBand === "exact_match")
+    .sort(sortByDisplayScore);
+  const highConfidenceMatches = cheaperEligible
+    .filter((c) => !isBlockedFromExactMatchOrBestDeal(c, referenceListPrice))
+    .filter((c) => c.confidenceBand === "high_confidence")
+    .sort(sortByDisplayScore);
+  let possibleAlternatives = cheaperEligible
+    .filter(
+      (c) =>
+        c.confidenceBand === "possible_alternative" ||
+        c.confidenceBand === "similar_specs"
+    )
+    .sort(sortByDisplayScore);
+
+  const hasHighBand =
+    exactMatches.length > 0 || highConfidenceMatches.length > 0;
+
+  const annotatedBaseFiltered = mergePriceAnnotations(
+    baseFiltered,
+    orderedAfterPriceAnnot
+  );
+
+  if (!hasHighBand && possibleAlternatives.length === 0) {
+    const fallbackPool = collectModerateBandForDisplay(
+      cheaperEligible,
+      referenceNormalized,
+      { relaxAttributeGate: true }
+    );
+    if (fallbackPool.length > 0) {
+      possibleAlternatives = fallbackPool;
+      pipelineLog("fallback_possible_alternatives", {
+        count: fallbackPool.length,
+        scores: fallbackPool.map((c) => c.displayMatchScore),
+      });
+    }
+  }
+
+  if (!hasHighBand && possibleAlternatives.length === 0) {
+    const widerPool = collectModerateBandForDisplay(
+      orderedAfterPriceAnnot.filter((c) => candidateDisplayScore(c) >= BAND_POSSIBLE_MIN),
+      referenceNormalized,
+      { relaxAttributeGate: true }
+    );
+    if (widerPool.length > 0) {
+      possibleAlternatives = widerPool;
+      pipelineLog("fallback_possible_alternatives_wider_pool", {
+        count: widerPool.length,
+        scores: widerPool.map((c) => c.displayMatchScore),
+      });
+    }
+  }
+
+  if (!hasHighBand && possibleAlternatives.length === 0) {
+    const basePool = collectModerateBandForDisplay(
+      annotatedBaseFiltered,
+      referenceNormalized,
+      { relaxAttributeGate: true }
+    );
+    if (basePool.length > 0) {
+      possibleAlternatives = basePool;
+      pipelineLog("fallback_possible_alternatives_base_filtered", {
+        count: basePool.length,
+        scores: basePool.map((c) => c.displayMatchScore),
+      });
+    }
+  }
+
+  let matchGroups: MatchResultGroups<CompareApiCandidate> = {
+    exactMatches,
+    highConfidenceMatches,
+    possibleAlternatives,
+  };
+
+  let orderedForDisplay = [
+    ...exactMatches,
+    ...highConfidenceMatches,
+    ...possibleAlternatives,
+  ].slice(0, DISPLAY_LIMIT);
 
   rejectionSummary.baseFilteredCount = baseFiltered.length;
   rejectionSummary.orderedForDisplayCount = orderedForDisplay.length;
@@ -1858,6 +3034,33 @@ export async function compareProduct(
       d.hints.includes("no_shopping_api_key_or_failed")
     );
 
+  if (orderedForDisplay.length === 0 && baseFiltered.length > 0) {
+    const lastChanceModerate = collectModerateBandForDisplay(
+      annotatedBaseFiltered,
+      referenceNormalized,
+      { relaxAttributeGate: true }
+    );
+    if (lastChanceModerate.length > 0) {
+      possibleAlternatives = lastChanceModerate;
+      orderedForDisplay = lastChanceModerate;
+      matchGroups.possibleAlternatives = lastChanceModerate;
+      pipelineLog("fallback_possible_alternatives_from_base_filtered", {
+        count: lastChanceModerate.length,
+      });
+    }
+  }
+
+  orderedForDisplay = applyStrictSearchUrlCapsToCandidates(orderedForDisplay);
+  matchGroups = partitionCandidatesIntoMatchGroups(orderedForDisplay);
+
+  const hasPossibleAlternativesOnly =
+    orderedForDisplay.length > 0 &&
+    matchGroups.exactMatches.length === 0 &&
+    matchGroups.highConfidenceMatches.length === 0 &&
+    matchGroups.possibleAlternatives.length > 0;
+  const hasHighBandForDisplay =
+    matchGroups.exactMatches.length > 0 || matchGroups.highConfidenceMatches.length > 0;
+
   if (orderedForDisplay.length === 0) {
     const allFilteredByAttributes = deduped.length > 0 && rows.length === 0;
     const hadMatchesButNoneCheaper =
@@ -1877,7 +3080,12 @@ export async function compareProduct(
       query: referenceProductQuery,
       normalizedQuery,
       candidates: [],
-      similarButNotCheaper,
+      matchGroups: {
+        exactMatches: [],
+        highConfidenceMatches: [],
+        possibleAlternatives: [],
+      },
+      similarButNotCheaper: applyStrictSearchUrlCapsToCandidates(similarButNotCheaper),
       resultsByStore: [],
       bestDeal: null,
       showBestDeal: false,
@@ -1895,7 +3103,7 @@ export async function compareProduct(
       comparisonMessage: hadMatchesButNoneCheaper
         ? "No cheaper matching products found yet."
         : allFilteredByAttributes
-          ? "No close matches passed filters."
+          ? "No listings matched closely enough after attribute checks. Try adding more specific size, model, or accessory details."
           : shoppingApiMissing
             ? "Shopping API credentials missing."
             : "No priced listings found for that search.",
@@ -1916,29 +3124,64 @@ export async function compareProduct(
   let showBestDeal = false;
   let message: string | null = null;
   let comparisonMessage: string | null = null;
+  const suppressedByLowScoreOrAttributes =
+    cheaperPool.length > 0 && orderedForDisplay.length < 3;
 
   if (orderedForDisplay.length > 0) {
     const refOk =
       referenceListPrice != null && isValidComparablePrice(referenceListPrice);
+    const bestDealPickPool = orderedForDisplay.filter(
+      (c) => !isStrictSearchFallbackOutbound(c)
+    );
+    const pickFrom =
+      bestDealPickPool.length > 0 ? bestDealPickPool : orderedForDisplay;
+    const purchaseEligible = pickFrom.filter(
+      (c) => !isBlockedFromExactMatchOrBestDeal(c, referenceListPrice),
+    );
+    const bestPickPool = purchaseEligible.length > 0 ? purchaseEligible : [];
     let bestApi: CompareApiCandidate | undefined;
     if (refOk) {
-      bestApi = orderedForDisplay.find(
+      bestApi = bestPickPool.find(
         (c) =>
-          c.priceCompareSegment === "cheaper" && c.matchType === "exact_match"
+          c.priceCompareSegment === "cheaper" && c.confidenceBand === "exact_match",
       );
     }
     if (!bestApi) {
-      bestApi = orderedForDisplay.find((c) => c.matchType === "exact_match");
+      bestApi = bestPickPool.find((c) => c.confidenceBand === "exact_match");
     }
     if (!bestApi) {
-      bestApi = orderedForDisplay.find((c) => c.matchType === "close_match");
+      bestApi = bestPickPool.find((c) => c.confidenceBand === "high_confidence");
     }
-    bestApi ??= orderedForDisplay[0];
+    if (!bestApi) {
+      bestApi = bestPickPool.find((c) => c.matchType === "close_match");
+    }
+    bestApi ??= bestPickPool[0];
 
-    const bestRow = rowForApi(bestApi);
-    if (bestRow) {
-      bestDeal = toDeal(bestApi, bestRow.rel, bestRow.identity);
-      showBestDeal = bestRow.identity.matchType === "exact_match";
+    const bestRow = bestApi ? rowForApi(bestApi) : undefined;
+    if (bestRow && bestApi) {
+      const bestDisplayScore = candidateDisplayScore(bestApi);
+      if (bestDisplayScore >= MIN_SCORE_PRODUCT_LISTING_OR_BEST_DEAL) {
+        bestDeal = applyStrictSearchUrlCapToDeal(
+          toDeal(bestApi, bestRow.rel, bestRow.identity)
+        );
+        showBestDeal =
+          bestApi.confidenceBand === "exact_match" &&
+          !isStrictSearchFallbackOutbound(bestApi) &&
+          !isBlockedFromExactMatchOrBestDeal(bestApi, referenceListPrice);
+      } else if (process.env.DEBUG_COMPARE === "true") {
+        console.log(
+          "[FINAL_RESULT_REJECTED]",
+          JSON.stringify({
+            role: "best_deal",
+            category: bestApi.normalized.category,
+            store: bestApi.store,
+            title: bestApi.title.slice(0, 120),
+            displayMatchScore: bestDisplayScore,
+            minScore: MIN_SCORE_PRODUCT_LISTING_OR_BEST_DEAL,
+          })
+        );
+      }
+
       alternatives = orderedForDisplay
         .filter(
           (c) =>
@@ -1947,7 +3190,9 @@ export async function compareProduct(
         .slice(0, Math.max(0, DISPLAY_LIMIT - 1))
         .map((c) => {
           const r = rowForApi(c);
-          return r ? toDeal(c, r.rel, r.identity) : null;
+          return r
+            ? applyStrictSearchUrlCapToDeal(toDeal(c, r.rel, r.identity))
+            : null;
         })
         .filter((d): d is CompareProductDeal => d != null);
     }
@@ -1989,7 +3234,22 @@ export async function compareProduct(
   }
 
   if (!comparisonMessage) {
-    if (cheaperPool.length > 0) {
+    if (
+      suppressedByLowScoreOrAttributes &&
+      matchGroups.possibleAlternatives.length === 0
+    ) {
+      comparisonMessage = POSSIBLE_ALTERNATIVES_EXPLANATION;
+    } else if (hasPossibleAlternativesOnly) {
+      comparisonMessage = NO_EXACT_WITH_ALTERNATIVES_MESSAGE;
+      message = null;
+    } else if (
+      !hasHighBandForDisplay &&
+      matchGroups.possibleAlternatives.length > 0 &&
+      orderedForDisplay.length > 0
+    ) {
+      comparisonMessage = NO_EXACT_WITH_ALTERNATIVES_MESSAGE;
+      message = null;
+    } else if (cheaperPool.length > 0) {
       comparisonMessage =
         orderedForDisplay.length >= MIN_CHEAPER_RESULTS_TARGET
           ? `${orderedForDisplay.length} cheaper options than your reference price.`
@@ -2001,16 +3261,29 @@ export async function compareProduct(
 
   const confidenceOut = overallConfidenceFromDeal(bestDeal);
 
+  const similarButNotCheaperForResponse = applyStrictSearchUrlCapsToCandidates(
+    similarButNotCheaper
+  );
+
+  const dedupedMessages = dedupeCompareResponseMessages({
+    comparisonMessage,
+    message,
+    hasPossibleAlternativesOnly,
+  });
+  comparisonMessage = dedupedMessages.comparisonMessage;
+  message = dedupedMessages.message;
+
   logCompareCandidateOutbound([
     ...orderedForDisplay,
-    ...similarButNotCheaper,
+    ...similarButNotCheaperForResponse,
   ]);
 
   return {
     query: referenceProductQuery,
     normalizedQuery,
     candidates: orderedForDisplay,
-    similarButNotCheaper,
+    matchGroups,
+    similarButNotCheaper: similarButNotCheaperForResponse,
     resultsByStore: groupByStore(orderedForDisplay),
     bestDeal,
     showBestDeal,
@@ -2022,6 +3295,7 @@ export async function compareProduct(
     comparisonMessage,
     scrapeBotWalled,
     aiProductSummary: aiCompareEnrichment.summaryOneLine,
+    selectedDepartment,
     ...(tracePayload() ? { comparisonTrace: tracePayload()! } : {}),
   };
 }

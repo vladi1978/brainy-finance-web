@@ -20,11 +20,20 @@ export const MIN_COMPARABLE_SCORE_TV = 85;
 /** @deprecated Threshold naming retained for external bundles — unused by universal scorer. */
 export const MIN_COMPARABLE_SCORE_OTHER = 75;
 
-export const SCORE_EXACT_MIN = 76;
-export const SCORE_EQUIVALENT_MIN = 52;
-export const SCORE_ALTERNATIVE_MIN = 34;
+/** @deprecated Use `BAND_*` from `matching/confidenceBands` for display tiers. */
+export const SCORE_EXACT_MIN = 90;
+export const SCORE_EQUIVALENT_MIN = 75;
+export const SCORE_ALTERNATIVE_MIN = 55;
 
 export const WEAK_MATCH_MIN_SCORE = SCORE_ALTERNATIVE_MIN;
+
+export {
+  BAND_EXACT_MIN,
+  BAND_HIGH_CONFIDENCE_MIN,
+  BAND_POSSIBLE_MIN,
+  classifyConfidenceBand,
+  confidenceBandBadgeLabel,
+} from "./matching/confidenceBands";
 
 export type HardGateResult = UniversalHardGateResult;
 
@@ -129,9 +138,9 @@ export function isAlternativeTier(label: MatchConfidenceLabel | "none"): boolean
 }
 
 function confidenceFromStructured(score: number): MatchConfidenceLabel | "none" {
-  if (score >= 88) return "exact";
-  if (score >= 72) return "equivalent";
-  if (score >= 52) return "alternative";
+  if (score >= 90) return "exact";
+  if (score >= 75) return "equivalent";
+  if (score >= 55) return "alternative";
   return "none";
 }
 
@@ -165,7 +174,7 @@ export function evaluateCandidate(
   }
 
   const { score, reasons } = attributeScoreForPair(source, candidate.normalized);
-  const minScore = 52;
+  const minScore = 55;
   if (score < minScore) {
     const detail = `below_structured_threshold(score=${score},need>=${minScore})`;
     logComparisonCandidateDebug({

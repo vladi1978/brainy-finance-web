@@ -1,7 +1,13 @@
+import {
+  detectDisplayDeviceKind,
+  extractDiagonalInches,
+} from "./matching/displayDimensions";
+import { cleanRetailerSearchQuery } from "./matching/searchQueryCleanup";
 import type {
   ComparisonCategory,
   NormalizedProduct,
   ProductCategory,
+  ProductDepartment,
   ProductCondition,
   StoreId,
   StructuredProduct,
@@ -29,9 +35,28 @@ const STOPWORDS = new Set([
   "size",
 ]);
 
-/** Known consumer brands — extend as needed. */
+/** Known consumer brands — extend as needed (non-TV and general fallback). */
 const BRAND_PATTERN =
   /\b(samsung|lg|sony|tcl|hisense|vizio|insignia|onn|apple|google|beats|bose|jbl|sonos|anker|nike|adidas|reebok|puma|new balance|asics|crocs|ugg|hanes|gildan|champion|microsoft|dell|hp|lenovo|asus|acer|msi|intex|bestway|coleman)\b/i;
+
+/** TV panel OEM brands — includes Roku hardware; excludes platform-only mentions. */
+const OEM_TV_BRAND_PATTERN =
+  /\b(samsung|lg|sony|tcl|hisense|vizio|insignia|onn|roku|sharp|philips|panasonic)\b/gi;
+
+/** Smart TV operating systems — must not be treated as OEM brand when another OEM is present. */
+export const SMART_TV_PLATFORM_TOKENS = new Set([
+  "roku",
+  "tizen",
+  "fire_tv",
+  "google_tv",
+  "webos",
+  "android_tv",
+]);
+
+export function isSmartTvPlatformToken(brand: string | null | undefined): boolean {
+  if (!brand) return false;
+  return SMART_TV_PLATFORM_TOKENS.has(brand.toLowerCase().replace(/\s+/g, "_"));
+}
 
 /**
  * Lowercase, strip punctuation noise, collapse whitespace (search / matching).
@@ -45,6 +70,15 @@ export function normalizeTitle(raw: string): string {
     .trim();
 }
 
+function canonicalTitleForParsing(raw: string): string {
+  return raw
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/\u2032/g, "'")
+    .replace(/\u2033/g, '"')
+    .replace(/[–—]/g, "-");
+}
+
 export function tokenizeSignificant(text: string): string[] {
   const n = normalizeTitle(text);
   return n
@@ -54,6 +88,25 @@ export function tokenizeSignificant(text: string): string[] {
 }
 
 export function extractBrand(title: string): string | null {
+  const n = normalizeTitle(title);
+  const oemMatches: { brand: string; index: number }[] = [];
+  for (const m of n.matchAll(OEM_TV_BRAND_PATTERN)) {
+    oemMatches.push({ brand: m[1]!.toLowerCase(), index: m.index ?? 0 });
+  }
+
+  const nonRokuOem = oemMatches.filter((hit) => hit.brand !== "roku");
+  if (nonRokuOem.length > 0) {
+    nonRokuOem.sort((a, b) => a.index - b.index);
+    return nonRokuOem[0]!.brand;
+  }
+
+  const rokuHits = oemMatches.filter((hit) => hit.brand === "roku");
+  if (rokuHits.length > 0) {
+    const firstRoku = rokuHits.sort((a, b) => a.index - b.index)[0]!;
+    if (firstRoku.index === 0) return "roku";
+    return null;
+  }
+
   const m = title.match(BRAND_PATTERN);
   return m ? m[1]!.toLowerCase().replace(/\s+/g, " ") : null;
 }
@@ -76,36 +129,18 @@ export function extractModelTokens(title: string): string[] {
 }
 
 /**
- * TV / monitor diagonal in inches when clearly stated.
+ * TV / monitor / laptop diagonal in inches when clearly stated.
+ * @see matching/displayDimensions.ts
  */
 export function extractSizeInches(title: string): number | null {
-  const norm = title.replace(/\u2033/g, '"'); // unicode double prime
-
-  const m1 = norm.match(/\b(\d{2,3})\s*(?:\"|''|′′|inches?\b|inch\b|-inch)\b/i);
-  if (m1) {
-    const n = parseInt(m1[1]!, 10);
-    if (n >= 20 && n <= 120) return n;
-  }
-
-  const m2 = norm.match(/\b(\d{2,3})\s*inch\b/i);
-  if (m2) {
-    const n = parseInt(m2[1]!, 10);
-    if (n >= 20 && n <= 120) return n;
-  }
-
-  /** "85 Class" / "85-Inch Class" (common retailer phrasing) */
-  const m3 = norm.match(/\b(\d{2,3})\s*-?\s*class\b/i);
-  if (m3) {
-    const n = parseInt(m3[1]!, 10);
-    if (n >= 20 && n <= 120) return n;
-  }
-
-  return null;
+  return extractDiagonalInches(title, {
+    deviceKind: detectDisplayDeviceKind(title),
+  });
 }
 
 function extractTvDisplayTech(title: string): TvDisplayTechBucket {
   const n = normalizeTitle(title);
-  if (/\bmini[\s-]*led\b/.test(n)) return "mini_led";
+  if (/\bmini[\s-]*led\b|\bminiled\b/.test(n)) return "mini_led";
   if (/\bneo[\s-]*qled\b/.test(n)) return "neo_qled";
   if (/\bqled\b/.test(n)) return "qled";
   if (/\boled\b/.test(n)) return "oled";
@@ -119,15 +154,29 @@ function extractTvResolution(title: string): TvResolutionBucket {
   const n = normalizeTitle(title);
   if (/\b8k\b/.test(n)) return "8k";
   if (/\b(4k|uhd|ultra\s*hd)\b/.test(n)) return "4k";
-  if (/\b(720p|1080p|full\s*hd|fhd|hd)\b/.test(n)) return "hd";
+  if (/\b(720p|1080p|full\s*hd|fhd|hd|hdr)\b/.test(n)) return "hd";
   return null;
 }
 
 function extractTvSmart(title: string): boolean | null {
   const n = normalizeTitle(title);
   if (/\b(non[\s-]*smart|not[\s-]*smart)\b/.test(n)) return false;
-  if (/\b(smart\s*tv|smart\s*tizen|roku\s*tv|fire\s*tv|google\s*tv|webos)\b/.test(n))
+  if (
+    /\b(smart\s*tv|smart\s*tizen|roku(?:\s*tv)?|fire\s*tv|google\s*tv|android\s*tv|webos)\b/.test(
+      n
+    )
+  )
     return true;
+  return null;
+}
+
+export function extractTvPlatform(title: string): string | null {
+  const n = normalizeTitle(title);
+  if (/\broku(?:\s*tv)?\b/.test(n)) return "roku";
+  if (/\bgoogle\s*tv\b|\bandroid\s*tv\b/.test(n)) return "google_tv";
+  if (/\bfire\s*tv\b/.test(n)) return "fire_tv";
+  if (/\bwebos\b/.test(n)) return "webos";
+  if (/\btizen\b/.test(n)) return "tizen";
   return null;
 }
 
@@ -226,10 +275,140 @@ export function extractColor(title: string): string | null {
   return m ? m[1]!.toLowerCase() : null;
 }
 
+export function extractProductType(title: string): string | null {
+  const n = normalizeTitle(title);
+  const m = n.match(
+    /\b(shoe|sneaker|boot|sandal|cleat|loafer|slip-on|shirt|tee|t-shirt|hoodie|sweatshirt|jacket|coat|pants|jeans|shorts|dress|skirt|legging|socks?|drill|impact driver|driver|circular saw|reciprocating saw|grinder|sander|nailer|router|multitool)\b/
+  );
+  if (!m) return null;
+  const token = m[1]!.toLowerCase();
+  if (token === "tee" || token === "t-shirt") return "shirt";
+  return token;
+}
+
+export function extractToolVoltage(title: string): string | null {
+  const n = canonicalTitleForParsing(title);
+  const m = n.match(/\b(\d{1,3})\s*(?:v|volt|volts)\b/i);
+  if (!m) return null;
+  return `${m[1]}v`;
+}
+
+export function extractToolBatteryKitStatus(title: string): boolean | null {
+  const n = normalizeTitle(title);
+  if (
+    /\b(tool[\s-]*only|bare[\s-]*tool|battery(?:\s+and|\s*&)?\s*charger\s*not\s*included|no\s*battery)\b/.test(
+      n
+    )
+  ) {
+    return false;
+  }
+  if (
+    /\b(with\s+battery|battery\s+included|battery\s+and\s+charger|includes?\s+charger|starter\s+kit|combo\s+kit|kit)\b/.test(
+      n
+    )
+  ) {
+    return true;
+  }
+  return null;
+}
+
 export function extractSizeLabel(title: string): string | null {
   const n = normalizeTitle(title);
-  const m = n.match(/\b(xs|s|m|l|xl|xxl|xxxl|\d+xl)\b/);
-  return m ? m[1]!.toUpperCase() : null;
+  const m = n.match(/\b(xs|s|m|l|xl|xxl|xxxl|\d+xl|small|medium|large)\b/);
+  if (!m) return null;
+  const raw = m[1]!.toLowerCase();
+  if (raw === "small") return "S";
+  if (raw === "medium") return "M";
+  if (raw === "large") return "L";
+  return raw.toUpperCase();
+}
+
+function extractNumericApparelSize(title: string): number | null {
+  const n = normalizeTitle(title);
+  const tagged = n.match(/\b(?:size|w|waist)\s*(\d{1,2}(?:\.\d)?)\b/);
+  if (tagged) {
+    const v = parseFloat(tagged[1]!);
+    if (v >= 0 && v <= 60) return v;
+  }
+  const shoe = n.match(/\b(?:mens?|womens?|unisex)\s+(\d{1,2}(?:\.\d)?)\b/);
+  if (shoe) {
+    const v = parseFloat(shoe[1]!);
+    if (v >= 4 && v <= 20) return v;
+  }
+  return null;
+}
+
+function extractPoolShape(title: string): "round" | "oval" | "rectangular" | null {
+  const n = normalizeTitle(title);
+  if (/\bround\b/.test(n)) return "round";
+  if (/\boval\b/.test(n)) return "oval";
+  if (/\b(rectangle|rectangular|rect)\b/.test(n)) return "rectangular";
+  return null;
+}
+
+function extractPoolConstruction(title: string): "steel_frame" | "hard_sided" | "inflatable" | null {
+  const n = normalizeTitle(title);
+  if (/\b(inflatable|airjet|easy set)\b/.test(n)) return "inflatable";
+  if (/\b(steel\s*frame|metal\s*frame)\b/.test(n)) return "steel_frame";
+  if (/\b(hard\s*sided|resin\s*frame|rigid\s*wall)\b/.test(n)) return "hard_sided";
+  return null;
+}
+
+function extractToolFamily(title: string): string | null {
+  const n = normalizeTitle(title);
+  const platform = n.match(/\b(m12|m18|20v\s*max|40v|max|60v|max|xgt|lxt|one\+|18v\s*lxt)\b/);
+  if (platform) return platform[1]!.replace(/\s+/g, "");
+  return extractProductType(title);
+}
+
+function logAttributeHydration(payload: {
+  title: string;
+  structured: StructuredProduct;
+  modelTokens: string[];
+  category: ProductCategory;
+}): void {
+  const poolAttrs =
+    payload.category === "pool" ||
+    payload.category === "outdoor_pool" ||
+    payload.category === "swimming_pool"
+      ? {
+          shape: extractPoolShape(payload.title),
+          construction: extractPoolConstruction(payload.title),
+        }
+      : null;
+  const tvAttrs =
+    payload.category === "tv" || payload.category === "monitor"
+      ? {
+          screenInches: payload.structured.sizeInches,
+          resolution: payload.structured.resolution,
+          displayType: payload.structured.displayType,
+          smartTv: payload.structured.smartTv,
+          platform: payload.structured.smartTvPlatform ?? extractTvPlatform(payload.title),
+        }
+      : null;
+  console.log(
+    "[ATTRIBUTE_HYDRATION]",
+    JSON.stringify({
+      category: payload.category,
+      title: payload.title.slice(0, 180),
+      structured: {
+        sizeInches: payload.structured.sizeInches,
+        productType: payload.structured.productType,
+        toolVoltage: payload.structured.toolVoltage,
+        toolBatteryKit: payload.structured.toolBatteryKit,
+        gender: payload.structured.gender,
+        sizeLabel: payload.structured.sizeLabel,
+      },
+      apparelNumericSize: extractNumericApparelSize(payload.title),
+      toolFamily: extractToolFamily(payload.title),
+      modelTokens: payload.modelTokens.slice(0, 8),
+      pool: poolAttrs,
+      tv: tvAttrs,
+    })
+  );
+  if (tvAttrs) {
+    console.log("[TV_ATTRIBUTES_PARSED]", JSON.stringify(tvAttrs));
+  }
 }
 
 export type StructuredListingContext = {
@@ -260,6 +439,10 @@ export function buildStructuredProduct(
     displayType: null,
     resolution: null,
     smartTv: null,
+    smartTvPlatform: null,
+    productType: extractProductType(trimmed),
+    toolVoltage: extractToolVoltage(trimmed),
+    toolBatteryKit: extractToolBatteryKitStatus(trimmed),
     gender: extractGender(trimmed),
     packCount: extractPackCount(trimmed),
     sizeLabel: extractSizeLabel(trimmed),
@@ -278,6 +461,7 @@ export function buildStructuredProduct(
       displayType: extractTvDisplayTech(trimmed),
       resolution: extractTvResolution(trimmed),
       smartTv: extractTvSmart(trimmed),
+      smartTvPlatform: extractTvPlatform(trimmed),
       sizeInches: extractSizeInches(trimmed),
     };
   }
@@ -304,10 +488,34 @@ function buildTvAttributesFromStructured(
     displayTech: structured.displayType,
     resolution: structured.resolution,
     smartTv: structured.smartTv,
+    platform: structured.smartTvPlatform,
     condition: structured.condition,
     modelFamilyTokens:
       modelFamilyTokens.length > 0 ? modelFamilyTokens : extractTvModelFamilyTokens(title),
   };
+}
+
+/**
+ * True when `sourceBrand` appears in the candidate title as an OEM brand mention,
+ * not merely as a smart-TV platform token on a different OEM listing.
+ */
+export function candidateTitleMentionsSourceOemBrand(args: {
+  sourceBrand: string;
+  candidateBrand: string | null;
+  candidateTitle: string;
+}): boolean {
+  const { sourceBrand, candidateBrand, candidateTitle } = args;
+  const normalizedSourceBrand = sourceBrand.toLowerCase().replace(/\s+/g, " ");
+  const titleNorm = normalizeTitle(candidateTitle);
+  if (!titleNorm.includes(normalizedSourceBrand)) return false;
+  if (
+    isSmartTvPlatformToken(normalizedSourceBrand) &&
+    candidateBrand &&
+    candidateBrand !== normalizedSourceBrand
+  ) {
+    return false;
+  }
+  return true;
 }
 
 /** Maps ProductCategory into comparison buckets (tv / monitor / apparel / generic). */
@@ -315,6 +523,18 @@ export function toComparisonCategory(category: ProductCategory): ComparisonCateg
   if (category === "tv") return "tv";
   if (category === "monitor") return "monitor";
   if (category === "socks" || category === "apparel") return "apparel";
+  return "generic";
+}
+
+export function toProductDepartment(category: ProductCategory): ProductDepartment {
+  if (category === "tv" || category === "monitor") return "screen";
+  if (category === "pool" || category === "outdoor_pool" || category === "swimming_pool") {
+    return "pool";
+  }
+  if (category === "footwear" || category === "socks" || category === "apparel") {
+    return "apparel";
+  }
+  if (category === "tools") return "tools";
   return "generic";
 }
 
@@ -388,6 +608,14 @@ export function extractCategory(title: string): ProductCategory {
     return "pool";
   }
 
+  if (
+    /\b(drill|driver|impact|saw|grinder|sander|nailer|compressor|multitool|tool\s+only|bare\s+tool)\b/.test(
+      n
+    )
+  ) {
+    return "tools";
+  }
+
   if (SOCKS_RE.test(n)) {
     return "socks";
   }
@@ -445,11 +673,24 @@ export function buildNormalizedProduct(
     gender: structured.gender,
   };
   if (category === "tv") {
-    return {
+    const out: NormalizedProduct = {
       ...base,
       tv: buildTvAttributesFromStructured(title, structured),
     };
+    logAttributeHydration({
+      title,
+      structured,
+      modelTokens: out.modelTokens,
+      category,
+    });
+    return out;
   }
+  logAttributeHydration({
+    title,
+    structured,
+    modelTokens: base.modelTokens,
+    category,
+  });
   return base;
 }
 
@@ -479,6 +720,7 @@ const CATEGORY_SEARCH_KEYWORD: Record<ProductCategory, string | null> = {
   pool: "pool",
   outdoor_pool: "pool",
   swimming_pool: "pool",
+  tools: "tools",
   footwear: "shoes",
   audio: "headphones",
   socks: "socks",
@@ -495,28 +737,36 @@ export function buildNormalizedSearchQuery(
   fallbackRaw: string
 ): string {
   const parts: string[] = [];
-  if (norm.brand) parts.push(norm.brand);
+  const seen = new Set<string>();
+  const add = (tok: string) => {
+    const key = tok.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    parts.push(tok);
+  };
+
+  if (norm.brand) add(norm.brand);
   for (const t of norm.modelTokens.slice(0, 6)) {
-    if (t.length >= 3 && !parts.includes(t)) parts.push(t);
+    if (t.length >= 3) add(t);
   }
   if (norm.sizeInches != null) {
-    parts.push(String(norm.sizeInches));
+    add(String(norm.sizeInches));
   }
   if (norm.packCount != null && norm.packCount > 1) {
-    parts.push(`${norm.packCount} pack`);
+    add(`${norm.packCount} pack`);
   }
   const catKw = CATEGORY_SEARCH_KEYWORD[norm.category];
-  if (catKw) parts.push(catKw);
+  if (catKw) add(catKw);
 
   const significant = tokenizeSignificant(fallbackRaw).slice(0, 8);
   for (const w of significant) {
     if (parts.length >= 12) break;
-    if (!parts.some((p) => p.includes(w) || w.includes(p))) parts.push(w);
+    if (![...seen].some((k) => k.includes(w) || w.includes(k))) add(w);
   }
 
-  const joined = [...new Set(parts.map((p) => p.trim()).filter(Boolean))].join(" ").trim();
+  const joined = parts.join(" ").trim();
   if (joined.length >= 6) {
-    return joined.replace(/\s+/g, " ");
+    return cleanRetailerSearchQuery(joined);
   }
 
   return extractSearchQuery(fallbackRaw);
@@ -530,25 +780,30 @@ export function extractSearchQuery(input: string): string {
 
   const brandMatch = cleaned.match(BRAND_PATTERN);
   const modelMatch = cleaned.match(
-    /\b(qn\d{2,4}[a-z0-9]*|xr[\w-]*|oled|qled|neo qled|air max|u\d{3,4}[a-z]?)\b/i
+    /\b(qn\d{2,4}[a-z0-9]*|xr[\w-]*|oled\d{2,3}|qled\d{2,3}|neo qled|air max|u\d{3,4}[a-z]?|\d{2,3}[a-z]\d[a-z0-9]+)\b/i
   );
-  const sizeMatch = cleaned.match(/\b\d{2,3}(?:\s*-\s*)?(?:inch|inches|")\b/i);
+  const sizeInches = extractSizeInches(input);
+  const sizePart =
+    sizeInches != null ? `${sizeInches} inch` : cleaned.match(/\b\d{2,3}(?:\s*-\s*)?(?:inch|inches|")\b/i)?.[0]?.replace(/-/g, " ");
   const typeMatch = cleaned.match(
     /\b(tv|smart tv|shoes|socks|crew socks|speaker|headphones|earbuds|laptop|detergent|hoodie|sneakers)\b/i
   );
 
-  const parts = [
-    brandMatch?.[0],
-    modelMatch?.[0],
-    sizeMatch?.[0]?.replace(/-/g, " "),
-    typeMatch?.[0],
-  ].filter(Boolean);
-
-  if (parts.length >= 2) {
-    return parts.join(" ").replace(/\s+/g, " ").trim();
+  const parts: string[] = [];
+  const seen = new Set<string>();
+  for (const p of [brandMatch?.[0], modelMatch?.[0], sizePart, typeMatch?.[0]]) {
+    if (!p) continue;
+    const key = p.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    parts.push(p);
   }
 
-  return cleaned;
+  if (parts.length >= 2) {
+    return cleanRetailerSearchQuery(parts.join(" "));
+  }
+
+  return cleanRetailerSearchQuery(cleaned);
 }
 
 /**

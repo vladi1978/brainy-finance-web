@@ -1,5 +1,5 @@
+import { resolveCanonicalInputUrl } from "./canonicalInputUrl";
 import {
-  expandKnownShortRetailUrl,
   extractProductQueryFromRetailUrl,
   isGenericRetailProductQuery,
   pathnameSlugShoppingFallback,
@@ -7,14 +7,23 @@ import {
 import type { StoreId } from "./types";
 
 export type ParsedProductInput = {
-  /** Raw user input */
+  /** Raw user paste (unchanged text or URL string). */
   rawInput: string;
-  /** Pasted product URL when the input was an HTTP(S) link */
+  /** HTTP(S) paste before redirect resolution. */
+  originalInputUrl?: string;
+  /** Final URL after redirect follow, when it changed from the paste. */
+  resolvedFinalUrl?: string | null;
+  /**
+   * Canonical retailer URL for scrape, compare, and outbound listing.
+   * Alias: {@link inputUrl}.
+   */
+  canonicalProductUrl?: string;
+  /** @deprecated Prefer {@link canonicalProductUrl}. */
   inputUrl?: string;
-  /** Retailer inferred from URL host/path when recognized (slug heuristic) */
+  /** Retailer inferred from canonical URL host/path when recognized. */
   detectedStore: StoreId | null;
   /**
-   * Query text derived from URL slug/path or full pasted text.
+   * Query text derived from canonical URL slug/path or full pasted text.
    * Used when PDP extraction is unavailable or fails.
    */
   productQuery: string;
@@ -25,11 +34,8 @@ function isHttpUrl(s: string): boolean {
 }
 
 /**
- * Parse pasted text or URL: exposes raw input, optional URL, detected retailer
- * (when recognizable), and a fallback query string for search/normalization.
- *
- * Known short URLs (allowlisted hosts) are expanded via HEAD/redirect follow
- * before URL-derived query extraction; on failure the original paste is kept.
+ * Parse pasted text or URL: canonicalizes HTTP(S) links (redirect resolve + unwrap),
+ * then derives retailer hint and fallback query from the canonical URL.
  */
 export async function parseProductInput(
   raw: string
@@ -51,29 +57,27 @@ export async function parseProductInput(
   const headPart = hashIdx >= 0 ? rawInput.slice(0, hashIdx) : rawInput;
   const fragment = hashIdx >= 0 ? rawInput.slice(hashIdx) : "";
 
-  const expandedHref = await expandKnownShortRetailUrl(headPart.trim());
-  const rebuiltBase =
-    expandedHref != null
-      ? (expandedHref.split("#")[0]?.trim() ?? expandedHref.trim())
-      : headPart.trim();
-  const reconstructed = `${rebuiltBase}${fragment}`;
+  const canonical = await resolveCanonicalInputUrl(headPart.trim());
+  const canonicalProductUrl = canonical.canonicalProductUrl;
+  const reconstructed = `${canonicalProductUrl}${fragment}`;
 
-  const inputUrl = reconstructed.split("#")[0]?.trim() ?? reconstructed;
-
-  const extracted = extractProductQueryFromRetailUrl(inputUrl);
+  const extracted = extractProductQueryFromRetailUrl(canonicalProductUrl);
   let productQuery = extracted.productQuery;
   const store = extracted.store;
   productQuery = productQuery.replace(/\s+/g, " ").trim();
 
   if (!productQuery || isGenericRetailProductQuery(productQuery)) {
-    productQuery = pathnameSlugShoppingFallback(inputUrl)
+    productQuery = pathnameSlugShoppingFallback(canonicalProductUrl)
       .replace(/\s+/g, " ")
       .trim();
   }
 
   return {
-    rawInput: reconstructed,
-    inputUrl,
+    rawInput,
+    originalInputUrl: canonical.originalInputUrl,
+    resolvedFinalUrl: canonical.resolvedFinalUrl,
+    canonicalProductUrl,
+    inputUrl: canonicalProductUrl,
     detectedStore: store,
     productQuery: isGenericRetailProductQuery(productQuery) ? "" : productQuery,
   };

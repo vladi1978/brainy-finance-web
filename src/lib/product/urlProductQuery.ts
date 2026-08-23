@@ -16,7 +16,8 @@ function hostnameIsKnownShort(hostname: string): boolean {
   );
 }
 
-async function probeFinalUrlViaFetch(
+/** Follow redirects via HEAD/GET (used by short-url and canonical input resolution). */
+export async function probeFinalUrlViaFetch(
   href: string,
   method: "HEAD" | "GET"
 ): Promise<string | undefined> {

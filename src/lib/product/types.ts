@@ -39,6 +39,7 @@ export type UniversalStoreId = StoreId | "other";
 export type UrlResolutionReason =
   | "merchant_product_url"
   | "organic_pdp_discovery"
+  | "search_url_pdp_upgrade"
   | "generated_search_fallback_from_title";
 
 /** Raw link classification from Google Shopping / Serp rows (ingestion). */
@@ -51,18 +52,50 @@ export type ShoppingRawLinkType =
 
 export type ShoppingSourceAdapterId = "serper" | "serpapi";
 
+export type CommercialListingType =
+  | "full_purchase"
+  | "rental"
+  | "lease"
+  | "installment"
+  | "subscription"
+  | "deposit"
+  | "unknown_non_purchase"
+  | "unknown";
+
+export type CommercialPriceIntent =
+  | "purchase_price"
+  | "payment_amount"
+  | "not_purchase_price"
+  | "unknown";
+
+export type CommercialListingClassification = {
+  listingType: CommercialListingType;
+  priceIntent: CommercialPriceIntent;
+  confidence: number;
+  signals: string[];
+};
+
 export type ProductCategory =
   | "tv"
   | "monitor"
   | "pool"
   | "outdoor_pool"
   | "swimming_pool"
+  | "tools"
   | "footwear"
   | "audio"
   | "socks"
   | "apparel"
   | "household"
   | "general";
+
+/** Department-aware routing layer for strict matching gates. */
+export type ProductDepartment =
+  | "pool"
+  | "screen"
+  | "apparel"
+  | "tools"
+  | "generic";
 
 /** High-level bucket for comparison rules (tv vs monitor vs apparel vs everything else). */
 export type ComparisonCategory = "tv" | "monitor" | "apparel" | "generic";
@@ -96,6 +129,14 @@ export type StructuredProduct = {
   displayType: TvDisplayTechBucket;
   resolution: TvResolutionBucket;
   smartTv: boolean | null;
+  /** Smart TV OS when stated (e.g. roku, tizen) — distinct from OEM {@link brand}. */
+  smartTvPlatform: string | null;
+  /** Parsed apparel/shoe type (e.g. shoe, boot, shirt, hoodie). */
+  productType: string | null;
+  /** Parsed tool voltage token (e.g. 20v, 120v) when present in title. */
+  toolVoltage: string | null;
+  /** Whether the listing indicates a battery+charger kit (true) or bare tool only (false). */
+  toolBatteryKit: boolean | null;
   gender: string | null;
   packCount: number | null;
   sizeLabel: string | null;
@@ -145,6 +186,8 @@ export type TvNormalizedAttributes = {
   resolution: TvResolutionBucket;
   /** null when not stated */
   smartTv: boolean | null;
+  /** Smart TV OS (roku, tizen, …) when parseable — not the panel OEM brand. */
+  platform: string | null;
   condition: TvConditionKind;
   /** Distinctive model / family strings (series + SKU fragments) for strict gates */
   modelFamilyTokens: string[];
@@ -239,6 +282,10 @@ export type CandidateProduct = {
   shoppingQueryUsed?: string;
   /** Listing star rating when the provider exposes it */
   rating?: number | null;
+  /** Raw price string from the shopping API before numeric parsing */
+  rawPriceText?: string | null;
+  /** Commercial listing / purchase-price intent classification */
+  commercialListing?: CommercialListingClassification;
 };
 
 /** @deprecated Prefer MatchConfidenceLabel — kept for internal scoring migration */
@@ -294,6 +341,7 @@ export type ProductProvider = {
 };
 
 import type { ManualProductFormFields } from "./manualProductInput";
+import type { CompareFlowDepartment } from "./compareFlowDepartment";
 
 export type CompareProductOptions = {
   /** When true, attaches `comparisonTrace` and enables verbose console logs */
@@ -308,6 +356,15 @@ export type CompareProductOptions = {
    * When `link` is set, callers should run the URL flow instead (`compareProduct(url)`).
    */
   manualProduct?: ManualProductFormFields | null;
+  /** User-selected compare-flow department (from department-first UI). */
+  department?: CompareFlowDepartment | null;
+  /**
+   * Shopping-assistant commercial demo only.
+   * Compare API / UI must not set this. Skips required department and
+   * reference-price gates so a natural-language request can search.
+   * Does not invent a paid price or change default compare behavior.
+   */
+  shoppingAssistant?: boolean;
 };
 
 export type CandidateStepTrace = {
@@ -373,6 +430,24 @@ export type PremiumCouponOffer = {
 
 export type CompareConfidence = "high" | "medium" | "low";
 
+/** User-facing match confidence band (0–100 display score). */
+export type MatchConfidenceBand =
+  | "exact_match"
+  | "high_confidence"
+  | "similar_specs"
+  | "possible_alternative"
+  | "below_threshold";
+
+export type MatchResultGroupKey =
+  | "exactMatches"
+  | "highConfidenceMatches"
+  | "possibleAlternatives";
+
+export type CompareMatchResultGroups = Record<
+  MatchResultGroupKey,
+  CompareApiCandidate[]
+>;
+
 export type CompareProductDeal = {
   store: string;
   /**
@@ -400,6 +475,13 @@ export type CompareProductDeal = {
   /** 0–100 attribute-heavy match score */
   relevanceScore: number;
   relevanceReason: string;
+  /** User-facing department intelligence explanation. */
+  matchExplanation?: string;
+  displayMatchScore?: number;
+  confidenceBand?: MatchConfidenceBand;
+  confidenceBandLabel?: string;
+  matchReasons?: string[];
+  departmentScore?: number | null;
   score?: number;
   premiumCoupons?: PremiumCouponOffer[];
   savingsVsReference?: number | null;
@@ -412,6 +494,10 @@ export type CompareProductDeal = {
   urlType: "product" | "search" | "unknown";
   urlConfidence: "high" | "medium" | "low";
   urlResolutionReason?: UrlResolutionReason;
+  rawPriceText?: string | null;
+  commercialListing?: CommercialListingClassification;
+  /** When set, UI should not treat the row as purchase savings */
+  commercialListingLabel?: string | null;
 };
 
 /** Search-first API candidate (shared shape across stores). */
@@ -427,6 +513,8 @@ export type CompareApiCandidate = {
   productUrl: string;
   affiliateUrl: string;
   imageUrl: string | null;
+  /** Star rating when the shopping source provided one. Omitted when unknown. */
+  rating?: number | null;
   normalized: NormalizedProduct;
   /** 0–1 combined attribute + query relevance */
   confidence: number;
@@ -443,6 +531,16 @@ export type CompareApiCandidate = {
   /** 0–100 attribute-heavy match score */
   relevanceScore: number;
   relevanceReason: string;
+  /** User-facing department intelligence explanation. */
+  matchExplanation?: string;
+  /** 0–100 blended display score (max of relevance, identity, department). */
+  displayMatchScore?: number;
+  confidenceBand?: MatchConfidenceBand;
+  confidenceBandLabel?: string;
+  /** Short user-facing bullets under the listing */
+  matchReasons?: string[];
+  /** 0–100 department-specific score when department intelligence ran */
+  departmentScore?: number | null;
   /** Optional duplicate of relevanceScore for API clarity (attribute match strength) */
   score?: number;
   /** Premium: active-style coupons for this retailer/category (simulated until partner APIs) */
@@ -466,6 +564,9 @@ export type CompareApiCandidate = {
   urlType: "product" | "search" | "unknown";
   urlConfidence: "high" | "medium" | "low";
   urlResolutionReason?: UrlResolutionReason;
+  rawPriceText?: string | null;
+  commercialListing?: CommercialListingClassification;
+  commercialListingLabel?: string | null;
 };
 
 /** API payload — dashboard reads `bestDeal`, `candidates`, `comparisonMessage`. */
@@ -478,6 +579,8 @@ export type CompareProductResponse = {
   normalizedQuery: string;
   /** Cheaper-than-reference matches for the main list (up to ~14 rows) */
   candidates: CompareApiCandidate[];
+  /** Grouped cheaper matches by confidence band for sectioned UI */
+  matchGroups?: CompareMatchResultGroups;
   /** Similar matches that are not cheaper — collapsed in UI by default */
   similarButNotCheaper?: CompareApiCandidate[];
   /** Same listings grouped by retailer */
@@ -511,6 +614,8 @@ export type CompareProductResponse = {
   comparisonMessage?: string | null;
   /** AI summary: immutable specs vs flexible brand/model for savings-focused matching */
   aiProductSummary?: string | null;
+  /** Echo of the user-selected compare-flow department when provided */
+  selectedDepartment?: CompareFlowDepartment | null;
   /** @deprecated retained for trace compatibility only */
   closestSimilarDealOnly?: boolean;
   /** @deprecated retained for trace compatibility only */

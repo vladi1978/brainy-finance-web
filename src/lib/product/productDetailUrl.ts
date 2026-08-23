@@ -427,6 +427,14 @@ export function isStrictProductDetailUrl(
   }
 }
 
+/** Alias: strict PDP classifier used by confidence/cap flows. */
+export function isProductPageUrl(
+  store: ProductDetailStoreKey,
+  url: string
+): boolean {
+  return isStrictProductDetailUrl(store, url);
+}
+
 /**
  * Retailer-hosted search/browse URL (restricted to matching store host — does not classify PDPs.)
  */
@@ -459,6 +467,19 @@ export function isRetailerSearchUrl(store: ProductDetailStoreKey, url: string): 
   }
 
   return isRetailerSearchLandingUrl(store, u);
+}
+
+/** Alias: retailer search classifier used by strict confidence caps. */
+export function isSearchUrl(store: ProductDetailStoreKey, url: string): boolean {
+  return isRetailerSearchUrl(store, url);
+}
+
+/**
+ * Alias: homepage/category/browse landing classifier.
+ * (Intentionally includes homepage-like URLs to keep strict non-PDP handling explicit.)
+ */
+export function isCategoryUrl(store: ProductDetailStoreKey, url: string): boolean {
+  return isClearlyHomepageOrCategoryOnly(store, url);
 }
 
 const PRODUCT_LIKE_PATH_FRAGMENTS = [

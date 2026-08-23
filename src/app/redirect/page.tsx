@@ -20,24 +20,8 @@ type RedirectValidation =
   | { valid: true; href: string }
   | { valid: false; reason: string };
 
-/**
- * Decode percent-escapes only when they remain after `useSearchParams` decoding.
- */
 function safeDecodeTarget(raw: string | null): string {
-  if (raw == null) return "";
-  let s = raw.trim();
-  if (!s) return "";
-
-  if (/%[0-9A-Fa-f]{2}/.test(s)) {
-    try {
-      const decoded = decodeURIComponent(s);
-      if (decoded !== s) s = decoded;
-    } catch {
-      /* keep raw */
-    }
-  }
-
-  return s.trim();
+  return (raw ?? "").trim();
 }
 
 function parseRedirectTarget(raw: string): URL | null {
@@ -76,10 +60,26 @@ function parseRedirectTarget(raw: string): URL | null {
 function resolveRedirectHref(decodedTarget: string): string | null {
   const trimmed = decodedTarget.trim();
   if (!trimmed) return null;
+  if (!/^https?:\/\//i.test(trimmed) && !trimmed.startsWith("//")) return null;
 
-  const unwrapped = unwrapMerchantUrl(trimmed);
-  const candidate = (unwrapped ?? trimmed).trim();
-  if (!candidate.startsWith("http")) return null;
+  const parsedInput = parseRedirectTarget(trimmed);
+  if (!parsedInput) return null;
+
+  const host = parsedInput.hostname.replace(/^www\./i, "").toLowerCase();
+  const shouldUnwrap =
+    host === "google.com" ||
+    host.endsWith(".google.com") ||
+    host === "shopping.google.com" ||
+    host.endsWith(".shopping.google.com") ||
+    host === "googleadservices.com" ||
+    host.endsWith(".googleadservices.com") ||
+    host === "googlesyndication.com" ||
+    host.endsWith(".googlesyndication.com") ||
+    host.includes("doubleclick.net");
+
+  const candidate = shouldUnwrap
+    ? (unwrapMerchantUrl(parsedInput.href) ?? parsedInput.href)
+    : parsedInput.href;
 
   const parsed = parseRedirectTarget(candidate);
   if (!parsed) return null;
@@ -102,12 +102,13 @@ function validateRedirectTarget(decodedTarget: string): RedirectValidation {
 
 function RedirectClient() {
   const searchParams = useSearchParams();
-  const rawTarget = searchParams.get("target");
+  const params = searchParams ?? new URLSearchParams();
+  const rawTarget = params.get("target");
   const decodedTarget = useMemo(() => safeDecodeTarget(rawTarget), [rawTarget]);
-  const store = searchParams.get("store")?.trim() ?? "";
-  const title = searchParams.get("title")?.trim() ?? "";
-  const source = searchParams.get("source")?.trim() ?? "";
-  const urlType = searchParams.get("urlType")?.trim() ?? "";
+  const store = params.get("store")?.trim() ?? "";
+  const title = params.get("title")?.trim() ?? "";
+  const source = params.get("source")?.trim() ?? "";
+  const urlType = params.get("urlType")?.trim() ?? "";
 
   const validation = useMemo(
     () => validateRedirectTarget(decodedTarget),

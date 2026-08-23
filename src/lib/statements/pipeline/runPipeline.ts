@@ -143,10 +143,22 @@ export async function runTransactionPipeline(
     })),
   };
 
-  console.log(
-    "[statement-pipeline]",
-    JSON.stringify(structuredLog, null, 2)
-  );
+  if (process.env.NODE_ENV === "production") {
+    console.log("[statement-pipeline]", {
+      totalExtractedChars: structuredLog.totalExtractedChars,
+      reconstructedLineCount: structuredLog.reconstructedLineCount,
+      highConfidenceParsed: structuredLog.highConfidenceParsed,
+      acceptedTransactions: structuredLog.acceptedTransactions,
+      rejectedTransactions: structuredLog.rejectedTransactions,
+      aiDisambiguatedCount: structuredLog.aiDisambiguatedCount,
+      fullTextAiFallbackUsed: structuredLog.fullTextAiFallbackUsed,
+    });
+  } else {
+    console.log(
+      "[statement-pipeline]",
+      JSON.stringify(structuredLog, null, 2)
+    );
+  }
 
   const debug: ParsePipelineDebug = {
     totalExtractedChars,

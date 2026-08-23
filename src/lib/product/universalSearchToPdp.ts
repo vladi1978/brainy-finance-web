@@ -360,6 +360,24 @@ function anchorTextNearHref(html: string, hrefIndex: number): string {
   return "";
 }
 
+function anchorTextNearJsonUrl(html: string, idx: number): string {
+  const windowStart = Math.max(0, idx - 700);
+  const chunk = html.slice(windowStart, idx + 220);
+  const fieldMatches = [
+    ...chunk.matchAll(
+      /"(?:title|name|productName|displayName|shortDescription)"\s*:\s*"([^"]{4,220})"/gi
+    ),
+  ];
+  for (let i = fieldMatches.length - 1; i >= 0; i--) {
+    const t = decodeHtmlEntities(fieldMatches[i]![1]!.replace(/\\u0026/g, "&"))
+      .replace(/\\"/g, '"')
+      .replace(/\s+/g, " ")
+      .trim();
+    if (t.length >= 4 && !/^[\d$.,\s]+$/.test(t)) return t;
+  }
+  return "";
+}
+
 /**
  * Scan search HTML for same-host PDP links and anchor context (no store-specific selectors).
  */
@@ -397,6 +415,25 @@ export function extractUniversalPdpLinksFromSearchHtml(
     if (out.length >= maxLinks) break;
   }
 
+  if (out.length < maxLinks) {
+    const jsonUrlRe =
+      /"(?:url|link|productUrl|canonicalUrl)"\s*:\s*"(https?:\/\/[^"]+)"/gi;
+    while ((m = jsonUrlRe.exec(html)) !== null) {
+      const jsonUrl = m[1]!.replace(/\\\//g, "/");
+      const resolved = resolveHref(base, jsonUrl);
+      if (!resolved) continue;
+      if (!isUniversalPdpCandidateUrl(resolved, { searchPageHost: searchHost })) continue;
+
+      const key = resolved.split("?")[0].toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const anchorText = anchorTextNearJsonUrl(html, m.index);
+      out.push({ productUrl: resolved, anchorText });
+      if (out.length >= maxLinks) break;
+    }
+  }
+
   return out;
 }
 
@@ -405,30 +442,52 @@ export function pickBestUniversalPdpFromCandidates(args: {
   brandHint?: string | null;
   store: UniversalStoreId;
   picks: { productUrl: string; anchorText: string }[];
+  requiredSpecTokens?: string[];
 }): UniversalSearchPdpPick | null {
   const { candidateTitle, brandHint, store, picks } = args;
+  const requiredSpecTokens = (args.requiredSpecTokens ?? [])
+    .map((t) => t.toLowerCase().replace(/[^a-z0-9]+/g, ""))
+    .filter((t) => t.length >= 2)
+    .slice(0, 12);
 
   let best: UniversalSearchPdpPick | null = null;
+  let bestWeightedScore = -1;
 
   for (const pick of picks) {
-    const matchScore = scoreUniversalPdpCandidateMatch({
+    const baseScore = scoreUniversalPdpCandidateMatch({
       candidateTitle,
       anchorText: pick.anchorText,
       productUrl: pick.productUrl,
       brandHint,
     });
+    let weightedScore = baseScore;
+
+    if (requiredSpecTokens.length > 0) {
+      const blob = `${pick.anchorText} ${pick.productUrl}`
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "");
+      let specHits = 0;
+      for (const token of requiredSpecTokens) {
+        if (blob.includes(token)) specHits += 1;
+      }
+      const specCoverage = specHits / requiredSpecTokens.length;
+      weightedScore += specCoverage * 0.24;
+      if (specHits === 0) weightedScore -= 0.08;
+    }
+    const matchScore = Math.max(0, Math.min(0.98, weightedScore));
 
     if (!isSafeToUpgradePdp({ store, productUrl: pick.productUrl, matchScore })) {
       continue;
     }
 
-    if (!best || matchScore > best.matchScore) {
+    if (!best || matchScore > bestWeightedScore) {
       best = {
         productUrl: pick.productUrl,
         anchorText: pick.anchorText,
         matchScore,
         confidence: matchScore >= 0.55 ? "high" : "medium",
       };
+      bestWeightedScore = matchScore;
     }
   }
 
