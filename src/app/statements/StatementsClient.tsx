@@ -420,6 +420,24 @@ export default function StatementsClient() {
     >
   >({});
 
+  const recommendationInputs = useMemo(
+    () => data?.intelligence?.recommendations?.items ?? [],
+    [data?.intelligence?.recommendations?.items]
+  );
+
+  const {
+    visible: visibleRecommendations,
+    acceptedSummary,
+    modalRec,
+    modalOpen,
+    modalKind,
+    dispatchAction,
+    closeModal,
+    acceptFromModal,
+    resetActions: resetRecommendationActions,
+    getLastActionId,
+  } = useRecommendationActions(recommendationInputs);
+
   const onFile = useCallback(async (file: File | null) => {
     if (!file) return;
     if (!documentConsent) {
@@ -428,6 +446,8 @@ export default function StatementsClient() {
       );
       return;
     }
+    resetRecommendationActions();
+    setActions({});
     setError(null);
     setData(null);
     setBusy(true);
@@ -455,7 +475,7 @@ export default function StatementsClient() {
     } finally {
       setBusy(false);
     }
-  }, [documentConsent]);
+  }, [documentConsent, resetRecommendationActions]);
 
   const periodLabel = useMemo(() => {
     if (!data?.meta.statementPeriod) return null;
@@ -479,23 +499,6 @@ export default function StatementsClient() {
   }, [data]);
 
   const intelligence = data?.intelligence;
-
-  const recommendationInputs = useMemo(
-    () => intelligence?.recommendations?.items ?? [],
-    [intelligence?.recommendations?.items]
-  );
-
-  const {
-    visible: visibleRecommendations,
-    acceptedSummary,
-    modalRec,
-    modalOpen,
-    modalKind,
-    dispatchAction,
-    closeModal,
-    acceptFromModal,
-    getLastActionId,
-  } = useRecommendationActions(recommendationInputs);
 
   const displayRecurring = useMemo(
     () => intelligence?.visibleRecurring ?? data?.recurringExpenses ?? [],

@@ -4,6 +4,7 @@ import { useCallback, useMemo, useState } from "react";
 
 import {
   computeAcceptedSavings,
+  clearRecommendationStates,
   enrichRecommendations,
   getActionDefinition,
   loadRecommendationStates,
@@ -100,6 +101,12 @@ export function useRecommendationActions(items: RecommendationInput[]) {
     applyStatus(modalRec, "modal_accept", "accepted");
   }, [modalRec, applyStatus]);
 
+  const resetActions = useCallback(() => {
+    clearRecommendationStates();
+    setStates({});
+    setModalRecId(null);
+  }, []);
+
   return {
     enriched,
     visible,
@@ -110,6 +117,7 @@ export function useRecommendationActions(items: RecommendationInput[]) {
     dispatchAction,
     closeModal,
     acceptFromModal,
+    resetActions,
     getLastActionId: (recId: string) => states[recId]?.lastActionId,
   };
 }

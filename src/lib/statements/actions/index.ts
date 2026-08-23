@@ -14,4 +14,8 @@ export { logFinancialAction } from "./analytics";
 export { getActionDefinition, getActionsForType } from "./registry";
 export { enrichRecommendations, resolveRecommendation } from "./resolveActions";
 export { computeAcceptedSavings } from "./savingsSummary";
-export { loadRecommendationStates, saveRecommendationState } from "./storage";
+export {
+  clearRecommendationStates,
+  loadRecommendationStates,
+  saveRecommendationState,
+} from "./storage";

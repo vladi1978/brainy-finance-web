@@ -2,6 +2,11 @@ import type { StoredRecommendationState } from "./types";
 
 const STORAGE_KEY = "brainy_finance_recommendation_actions";
 
+export function clearRecommendationStates(): void {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(STORAGE_KEY);
+}
+
 export function loadRecommendationStates(): Record<
   string,
   StoredRecommendationState
