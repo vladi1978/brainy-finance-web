@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import type {
   CompareApiCandidate,
@@ -192,17 +193,20 @@ function StoreLogo({
 function CouponsPanel({ coupons }: { coupons: PremiumCouponOffer[] }) {
   if (!coupons.length) return null;
   return (
-    <div className="mt-3 rounded-lg border border-violet-500/25 bg-violet-500/10 px-3 py-2">
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-violet-200/90">
-        Brainy benefit · active coupons (preview)
+    <div className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-200/90">
+        Simulated coupon preview · not a real offer
+      </p>
+      <p className="mt-1 text-[11px] text-white/45">
+        Codes and discounts shown here are demo-only and will not apply at checkout.
       </p>
       <ul className="mt-2 space-y-2">
         {coupons.map((o) => (
           <li key={o.id} className="text-xs text-white/85">
-            <span className="font-medium text-violet-100">{o.headline}</span>
+            <span className="font-medium text-amber-100/90">{o.headline}</span>
             <span className="text-white/50"> — {o.detail}</span>
             {o.code ? (
-              <span className="ml-1 rounded bg-black/30 px-1.5 py-0.5 font-mono text-violet-200">
+              <span className="ml-1 rounded bg-black/30 px-1.5 py-0.5 font-mono text-amber-100/80">
                 {o.code}
               </span>
             ) : null}
@@ -354,8 +358,9 @@ function renderCandidateCard(
               type="button"
               onClick={() => void onTrack(c)}
               className="inline-flex items-center rounded-lg border border-white/20 bg-white/5 px-4 py-2 text-sm font-medium text-white/90 hover:bg-white/10"
+              title="Demo only — no email or push notifications are sent."
             >
-              Track price
+              Track price (demo)
             </button>
           </div>
           <CouponsPanel coupons={c.premiumCoupons ?? []} />
@@ -595,7 +600,9 @@ export default function ComparePage() {
       setTrackMessage(payload.error ?? "Could not create the alert.");
       return;
     }
-    setTrackMessage("Price alert saved. We will notify you when it drops (simulation).");
+    setTrackMessage(
+      "Demo only: alert recorded in this session. No email, SMS, or push notifications are sent."
+    );
     void refreshPriceFeed();
   };
 
@@ -763,18 +770,21 @@ export default function ComparePage() {
         <p className="text-white/70 mb-8">
           Compare the same product across stores. Paste a product link or describe what you
           are shopping for, and enter the price you found so we only surface cheaper matches.
+          Price tracking and coupon panels below are simulated previews — not live alerts or
+          redeemable offers.
         </p>
 
         {priceNotifications.length > 0 && (
-          <div className="mb-6 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-3">
+          <div className="mb-6 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <p className="text-sm font-medium text-cyan-100">
-                Price alert (demo): {priceNotifications[0]?.message}
+              <p className="text-sm font-medium text-amber-100">
+                Simulated price alert (no notifications sent):{" "}
+                {priceNotifications[0]?.message}
               </p>
               <button
                 type="button"
                 onClick={() => void dismissNotifications()}
-                className="rounded-lg border border-cyan-400/40 px-3 py-1 text-xs text-cyan-100 hover:bg-white/5"
+                className="rounded-lg border border-amber-400/40 px-3 py-1 text-xs text-amber-100 hover:bg-white/5"
               >
                 Dismiss
               </button>
@@ -782,13 +792,7 @@ export default function ComparePage() {
           </div>
         )}
 
-        <div className="grid md:grid-cols-3 gap-6 mb-8">
-          <div className="rounded-2xl border border-white/10 p-6 bg-white/5">
-            <h2 className="text-xl font-semibold mb-3">Subscriptions Found</h2>
-            <p className="text-5xl font-bold text-green-400">4</p>
-            <p className="text-white/70 mt-2">Potential monthly savings: $63</p>
-          </div>
-
+        <div className="grid md:grid-cols-2 gap-6 mb-8">
           <div className="rounded-2xl border border-white/10 p-6 bg-white/5">
             <h2 className="text-xl font-semibold mb-3">Best Product Deal</h2>
             {showBest && best ? (
@@ -820,11 +824,17 @@ export default function ComparePage() {
           </div>
 
           <div className="rounded-2xl border border-white/10 p-6 bg-white/5">
-            <h2 className="text-xl font-semibold mb-3">Affiliate Opportunity</h2>
-            <p className="text-5xl font-bold text-green-400">$12.40</p>
-            <p className="text-white/70 mt-2">
-              Estimated affiliate earnings this month
+            <h2 className="text-xl font-semibold mb-3">Subscriptions</h2>
+            <p className="text-white/80 text-sm">
+              Recurring charges come from text-based PDF statement analysis — not
+              from this compare screen.
             </p>
+            <Link
+              href="/statements"
+              className="mt-3 inline-flex text-sm font-medium text-emerald-300/90 hover:text-emerald-200"
+            >
+              Open Statements
+            </Link>
           </div>
         </div>
 

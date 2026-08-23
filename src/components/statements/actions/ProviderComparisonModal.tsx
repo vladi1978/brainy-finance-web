@@ -98,7 +98,7 @@ export function ProviderComparisonModal({
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-widest text-violet-200/70">
-              {isFeeModal ? "Fee avoidance guide" : "Provider comparison"}
+              {isFeeModal ? "Fee avoidance guide · illustrative" : "Illustrative alternatives · not live quotes"}
             </p>
             <h2
               id="comparison-modal-title"
@@ -111,6 +111,16 @@ export function ProviderComparisonModal({
             <p className="mt-1 text-xs text-white/50">
               {rec.title}
             </p>
+            {!isFeeModal ? (
+              <p className="mt-2 text-xs text-amber-100/70">
+                Sample options for education only — not real offers, rates, or
+                switching recommendations.
+              </p>
+            ) : (
+              <p className="mt-2 text-xs text-amber-100/70">
+                General tips only — not banking advice or a Brainy product feature.
+              </p>
+            )}
           </div>
           <button
             type="button"

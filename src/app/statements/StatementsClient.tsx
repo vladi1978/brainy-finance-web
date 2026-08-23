@@ -459,10 +459,12 @@ export default function StatementsClient() {
           Statements & Subscriptions
         </h1>
         <p className="mb-8 max-w-2xl text-white/70">
-          Upload a PDF bank statement from any institution. Text is extracted,
-          reconstructed into statement lines, and scored as transaction
-          candidates; AI fills in only disputed rows. Raw PDF bytes are{" "}
-          <span className="text-white">not</span> forwarded to OpenAI.
+          Upload a <span className="text-white">text-selectable PDF</span> bank
+          statement. Text is extracted, reconstructed into statement lines, and
+          scored as transaction candidates; AI fills in only disputed rows. Excel
+          and CSV are not supported. Raw PDF bytes are{" "}
+          <span className="text-white">not</span> forwarded to OpenAI. This is
+          not banking, accounting, or financial advice.
         </p>
 
         <label className="flex cursor-pointer flex-col gap-3 rounded-2xl border border-dashed border-white/20 bg-white/[0.04] px-6 py-10 transition hover:border-emerald-400/35 hover:bg-white/[0.06]">

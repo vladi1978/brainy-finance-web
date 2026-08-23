@@ -15,9 +15,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "BrainyFinance",
+  title: "Brainy",
   description:
-    "Smart savings — compare prices, statements, and family sharing",
+    "Shop smarter and save more — compare prices across stores, ask in plain language, and review text-based PDF statements.",
 };
 
 function SidebarFallback() {

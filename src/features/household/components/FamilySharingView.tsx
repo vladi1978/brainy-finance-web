@@ -33,12 +33,16 @@ export function FamilySharingView() {
       <div className="mx-auto max-w-5xl">
         <header className="flex flex-col gap-6 border-b border-white/[0.06] pb-8 lg:flex-row lg:items-end lg:justify-between">
           <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-amber-200/80">
+              Preview · not production
+            </p>
             <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">
               Family Sharing
             </h1>
             <p className="mt-2 max-w-2xl text-base text-white/55">
-              Share Brainy with your household while keeping financial data
-              private.
+              UI preview only. Household data is mock / tab-local and is not
+              saved, shared, or synced. Invites and real family accounts are not
+              available in this MVP.
             </p>
           </div>
           <div className="flex flex-wrap gap-3">

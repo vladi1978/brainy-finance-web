@@ -20,12 +20,12 @@ export default async function ComingSoonPage({
   return (
     <main className="flex min-h-full flex-1 flex-col items-center justify-center bg-[#050608] px-6 py-16 text-center">
       <span className="mb-4 rounded-full border border-white/10 px-3 py-1 text-xs text-white/50">
-        BrainyFinance
+        Brainy · Preview
       </span>
       <h1 className="max-w-lg text-2xl font-semibold text-white">{title}</h1>
       <p className="mt-3 max-w-md text-sm text-white/55">
-        We&apos;re finishing this module. Navigation is already wired so the
-        layout stays consistent when we ship new features.
+        This module is not available in the MVP. Nothing here is live or
+        persisted — use Compare, Shopping assistant, or Statements instead.
       </p>
       <Link
         href="/compare"

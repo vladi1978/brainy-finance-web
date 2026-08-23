@@ -1,14 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname } from "next/navigation";
 
 type NavItem = {
   label: string;
   href: string;
   description?: string;
-  soon?: boolean;
-  soonKey?: string;
 };
 
 const PRIMARY: NavItem[] = [
@@ -25,33 +23,7 @@ const PRIMARY: NavItem[] = [
   {
     label: "Statements & Subscriptions",
     href: "/statements",
-    description: "PDF / Excel",
-  },
-  {
-    label: "Family Sharing",
-    href: "/family-sharing",
-    description: "Share with confidence",
-  },
-];
-
-const FUTURE: NavItem[] = [
-  {
-    label: "Price Match",
-    href: "/coming-soon?p=price-match",
-    soon: true,
-    soonKey: "price-match",
-  },
-  {
-    label: "Auto & Home Insurance",
-    href: "/coming-soon?p=insurance",
-    soon: true,
-    soonKey: "insurance",
-  },
-  {
-    label: "Household Bills",
-    href: "/coming-soon?p=utilities",
-    soon: true,
-    soonKey: "utilities",
+    description: "Text-based PDF",
   },
 ];
 
@@ -77,16 +49,10 @@ function NavButton({
         active
           ? "border-white/15 bg-white/10 shadow-[0_0_0_1px_rgba(255,255,255,0.06)]"
           : "border-transparent bg-white/[0.03] hover:border-white/10 hover:bg-white/[0.06]",
-        item.soon ? "opacity-90" : "",
       ].join(" ")}
     >
       <span className="flex items-center gap-2">
         <span className="text-sm font-medium text-white">{item.label}</span>
-        {item.soon && (
-          <span className="rounded-full border border-amber-400/35 bg-amber-400/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200/95">
-            Coming Soon
-          </span>
-        )}
       </span>
       {item.description ? (
         <span className="mt-0.5 text-xs text-white/45 group-hover:text-white/55">
@@ -99,7 +65,6 @@ function NavButton({
 
 export default function AppSidebar() {
   const pathname = usePathname();
-  const searchParams = useSearchParams();
 
   return (
     <aside className="sticky top-0 flex min-h-screen w-72 shrink-0 flex-col border-r border-white/[0.08] bg-gradient-to-b from-[#050608] to-[#0a0d12]">
@@ -107,24 +72,24 @@ export default function AppSidebar() {
         <Link
           href="/"
           className="flex h-10 w-10 items-center justify-center rounded-xl border border-emerald-400/25 bg-emerald-400/10 text-sm font-bold text-emerald-300 transition hover:border-emerald-400/40"
-          aria-label="BrainyFinance home"
+          aria-label="Brainy home"
         >
           B
         </Link>
         <div>
           <Link href="/" className="block">
             <p className="text-sm font-semibold tracking-tight text-white">
-              BrainyFinance
+              Brainy
             </p>
           </Link>
-          <p className="text-xs text-white/45">MVP · smart savings</p>
+          <p className="text-xs text-white/45">Shop smarter. Save more.</p>
         </div>
       </div>
 
       <nav className="flex-1 space-y-8 overflow-y-auto px-3 pb-8">
         <div>
           <p className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wider text-white/35">
-            Active product
+            Available now
           </p>
           <div className="space-y-1.5">
             {PRIMARY.map((item) => (
@@ -136,30 +101,12 @@ export default function AppSidebar() {
             ))}
           </div>
         </div>
-
-        <div>
-          <p className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wider text-white/35">
-            Roadmap
-          </p>
-          <div className="space-y-1.5">
-            {FUTURE.map((item) => (
-              <NavButton
-                key={item.href}
-                item={item}
-                active={
-                  pathname === "/coming-soon" &&
-                  searchParams.get("p") === item.soonKey
-                }
-              />
-            ))}
-          </div>
-        </div>
       </nav>
 
       <div className="border-t border-white/[0.08] px-5 py-4">
         <p className="text-[11px] leading-relaxed text-white/40">
-          Roadmap items open a placeholder view so the layout stays stable as we
-          ship each pillar.
+          Brainy helps you compare prices, shop in plain language, and review
+          text-based PDF statements — not banking, investing, or financial advice.
         </p>
       </div>
     </aside>

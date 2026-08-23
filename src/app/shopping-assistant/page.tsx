@@ -133,15 +133,15 @@ export default function ShoppingAssistantPage() {
   return (
     <main className="mx-auto w-full max-w-5xl px-6 py-10">
       <p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-300/80">
-        Commercial demo
+        Available now
       </p>
       <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">
         Shopping assistant
       </h1>
       <p className="mt-3 max-w-2xl text-sm leading-6 text-white/65">
         Ask for a product in plain language. Brainy reuses the existing comparison
-        engine and Google Shopping discovery. This is not SMS, checkout, or an
-        Amazon account integration.
+        engine and Google Shopping discovery. Results are for shopping help only —
+        not SMS, checkout, orders, or Amazon account integration.
       </p>
 
       <form
