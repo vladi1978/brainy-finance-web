@@ -3109,6 +3109,7 @@ export async function compareProduct(
             : "No priced listings found for that search.",
       scrapeBotWalled,
       aiProductSummary: aiCompareEnrichment.summaryOneLine,
+      demoMode,
       ...(tracePayload() ? { comparisonTrace: tracePayload()! } : {}),
     };
   }
@@ -3273,6 +3274,15 @@ export async function compareProduct(
   comparisonMessage = dedupedMessages.comparisonMessage;
   message = dedupedMessages.message;
 
+  if (demoMode) {
+    const demoBanner =
+      "Demo mode — synthetic listings only; not live prices or inventory.";
+    comparisonMessage = comparisonMessage
+      ? `${demoBanner} ${comparisonMessage}`
+      : demoBanner;
+    if (!message) message = demoBanner;
+  }
+
   logCompareCandidateOutbound([
     ...orderedForDisplay,
     ...similarButNotCheaperForResponse,
@@ -3296,6 +3306,7 @@ export async function compareProduct(
     scrapeBotWalled,
     aiProductSummary: aiCompareEnrichment.summaryOneLine,
     selectedDepartment,
+    demoMode,
     ...(tracePayload() ? { comparisonTrace: tracePayload()! } : {}),
   };
 }

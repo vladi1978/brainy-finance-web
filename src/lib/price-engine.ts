@@ -81,8 +81,9 @@ export type ProductData = {
   
   // Placeholder affiliate link for now
   export function generateAffiliateLink(input: string): string {
+    // Deprecated stub — do not emit legacy brand domains. Prefer compare outbound URLs.
     const encoded = encodeURIComponent(input.trim());
-    return `https://brainyfinance.app/deal?query=${encoded}&ref=brainyfinance`;
+    return `https://example.invalid/brainy-deal?query=${encoded}`;
   }
   
   /** @deprecated Use `compareProduct` from `@/lib/product/engine`. */

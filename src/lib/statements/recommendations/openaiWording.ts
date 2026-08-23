@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { getOpenAiApiKeyIfEnabled } from "@/lib/ai/openaiEnrichmentGate";
 
 import type { ActionRecommendation } from "./types";
 
@@ -17,7 +18,7 @@ export async function enrichRecommendationsWording(
   const enabled =
     process.env.OPENAI_RECOMMENDATIONS_WORDING?.trim() === "1" ||
     process.env.OPENAI_RECOMMENDATIONS_WORDING?.trim() === "true";
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  const apiKey = getOpenAiApiKeyIfEnabled();
   if (!enabled || !apiKey) return items;
 
   const model =

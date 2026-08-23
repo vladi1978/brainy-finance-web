@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { getOpenAiApiKeyIfEnabled } from "@/lib/ai/openaiEnrichmentGate";
 import type { Transaction } from "../types";
 
 const MODEL_DEFAULT = "gpt-4o";
@@ -58,7 +59,7 @@ export async function disambiguateLineBatches(
   fallbackYear: number,
   signal: AbortSignal
 ): Promise<{ transactions: Transaction[]; error: string | null }> {
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  const apiKey = getOpenAiApiKeyIfEnabled();
   if (!apiKey || !payloads.length) {
     return { transactions: [], error: null };
   }

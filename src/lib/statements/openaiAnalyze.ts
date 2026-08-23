@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { getOpenAiApiKeyIfEnabled } from "@/lib/ai/openaiEnrichmentGate";
 import { chunkClusters } from "./clusters";
 import { excludeClusterFromSubscriptions } from "./heuristics";
 import { clusterLooksSubscriptionMerchant } from "./subscriptionSignals";
@@ -63,9 +64,12 @@ export async function analyzeClustersWithOpenAI(
   clusters: MerchantCluster[],
   signal: AbortSignal
 ): Promise<{ items: AiSubscriptionRaw[]; error: string | null }> {
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  const apiKey = getOpenAiApiKeyIfEnabled();
   if (!apiKey) {
-    return { items: [], error: "OPENAI_API_KEY is not set" };
+    return {
+      items: [],
+      error: "OpenAI enrichment is disabled (set OPENAI_ENRICHMENT_ENABLED=true)",
+    };
   }
 
   const model =

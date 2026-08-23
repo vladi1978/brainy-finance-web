@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { getOpenAiApiKeyIfEnabled } from "@/lib/ai/openaiEnrichmentGate";
 import { sanitizeStatementTransactions } from "./pipeline/validateRow";
 import type { Transaction } from "./types";
 
@@ -34,13 +35,13 @@ function inferSanitizeYear(rows: Transaction[]): number {
 
 /**
  * When heuristic parsing finds zero rows, ask the model once for structured rows.
- * Uses the same OPENAI_API_KEY as subscription analysis.
+ * Requires OPENAI_ENRICHMENT_ENABLED=true and OPENAI_API_KEY.
  */
 export async function extractTransactionsViaOpenAI(
   fullText: string,
   signal: AbortSignal
 ): Promise<{ transactions: Transaction[]; error: string | null }> {
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  const apiKey = getOpenAiApiKeyIfEnabled();
   if (!apiKey) {
     return { transactions: [], error: null };
   }

@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { getOpenAiApiKeyIfEnabled } from "@/lib/ai/openaiEnrichmentGate";
 
 /** LLM-assisted signals merged before SERP + universal matcher (matcher stays authoritative). */
 export type AiCompareEnrichment = {
@@ -85,10 +86,13 @@ export async function fetchAiCompareEnrichment(args: {
     return { ...EMPTY };
   }
 
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  const apiKey = getOpenAiApiKeyIfEnabled();
   if (!apiKey) {
     if (AI_COMPARE_VERBOSE_LOGS) {
-      console.log("[AI_COMPARE]", { skipped: true, reason: "missing_OPENAI_API_KEY" });
+      console.log("[AI_COMPARE]", {
+        skipped: true,
+        reason: "openai_enrichment_disabled",
+      });
     }
     return { ...EMPTY };
   }

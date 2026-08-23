@@ -830,6 +830,20 @@ export default function ComparePage() {
           redeemable offers.
         </p>
 
+        {result?.demoMode ? (
+          <div
+            className="mb-6 rounded-2xl border border-amber-500/35 bg-amber-500/10 px-4 py-3 text-sm text-amber-100"
+            role="status"
+          >
+            <p className="font-semibold">Demo mode — synthetic listings</p>
+            <p className="mt-1 text-amber-100/80">
+              Results are not live prices, inventory, or retailer offers. Disable{" "}
+              <code className="text-xs">PRODUCT_COMPARE_DEMO_MODE</code> for real shopping
+              search.
+            </p>
+          </div>
+        ) : null}
+
         {priceNotifications.length > 0 && (
           <div className="mb-6 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
             <div className="flex flex-wrap items-center justify-between gap-3">

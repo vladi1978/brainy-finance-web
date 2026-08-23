@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { getOpenAiApiKeyIfEnabled } from "@/lib/ai/openaiEnrichmentGate";
 import type { MerchantCluster } from "../types";
 import type { MerchantNormalizationResult } from "./types";
 
@@ -29,9 +30,14 @@ export async function normalizeAmbiguousMerchantsWithOpenAI(args: {
   pending: Map<string, MerchantNormalizationResult>;
   signal?: AbortSignal;
 }): Promise<{ updated: number; error: string | null }> {
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  const apiKey = getOpenAiApiKeyIfEnabled();
   if (!apiKey || args.pending.size === 0) {
-    return { updated: 0, error: apiKey ? null : "OPENAI_API_KEY is not set" };
+    return {
+      updated: 0,
+      error: apiKey
+        ? null
+        : "OpenAI enrichment is disabled (set OPENAI_ENRICHMENT_ENABLED=true)",
+    };
   }
 
   const model =

@@ -616,6 +616,11 @@ export type CompareProductResponse = {
   aiProductSummary?: string | null;
   /** Echo of the user-selected compare-flow department when provided */
   selectedDepartment?: CompareFlowDepartment | null;
+  /**
+   * True when PRODUCT_COMPARE_DEMO_MODE produced synthetic listings.
+   * Never treat these rows as live market data.
+   */
+  demoMode?: boolean;
   /** @deprecated retained for trace compatibility only */
   closestSimilarDealOnly?: boolean;
   /** @deprecated retained for trace compatibility only */
