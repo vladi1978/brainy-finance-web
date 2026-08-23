@@ -1,7 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type {
   CompareApiCandidate,
   CompareMatchResultGroups,
@@ -32,6 +37,41 @@ import {
 import { isClientDevBackgroundTasksDisabled } from "@/lib/dev/runtimeControls";
 
 const USER_STORAGE_KEY = "brainy_finance_uid";
+/** SSR / hydration snapshot — never touch localStorage on the server. */
+const USER_ID_SERVER_SNAPSHOT = "";
+
+let cachedCompareUserId: string | null = null;
+
+function subscribeCompareUserId(onStoreChange: () => void): () => void {
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === USER_STORAGE_KEY || event.key === null) {
+      cachedCompareUserId = null;
+      onStoreChange();
+    }
+  };
+  window.addEventListener("storage", onStorage);
+  return () => window.removeEventListener("storage", onStorage);
+}
+
+function getCompareUserIdSnapshot(): string {
+  if (cachedCompareUserId != null) return cachedCompareUserId;
+  try {
+    let id = localStorage.getItem(USER_STORAGE_KEY);
+    if (!id) {
+      id = globalThis.crypto?.randomUUID?.() ?? `u_${Date.now()}`;
+      localStorage.setItem(USER_STORAGE_KEY, id);
+    }
+    cachedCompareUserId = id;
+    return id;
+  } catch {
+    cachedCompareUserId = `u_${Date.now()}`;
+    return cachedCompareUserId;
+  }
+}
+
+function getCompareUserIdServerSnapshot(): string {
+  return USER_ID_SERVER_SNAPSHOT;
+}
 
 function formatPrice(n: number | null): string {
   if (n == null || !Number.isFinite(n)) return "—";
@@ -464,7 +504,11 @@ export default function ComparePage() {
   const [result, setResult] = useState<CompareProductResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
-  const [userId, setUserId] = useState<string | null>(null);
+  const userId = useSyncExternalStore(
+    subscribeCompareUserId,
+    getCompareUserIdSnapshot,
+    getCompareUserIdServerSnapshot
+  );
   const [priceNotifications, setPriceNotifications] = useState<
     PriceAlertSurfaceNotification[]
   >([]);
@@ -509,19 +553,6 @@ export default function ComparePage() {
     );
   }, [selectedDepartment]);
 
-  useEffect(() => {
-    try {
-      let id = localStorage.getItem(USER_STORAGE_KEY);
-      if (!id) {
-        id = globalThis.crypto?.randomUUID?.() ?? `u_${Date.now()}`;
-        localStorage.setItem(USER_STORAGE_KEY, id);
-      }
-      setUserId(id);
-    } catch {
-      setUserId(`u_${Date.now()}`);
-    }
-  }, []);
-
   const refreshPriceFeed = useCallback(async () => {
     if (isClientDevBackgroundTasksDisabled()) return;
     if (!userId) return;
@@ -540,9 +571,34 @@ export default function ComparePage() {
     }
   }, [userId]);
 
+  // Demo price-alert feed: setState only after await (async continuation).
   useEffect(() => {
-    void refreshPriceFeed();
-  }, [refreshPriceFeed]);
+    if (!userId) return;
+    if (isClientDevBackgroundTasksDisabled()) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/price-alerts?userId=${encodeURIComponent(userId)}`,
+          { cache: "no-store" }
+        );
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as {
+          notifications?: PriceAlertSurfaceNotification[];
+        };
+        if (!cancelled) {
+          setPriceNotifications(data.notifications ?? []);
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
 
   const runSweepAndRefresh = useCallback(async () => {
     if (isClientDevBackgroundTasksDisabled()) return;
