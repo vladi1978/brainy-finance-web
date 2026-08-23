@@ -441,7 +441,14 @@ export async function analyzeStatementPdf(
   subscriptions = dedupeSubscriptions(subscriptions).map((row) => {
     const cluster = clusterById.get(row.clusterId)!;
     const trueSubscriptionScore = computeTrueSubscriptionScore(cluster, row);
+    const debitCount = cluster.charges.filter((c) => c.type === "debit").length;
+    const recurrenceOk =
+      debitCount >= 2 &&
+      (row.frequency === "monthly" ||
+        row.frequency === "weekly" ||
+        row.frequency === "annual");
     const confirmed =
+      recurrenceOk &&
       trueSubscriptionScore >= 0.78 &&
       row.confidence >= SUBSCRIPTION_CONFIDENCE_MIN &&
       !row.flags.suspicious &&
@@ -450,7 +457,8 @@ export async function analyzeStatementPdf(
       !confirmed &&
       (row.flags.suspicious ||
         row.confidence < 0.78 ||
-        row.flags.trialConverted);
+        row.flags.trialConverted ||
+        debitCount < 2);
     return {
       ...row,
       trueSubscriptionScore,

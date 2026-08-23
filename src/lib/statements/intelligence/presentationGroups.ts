@@ -2,6 +2,11 @@
  * Presentation-only grouping of existing statement analysis rows.
  * Does not change detection — only how results are labeled and summarized.
  */
+import {
+  canPresentMonthlyCadence,
+  hasRecurrenceEvidence,
+  resolveChargeCount,
+} from "../recurrenceEvidence";
 import type {
   MerchantCluster,
   SpendingInsight,
@@ -14,7 +19,8 @@ export type ActivityPresentationGroupId =
   | "expected_recurring_bills"
   | "subscriptions"
   | "repeated_discretionary"
-  | "unusual_recurring";
+  | "unusual_recurring"
+  | "one_time_review";
 
 export type ActivityPresentationStatus =
   | "confirmed"
@@ -53,6 +59,7 @@ export type ActivityPresentationGroups = {
   subscriptions: ActivityPresentationCard[];
   repeatedDiscretionary: ActivityPresentationCard[];
   unusualRecurring: ActivityPresentationCard[];
+  oneTimeReview: ActivityPresentationCard[];
 };
 
 const CADENCE_LABEL: Record<SubscriptionFrequency, string | null> = {
@@ -99,15 +106,12 @@ function formatMoneyPlain(amount: number, currency: string): string {
   }
 }
 
-/** Monthly/weekly claims need enough dated charges — never invent from one latest debit. */
+/** Monthly/weekly/annual cadence claims need enough dated charges. */
 export function supportsMonthlyCadencePresentation(
   frequency: SubscriptionFrequency | string,
   chargeCount: number
 ): boolean {
-  if (frequency === "monthly") return chargeCount >= 2;
-  if (frequency === "weekly") return chargeCount >= 3;
-  if (frequency === "annual") return chargeCount >= 1;
-  return false;
+  return canPresentMonthlyCadence({ frequency, chargeCount });
 }
 
 /**
@@ -128,9 +132,14 @@ export function formatUncertainActivitySummary(args: {
 }
 
 export function isExpectedBillSubscription(
-  sub: Pick<SubscriptionInsight, "category">
+  sub: Pick<SubscriptionInsight, "category" | "merchant" | "normalizedName">
 ): boolean {
-  return EXPECTED_BILL_SUB_CATEGORIES.has(sub.category);
+  if (EXPECTED_BILL_SUB_CATEGORIES.has(sub.category)) return true;
+  return isUtilityLikeSpending({
+    categoryLabel: sub.category,
+    normalizedName: sub.normalizedName,
+    merchant: sub.merchant,
+  });
 }
 
 export function isRideshareOrDeliveryMerchant(text: string): boolean {
@@ -142,7 +151,19 @@ export function isRideshareOrDeliveryMerchant(text: string): boolean {
 
 export function isUtilityLikeSpending(row: Pick<SpendingInsight, "categoryLabel" | "normalizedName" | "merchant">): boolean {
   const blob = `${row.categoryLabel} ${row.normalizedName} ${row.merchant}`.toUpperCase();
-  return /\b(UTILITY|UTILITIES|ELECTRIC|POWER|WATER|GAS\s+CO|INTERNET|PHONE|MOBILE|WIRELESS|VERIZON|AT&T|T-MOBILE|COMCAST|SPECTRUM|INSURANCE)\b/u.test(
+  return /\b(UTILITY|UTILITIES|ELECTRIC|POWER|WATER|GAS\s+CO|INTERNET|PHONE|MOBILE|WIRELESS|VERIZON|AT&T|T-MOBILE|COMCAST|SPECTRUM|INSURANCE|GEICO|STATE\s+FARM|PROGRESSIVE|ALLSTATE)\b/u.test(
+    blob
+  );
+}
+
+function isTransferLikeSpending(
+  row: Pick<SpendingInsight, "categoryKey" | "kind" | "normalizedName" | "merchant">
+): boolean {
+  if (row.categoryKey === "transfers" || row.kind === "income_transfer") {
+    return true;
+  }
+  const blob = `${row.normalizedName} ${row.merchant}`.toUpperCase();
+  return /\b(ZELLE|VENMO|CASH\s*APP|CASHAPP|WIRE\s+TRANSFER|ACH\s+TRANSFER|PAYMENT\s+TO|PAYMENT\s+FROM)\b/u.test(
     blob
   );
 }
@@ -170,6 +191,14 @@ function debitMeta(cluster: MerchantCluster | undefined): {
   };
 }
 
+function chargeCountFor(
+  cluster: MerchantCluster | undefined,
+  periodTotal: number,
+  latestCharge: number
+): number {
+  return resolveChargeCount({ cluster, periodTotal, latestCharge });
+}
+
 function cadenceLabel(
   frequency: SubscriptionFrequency | string,
   chargeCount: number
@@ -180,8 +209,12 @@ function cadenceLabel(
 
 function unusualReason(
   spending: EnrichedSpendingRow | SpendingInsight | undefined,
-  sub: SubscriptionInsight | undefined
+  sub: SubscriptionInsight | undefined,
+  chargeCount: number
 ): string {
+  if (!hasRecurrenceEvidence(chargeCount)) {
+    return "Review this activity — a single charge was flagged for attention.";
+  }
   if (sub?.flags.suspicious) {
     return "Review this activity — the charge pattern looks unusual.";
   }
@@ -205,6 +238,9 @@ function expectedBillReason(
   spending: EnrichedSpendingRow | SpendingInsight | undefined,
   chargeCount: number
 ): string {
+  if (!hasRecurrenceEvidence(chargeCount)) {
+    return "Expected bill category · recurrence not yet confirmed";
+  }
   if (sub?.flags.priceIncreased) {
     return "Expected bill — amount changed vs earlier charges in this window.";
   }
@@ -217,9 +253,19 @@ function expectedBillReason(
   return "Expected recurring bill — phone, internet, utility, or insurance-style charge.";
 }
 
-function subscriptionReason(sub: SubscriptionInsight): string {
-  if (sub.flags.confirmed) {
+function subscriptionReason(
+  sub: SubscriptionInsight,
+  chargeCount: number
+): string {
+  const canConfirm =
+    hasRecurrenceEvidence(chargeCount) &&
+    supportsMonthlyCadencePresentation(sub.frequency, chargeCount) &&
+    sub.flags.confirmed;
+  if (canConfirm) {
     return "Confirmed subscription — recurring service with a strong billing pattern.";
+  }
+  if (!hasRecurrenceEvidence(chargeCount)) {
+    return "Possible subscription · recurrence not confirmed";
   }
   if (sub.flags.reviewSuggested) {
     return "Possible subscription — pattern is suggestive but not fully confirmed.";
@@ -247,6 +293,19 @@ function discretionaryReason(
   return "Repeated discretionary spending at this merchant.";
 }
 
+function oneTimeReviewReason(
+  spending: EnrichedSpendingRow | SpendingInsight | undefined,
+  sub: SubscriptionInsight | undefined
+): string {
+  if (spending?.kind === "fee" || spending?.categoryKey === "fees") {
+    return "One-time fee activity to review — not treated as a recurring pattern.";
+  }
+  if (sub?.flags.suspicious || spending?.kind === "needs_review") {
+    return "One-time activity to review — not enough charges to call this recurring.";
+  }
+  return "One-time activity to review — shown once without recurring claims.";
+}
+
 function buildSummaryLine(args: {
   chargeCount: number;
   periodTotal: number;
@@ -254,10 +313,6 @@ function buildSummaryLine(args: {
   currency: string;
   frequency: SubscriptionFrequency | string;
 }): string {
-  // Prefer the uncertain plain-language line whenever monthly cadence is unsupported.
-  if (!supportsMonthlyCadencePresentation(args.frequency, args.chargeCount)) {
-    return formatUncertainActivitySummary(args);
-  }
   return formatUncertainActivitySummary(args);
 }
 
@@ -269,7 +324,11 @@ function cardFromSubscription(
   reason: string
 ): ActivityPresentationCard {
   const meta = debitMeta(cluster);
-  const chargeCount = Math.max(meta.chargeCount, 1);
+  const chargeCount = chargeCountFor(
+    cluster,
+    sub.totalSpentInPeriod,
+    sub.amount
+  );
   const averageCharge =
     meta.chargeCount > 0 ? meta.averageCharge : sub.amount;
   const showMonthly = supportsMonthlyCadencePresentation(
@@ -315,11 +374,15 @@ function cardFromSpending(
   reason: string
 ): ActivityPresentationCard {
   const meta = debitMeta(cluster);
-  const chargeCount = Math.max(meta.chargeCount, 1);
+  const chargeCount = chargeCountFor(
+    cluster,
+    row.totalSpentInPeriod,
+    row.amount
+  );
   const averageCharge =
     meta.chargeCount > 0
       ? meta.averageCharge
-      : row.totalSpentInPeriod / chargeCount;
+      : row.totalSpentInPeriod / Math.max(chargeCount, 1);
   const confidence =
     "rowConfidence" in row ? row.rowConfidence : row.recurringExpenseScore;
   return {
@@ -382,6 +445,20 @@ function isDiscretionarySpending(
   );
 }
 
+function hasReviewWorthyRisk(
+  spending: EnrichedSpendingRow | SpendingInsight | undefined,
+  sub: SubscriptionInsight | undefined
+): boolean {
+  if (sub?.flags.suspicious || sub?.flags.duplicate) return true;
+  if (!spending) return false;
+  if (spending.kind === "fee" || spending.kind === "needs_review") return true;
+  if (spending.categoryKey === "fees") return true;
+  if ("smartSignal" in spending && /unusual|duplicate|fee|overdraft/i.test(spending.smartSignal ?? "")) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Partition existing analysis into consumer-facing presentation groups.
  * Each cluster appears in at most one group.
@@ -399,24 +476,18 @@ export function buildActivityPresentationGroups(input: {
   const subscriptions: ActivityPresentationCard[] = [];
   const repeatedDiscretionary: ActivityPresentationCard[] = [];
   const unusualRecurring: ActivityPresentationCard[] = [];
+  const oneTimeReview: ActivityPresentationCard[] = [];
 
   for (const sub of input.subscriptions) {
     if (used.has(sub.clusterId)) continue;
     used.add(sub.clusterId);
     const cluster = clusterById.get(sub.clusterId);
-
-    if (isUnusualSubscription(sub) && !isExpectedBillSubscription(sub)) {
-      unusualRecurring.push(
-        cardFromSubscription(
-          sub,
-          cluster,
-          "unusual_recurring",
-          "unusual",
-          unusualReason(undefined, sub)
-        )
-      );
-      continue;
-    }
+    const chargeCount = chargeCountFor(
+      cluster,
+      sub.totalSpentInPeriod,
+      sub.amount
+    );
+    const recurring = hasRecurrenceEvidence(chargeCount);
 
     if (isExpectedBillSubscription(sub)) {
       expectedRecurringBills.push(
@@ -425,14 +496,46 @@ export function buildActivityPresentationGroups(input: {
           cluster,
           "expected_recurring_bills",
           "expected",
-          expectedBillReason(sub, undefined, Math.max(debitMeta(cluster).chargeCount, 1))
+          expectedBillReason(sub, undefined, chargeCount)
+        )
+      );
+      continue;
+    }
+
+    if (isUnusualSubscription(sub) && !isExpectedBillSubscription(sub)) {
+      if (!recurring) {
+        if (hasReviewWorthyRisk(undefined, sub)) {
+          oneTimeReview.push(
+            cardFromSubscription(
+              sub,
+              cluster,
+              "one_time_review",
+              "unusual",
+              oneTimeReviewReason(undefined, sub)
+            )
+          );
+        }
+        // No risk + single charge: omit rather than claim recurring unusual.
+        continue;
+      }
+      unusualRecurring.push(
+        cardFromSubscription(
+          sub,
+          cluster,
+          "unusual_recurring",
+          "unusual",
+          unusualReason(undefined, sub, chargeCount)
         )
       );
       continue;
     }
 
     if (SUBSCRIPTION_SERVICE_CATEGORIES.has(sub.category)) {
-      const status: ActivityPresentationStatus = sub.flags.confirmed
+      const canConfirm =
+        recurring &&
+        supportsMonthlyCadencePresentation(sub.frequency, chargeCount) &&
+        sub.flags.confirmed;
+      const status: ActivityPresentationStatus = canConfirm
         ? "confirmed"
         : "possible";
       subscriptions.push(
@@ -441,7 +544,7 @@ export function buildActivityPresentationGroups(input: {
           cluster,
           "subscriptions",
           status,
-          subscriptionReason(sub)
+          subscriptionReason(sub, chargeCount)
         )
       );
     } else {
@@ -451,7 +554,7 @@ export function buildActivityPresentationGroups(input: {
           cluster,
           "expected_recurring_bills",
           "expected",
-          expectedBillReason(sub, undefined, Math.max(debitMeta(cluster).chargeCount, 1))
+          expectedBillReason(sub, undefined, chargeCount)
         )
       );
     }
@@ -462,17 +565,15 @@ export function buildActivityPresentationGroups(input: {
     if (used.has(row.clusterId)) continue;
     used.add(row.clusterId);
     const cluster = clusterById.get(row.clusterId);
+    const chargeCount = chargeCountFor(
+      cluster,
+      row.totalSpentInPeriod,
+      row.amount
+    );
+    const recurring = hasRecurrenceEvidence(chargeCount);
 
-    if (isUnusualSpending(row)) {
-      unusualRecurring.push(
-        cardFromSpending(
-          row,
-          cluster,
-          "unusual_recurring",
-          "unusual",
-          unusualReason(row, undefined)
-        )
-      );
+    if (isTransferLikeSpending(row)) {
+      // Transfers stay out of recurring presentation groups.
       continue;
     }
 
@@ -483,7 +584,36 @@ export function buildActivityPresentationGroups(input: {
           cluster,
           "expected_recurring_bills",
           "expected",
-          expectedBillReason(undefined, row, Math.max(debitMeta(cluster).chargeCount, 1))
+          expectedBillReason(undefined, row, chargeCount)
+        )
+      );
+      continue;
+    }
+
+    if (!recurring) {
+      if (hasReviewWorthyRisk(row, undefined)) {
+        oneTimeReview.push(
+          cardFromSpending(
+            row,
+            cluster,
+            "one_time_review",
+            "unusual",
+            oneTimeReviewReason(row, undefined)
+          )
+        );
+      }
+      // Ordinary one-charge spend: omit — never call it recurring.
+      continue;
+    }
+
+    if (isUnusualSpending(row)) {
+      unusualRecurring.push(
+        cardFromSpending(
+          row,
+          cluster,
+          "unusual_recurring",
+          "unusual",
+          unusualReason(row, undefined, chargeCount)
         )
       );
       continue;
@@ -496,20 +626,20 @@ export function buildActivityPresentationGroups(input: {
           cluster,
           "repeated_discretionary",
           "possible",
-          discretionaryReason(row, Math.max(debitMeta(cluster).chargeCount, 1))
+          discretionaryReason(row, chargeCount)
         )
       );
       continue;
     }
 
-    // Leftover recurring patterns — treat as unusual review, not confirmed subscriptions.
+    // Leftover multi-charge patterns — unusual review, not confirmed subscriptions.
     unusualRecurring.push(
       cardFromSpending(
         row,
         cluster,
         "unusual_recurring",
         "unusual",
-        unusualReason(row, undefined)
+        unusualReason(row, undefined, chargeCount)
       )
     );
   }
@@ -522,6 +652,7 @@ export function buildActivityPresentationGroups(input: {
     subscriptions: subscriptions.sort(byTotal),
     repeatedDiscretionary: repeatedDiscretionary.sort(byTotal),
     unusualRecurring: unusualRecurring.sort(byTotal),
+    oneTimeReview: oneTimeReview.sort(byTotal),
   };
 }
 
@@ -537,7 +668,7 @@ export const PRESENTATION_GROUP_COPY: Record<
   subscriptions: {
     title: "Subscriptions",
     description:
-      "Streaming, software, memberships, and similar recurring services. Confirmed means a strong billing pattern; possible means the pattern is suggestive but not fully verified.",
+      "Streaming, software, memberships, and similar recurring services. Confirmed means dated recurrence evidence; possible means the merchant or pattern is suggestive but cadence is not fully verified.",
   },
   repeated_discretionary: {
     title: "Repeated discretionary spending",
@@ -547,6 +678,11 @@ export const PRESENTATION_GROUP_COPY: Record<
   unusual_recurring: {
     title: "Unusual recurring activity",
     description:
-      "Repeated merchants or charges that deserve a closer look. These are not labeled as confirmed subscriptions.",
+      "Merchants with at least two charges that deserve a closer look. These are not labeled as confirmed subscriptions.",
+  },
+  one_time_review: {
+    title: "One-time activity to review",
+    description:
+      "Single charges flagged for attention. Shown without recurring or annualized savings claims.",
   },
 };

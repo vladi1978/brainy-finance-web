@@ -161,6 +161,7 @@ type StatementIntelligencePayload = {
     subscriptions: ActivityPresentationCardPayload[];
     repeatedDiscretionary: ActivityPresentationCardPayload[];
     unusualRecurring: ActivityPresentationCardPayload[];
+    oneTimeReview?: ActivityPresentationCardPayload[];
   };
   copilot?: CopilotTimelinePayload;
   copilotAssistant?: CopilotAssistantContext;
@@ -1002,6 +1003,33 @@ export default function StatementsClient() {
               ) : (
                 <ul className="space-y-4">
                   {presentationGroups!.unusualRecurring.map((card) => (
+                    <li key={card.id}>
+                      <ActivityPresentationCardView
+                        card={card}
+                        action={actions[card.clusterId]}
+                        onAction={(key) =>
+                          setActions((prev) => ({
+                            ...prev,
+                            [card.clusterId]: key,
+                          }))
+                        }
+                      />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <section className="space-y-4">
+              <SectionIntro
+                title={PRESENTATION_GROUP_COPY.one_time_review.title}
+                description={PRESENTATION_GROUP_COPY.one_time_review.description}
+              />
+              {(presentationGroups?.oneTimeReview?.length ?? 0) === 0 ? (
+                <EmptyGroup note="No one-time review items were separated for this upload." />
+              ) : (
+                <ul className="space-y-4">
+                  {presentationGroups!.oneTimeReview!.map((card) => (
                     <li key={card.id}>
                       <ActivityPresentationCardView
                         card={card}

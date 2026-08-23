@@ -1,6 +1,12 @@
 import type { IntelligenceInput } from "../intelligence/types";
 import type { MerchantGroupSummary } from "../intelligence/types";
 import { annualizePeriodAmount, statementPeriodDays } from "../intelligence/period";
+import { subscriptionEligibleForAnnualSavings } from "../intelligence/savings";
+import {
+  OBSERVED_ONLY_SAVINGS_NOTE,
+  canAnnualizeFeePattern,
+  resolveChargeCount,
+} from "../recurrenceEvidence";
 import type { ActionRecommendation, RecommendationSeverity } from "./types";
 import {
   conservativeRecurringCut,
@@ -81,6 +87,13 @@ export function applyRecommendationRules(
   const allSpend = [...recurringExpenses, ...spendingInsights];
   const currency = dominantCurrency([...subscriptions, ...allSpend]);
   const out: ActionRecommendation[] = [];
+  const byCluster = new Map(input.clusters.map((c) => [c.id, c]));
+  const spendChargeCount = (r: (typeof allSpend)[number]) =>
+    resolveChargeCount({
+      cluster: byCluster.get(r.clusterId),
+      periodTotal: r.totalSpentInPeriod,
+      latestCharge: r.amount,
+    });
 
   const fees = allSpend.filter(
     (r) => r.categoryKey === "fees" || r.kind === "fee"
@@ -90,21 +103,24 @@ export function applyRecommendationRules(
   );
   if (overdraftFees.length > 0) {
     const feeTotal = overdraftFees.reduce((s, r) => s + r.totalSpentInPeriod, 0);
+    const feeCharges = overdraftFees.reduce((n, r) => n + spendChargeCount(r), 0);
     const { monthly, yearly } = monthlyAndYearlyFromPeriod(
       feeTotal * 0.85,
       statementPeriod
     );
+    const canAnnualize = canAnnualizeFeePattern(feeCharges);
     out.push(
       makeRec(
         {
           id: "action-overdraft-alerts",
           title: "Enable balance alerts or move to fee-free banking",
-          description:
-            "Overdraft or NSF-style fees appeared on this statement. Low-balance notifications or an account without overdraft fees can stop repeat charges.",
+          description: canAnnualize
+            ? "Repeated overdraft or NSF-style fees appeared on this statement. Low-balance notifications or an account without overdraft fees can stop repeat charges."
+            : `${OBSERVED_ONLY_SAVINGS_NOTE}. An overdraft-style fee appeared once — annual savings are not estimated without a repeat pattern.`,
           estimatedMonthlySavings: monthly,
-          estimatedYearlySavings: yearly,
+          estimatedYearlySavings: canAnnualize ? yearly : 0,
           severity: "high",
-          confidence: 0.9,
+          confidence: canAnnualize ? 0.9 : 0.55,
           actionType: "setup_balance_alerts",
           merchantReference: overdraftFees
             .map((r) => r.normalizedName)
@@ -117,21 +133,24 @@ export function applyRecommendationRules(
     );
   } else if (fees.length > 0) {
     const feeTotal = fees.reduce((s, r) => s + r.totalSpentInPeriod, 0);
+    const feeCharges = fees.reduce((n, r) => n + spendChargeCount(r), 0);
     const { monthly, yearly } = monthlyAndYearlyFromPeriod(
       feeTotal * 0.7,
       statementPeriod
     );
+    const canAnnualize = canAnnualizeFeePattern(feeCharges);
     out.push(
       makeRec(
         {
           id: "action-bank-fees",
           title: "Review account fees and alert settings",
-          description:
-            "Bank or service fees were detected. Compare fee schedules and turn on alerts before small balances trigger charges.",
+          description: canAnnualize
+            ? "Bank or service fees were detected. Compare fee schedules and turn on alerts before small balances trigger charges."
+            : `${OBSERVED_ONLY_SAVINGS_NOTE}. A fee was detected once — annual savings are not estimated without a repeat pattern.`,
           estimatedMonthlySavings: monthly,
-          estimatedYearlySavings: yearly,
+          estimatedYearlySavings: canAnnualize ? yearly : 0,
           severity: "medium",
-          confidence: 0.82,
+          confidence: canAnnualize ? 0.82 : 0.55,
           actionType: "switch_banking",
           merchantReference: fees.map((r) => r.normalizedName).slice(0, 2).join(", "),
           sourceInsightId: "bank-fees",
@@ -141,7 +160,11 @@ export function applyRecommendationRules(
     );
   }
 
-  const streaming = subscriptions.filter((s) => s.category === "streaming");
+  const streaming = subscriptions.filter(
+    (s) =>
+      s.category === "streaming" &&
+      subscriptionEligibleForAnnualSavings(s, byCluster)
+  );
   if (streaming.length >= 2) {
     const monthly = streaming.reduce((s, x) => s + x.monthlyEquivalent, 0);
     const savingsMonthly = conservativeRecurringCut(monthly, 0.15, 35);
@@ -173,7 +196,11 @@ export function applyRecommendationRules(
     );
   }
 
-  const telecom = subscriptions.filter((s) => s.category === "utilities");
+  const telecom = subscriptions.filter(
+    (s) =>
+      s.category === "utilities" &&
+      subscriptionEligibleForAnnualSavings(s, byCluster)
+  );
   const telecomMonthly = telecom.reduce((s, x) => s + x.monthlyEquivalent, 0);
   if (telecom.length > 0 && telecomMonthly >= 60) {
     const savingsMonthly = conservativeRecurringCut(telecomMonthly, 0.1, 25);
@@ -185,7 +212,7 @@ export function applyRecommendationRules(
           id: "action-telecom-compare",
           title: "Compare phone and internet plans at renewal",
           description:
-            "Phone or internet bills are a material expected cost. At renewal, comparing plans is optional — promotional rates sometimes beat legacy pricing. This is not a recommendation to cancel service.",
+            "Phone or internet bills are a material expected cost. At renewal, comparing plans is optional — promotional rates sometimes beat legacy pricing. This is not a recommendation to cancel service. Optimization ranges are not guaranteed savings.",
           estimatedMonthlySavings: monthly,
           estimatedYearlySavings: yearly,
           severity: telecomMonthly >= 120 ? "high" : "medium",
@@ -200,9 +227,13 @@ export function applyRecommendationRules(
     );
   }
 
-  const aiSubs = subscriptions.filter((s) => s.category === "ai_tools");
-  const aiSpendRows = allSpend.filter((r) =>
-    isAiMerchantText(r.normalizedName)
+  const aiSubs = subscriptions.filter(
+    (s) =>
+      s.category === "ai_tools" &&
+      subscriptionEligibleForAnnualSavings(s, byCluster)
+  );
+  const aiSpendRows = allSpend.filter(
+    (r) => isAiMerchantText(r.normalizedName) && spendChargeCount(r) >= 2
   );
   const aiToolNames = [
     ...new Set([
@@ -237,7 +268,9 @@ export function applyRecommendationRules(
     );
   }
 
-  const convenience = allSpend.filter((r) => r.categoryKey === "convenience");
+  const convenience = allSpend.filter(
+    (r) => r.categoryKey === "convenience" && spendChargeCount(r) >= 2
+  );
   const convTotal = convenience.reduce((s, r) => s + r.totalSpentInPeriod, 0);
   if (convenience.length >= 3 && convTotal > 40) {
     const periodCut = convTotal * 0.12;
@@ -265,9 +298,13 @@ export function applyRecommendationRules(
     );
   }
 
-  const delivery = allSpend.filter((r) => isDeliveryMerchant(r.normalizedName));
+  const delivery = allSpend.filter(
+    (r) => isDeliveryMerchant(r.normalizedName) && spendChargeCount(r) >= 2
+  );
   const dining = allSpend.filter(
-    (r) => r.categoryKey === "restaurants" || r.categoryKey === "cafes"
+    (r) =>
+      (r.categoryKey === "restaurants" || r.categoryKey === "cafes") &&
+      spendChargeCount(r) >= 2
   );
   const deliveryTotal = [...delivery, ...dining].reduce(
     (s, r) => s + r.totalSpentInPeriod,
@@ -301,7 +338,11 @@ export function applyRecommendationRules(
     );
   }
 
-  const insurance = subscriptions.filter((s) => s.category === "insurance");
+  const insurance = subscriptions.filter(
+    (s) =>
+      s.category === "insurance" &&
+      subscriptionEligibleForAnnualSavings(s, byCluster)
+  );
   if (insurance.length > 0) {
     const annual = insurance.reduce((s, x) => s + x.annualEquivalent, 0);
     if (annual >= 600) {
@@ -334,11 +375,12 @@ export function applyRecommendationRules(
 
   const flagged = subscriptions.filter(
     (s) =>
-      s.flags.forgotten ||
-      s.flags.duplicate ||
-      s.flags.priceIncreased ||
-      s.flags.suspicious ||
-      s.flags.reviewSuggested
+      (s.flags.forgotten ||
+        s.flags.duplicate ||
+        s.flags.priceIncreased ||
+        s.flags.suspicious ||
+        s.flags.reviewSuggested) &&
+      subscriptionEligibleForAnnualSavings(s, byCluster)
   );
   if (flagged.length > 0) {
     const monthly = flagged.reduce((s, x) => s + x.monthlyEquivalent, 0);
@@ -350,7 +392,7 @@ export function applyRecommendationRules(
         {
           id: "action-flagged-subs",
           title: "Review flagged subscriptions",
-          description: `${flagged.length} subscription(s) were flagged for duplicates, price increases, or low use. Cancel or downgrade what you no longer need.`,
+          description: `${flagged.length} confirmed subscription(s) were flagged for duplicates, price increases, or low use. Cancel or downgrade what you no longer need — amounts are not guaranteed.`,
           estimatedMonthlySavings: estMo,
           estimatedYearlySavings: yearly,
           severity: flagged.some((s) => s.flags.duplicate || s.flags.forgotten)
@@ -368,6 +410,40 @@ export function applyRecommendationRules(
         currency
       )
     );
+  } else {
+    const weakFlagged = subscriptions.filter(
+      (s) =>
+        s.flags.forgotten ||
+        s.flags.duplicate ||
+        s.flags.priceIncreased ||
+        s.flags.suspicious ||
+        s.flags.reviewSuggested
+    );
+    if (weakFlagged.length > 0) {
+      const observed = weakFlagged.reduce(
+        (s, x) => s + x.totalSpentInPeriod,
+        0
+      );
+      out.push(
+        makeRec(
+          {
+            id: "action-flagged-subs",
+            title: "Review flagged subscriptions",
+            description: `${OBSERVED_ONLY_SAVINGS_NOTE}. ${weakFlagged.length} item(s) flagged without sufficient recurrence evidence to annualize.`,
+            estimatedMonthlySavings: roundMoney(observed),
+            estimatedYearlySavings: 0,
+            severity: "medium",
+            confidence: 0.45,
+            actionType: "review_subscription",
+            merchantReference: weakFlagged
+              .map((s) => s.normalizedName)
+              .slice(0, 5)
+              .join(", "),
+          },
+          currency
+        )
+      );
+    }
   }
 
   const subscriptionClusterIds = new Set(
@@ -375,11 +451,13 @@ export function applyRecommendationRules(
   );
   const strongRecurring = recurringExpenses.filter(
     (r) =>
+      spendChargeCount(r) >= 2 &&
       r.recurringExpenseScore >= 0.55 &&
       (r.kind === "possible_recurring_expense" ||
         r.recommendation === "Possible savings opportunity") &&
       r.categoryKey !== "retail" &&
-      r.categoryKey !== "one_time_purchase"
+      r.categoryKey !== "one_time_purchase" &&
+      r.categoryKey !== "transfers"
   );
   for (const row of strongRecurring.slice(0, 3)) {
     if (subscriptionClusterIds.has(row.clusterId)) continue;
