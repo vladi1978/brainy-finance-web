@@ -5,6 +5,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { CopilotFeedSection } from "@/components/statements/copilot/CopilotFeedSection";
 import { GuidedStatementStart } from "@/components/statements/GuidedStatementStart";
 import { FinancialIntelligenceSummaryPanel } from "@/components/statements/FinancialIntelligenceSummary";
+import { StatementOverview } from "@/components/statements/StatementOverview";
 import type { FinancialIntelligenceSummary } from "@/lib/statements/intelligence/financialCategories";
 import type { CopilotAssistantContext } from "@/lib/statements/copilot/types";
 import type { CopilotTimelineResult } from "@/lib/statements/timeline/types";
@@ -703,8 +704,36 @@ export default function StatementsClient() {
               ) : null}
             </div>
 
-            {intelligence ? (
-              <>
+            <StatementOverview
+              periodLabel={periodLabel}
+              transactionCount={data.meta.transactionCount}
+              pageCount={data.meta.pageCount}
+              currency={summaryCurrency}
+              healthScore={intelligence?.healthScore}
+              groups={presentationGroups}
+              formatMoney={formatMoney}
+            />
+
+            <details className="group rounded-3xl border border-white/10 bg-white/[0.025]">
+              <summary className="cursor-pointer list-none px-5 py-5 sm:px-7 [&::-webkit-details-marker]:hidden">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <p className="text-sm font-semibold text-white">
+                      Explore the detailed financial analysis
+                    </p>
+                    <p className="mt-1 text-xs leading-relaxed text-white/45">
+                      Health factors, financial insights, Copilot notes, savings
+                      methodology, and recommendation details.
+                    </p>
+                  </div>
+                  <span className="rounded-full border border-white/10 px-3 py-1 text-xs text-white/55 transition group-open:rotate-180">
+                    ↓
+                  </span>
+                </div>
+              </summary>
+              <div className="space-y-12 border-t border-white/10 px-5 py-7 sm:px-7">
+              {intelligence ? (
+                <>
                 <section className="grid gap-6 lg:grid-cols-[minmax(0,280px)_1fr]">
                   <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.06] to-white/[0.02] p-6">
                     <p className="text-xs font-medium uppercase tracking-widest text-white/45">
@@ -987,8 +1016,8 @@ export default function StatementsClient() {
                     </ul>
                   </section>
                 ) : null}
-              </>
-            ) : null}
+                </>
+              ) : null}
 
             <section className="grid gap-4 border-t border-white/10 pt-10 sm:grid-cols-2 lg:grid-cols-4">
               <SummaryCard
@@ -1032,9 +1061,11 @@ export default function StatementsClient() {
                 )}
                 subtitle={`${displayInsights.length} notable flows · does not include recurring everyday spend`}
               />
-            </section>
+              </section>
+              </div>
+            </details>
 
-            <section className="space-y-4">
+            <section id="expected-bills" className="scroll-mt-6 space-y-4">
               <SectionIntro
                 title={PRESENTATION_GROUP_COPY.expected_recurring_bills.title}
                 description={
@@ -1063,7 +1094,7 @@ export default function StatementsClient() {
               )}
             </section>
 
-            <section className="space-y-4">
+            <section id="subscriptions-review" className="scroll-mt-6 space-y-4">
               <SectionIntro
                 title={PRESENTATION_GROUP_COPY.subscriptions.title}
                 description={PRESENTATION_GROUP_COPY.subscriptions.description}
@@ -1098,7 +1129,7 @@ export default function StatementsClient() {
               )}
             </section>
 
-            <section className="space-y-4">
+            <section id="flexible-spending" className="scroll-mt-6 space-y-4">
               <SectionIntro
                 title={PRESENTATION_GROUP_COPY.repeated_discretionary.title}
                 description={
@@ -1127,7 +1158,7 @@ export default function StatementsClient() {
               )}
             </section>
 
-            <section className="space-y-4">
+            <section id="activity-review" className="scroll-mt-6 space-y-4">
               <SectionIntro
                 title={PRESENTATION_GROUP_COPY.unusual_recurring.title}
                 description={PRESENTATION_GROUP_COPY.unusual_recurring.description}
