@@ -1656,7 +1656,7 @@ function ActivityPresentationCardView(props: {
         )}
         {showNotMine ? (
           <ActionChip
-            label="Not mine"
+            label={action === "not_mine" ? "Marked not mine" : "Not mine"}
             pressed={action === "not_mine"}
             onClick={() => onAction("not_mine")}
           />
@@ -1681,6 +1681,16 @@ function ActivityPresentationCardView(props: {
         >
           Marked for review in this session. This does not confirm recurrence,
           record savings, or change your Health Score.
+        </p>
+      ) : null}
+      {action === "not_mine" ? (
+        <p
+          role="status"
+          className="mt-3 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100"
+        >
+          Marked as not recognized for this session. Brainy keeps the original
+          statement activity visible and does not record savings or change your
+          Health Score.
         </p>
       ) : null}
       <p className="mt-2 text-[11px] text-white/35">
