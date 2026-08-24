@@ -1631,7 +1631,13 @@ function ActivityPresentationCardView(props: {
 
       <div className="mt-5 flex flex-wrap gap-2 border-t border-white/10 pt-4">
         <ActionChip
-          label={card.groupId === "unusual_recurring" ? "Review this activity" : "Review"}
+          label={
+            action === "review"
+              ? "Reviewing"
+              : card.groupId === "unusual_recurring"
+                ? "Review this activity"
+                : "Review"
+          }
           pressed={action === "review"}
           onClick={() => onAction("review")}
         />
@@ -1668,6 +1674,15 @@ function ActivityPresentationCardView(props: {
           Find alternative
         </Link>
       </div>
+      {action === "review" ? (
+        <p
+          role="status"
+          className="mt-3 rounded-lg border border-violet-400/30 bg-violet-500/10 px-3 py-2 text-xs text-violet-100"
+        >
+          Marked for review in this session. This does not confirm recurrence,
+          record savings, or change your Health Score.
+        </p>
+      ) : null}
       <p className="mt-2 text-[11px] text-white/35">
         Choices stay on this device for this session — alerts are not sent or
         stored on a server.
