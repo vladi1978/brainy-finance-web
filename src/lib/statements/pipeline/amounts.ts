@@ -1,5 +1,22 @@
 import { AMOUNT_TOKEN } from "./constants";
 
+/**
+ * True money tokens have currency shape (decimals or short integers).
+ * Long bare digit runs are auth/ID references, not amounts.
+ */
+export function isPlausibleMoneyToken(raw: string): boolean {
+  const trimmed = raw.trim().replace(/\u2212/gu, "-");
+  if (!trimmed) return false;
+  const digitRuns = trimmed.match(/\d+/g) ?? [];
+  const digitCount = digitRuns.reduce((n, r) => n + r.length, 0);
+  const hasDecimal = /[.,]\d{1,2}(?:\b|$)/u.test(trimmed);
+  if (!hasDecimal && digitCount >= 8) return false;
+  const parsed = parseAmountFragment(trimmed);
+  if (!parsed || Math.abs(parsed.value) < 1e-9) return false;
+  if (Math.abs(parsed.value) > 1e7) return false;
+  return true;
+}
+
 export function detectCurrency(amountRaw: string): string {
   if (/€|EUR/i.test(amountRaw)) return "EUR";
   if (/£|GBP/i.test(amountRaw)) return "GBP";
@@ -54,8 +71,7 @@ export function countParsableMoneyTokens(line: string): number {
   const rx = new RegExp(AMOUNT_TOKEN.source, AMOUNT_TOKEN.flags);
   let n = 0;
   for (const m of line.matchAll(rx)) {
-    const got = parseAmountFragment(m[0]);
-    if (got && Math.abs(got.value) > 1e-9) n++;
+    if (isPlausibleMoneyToken(m[0])) n++;
   }
   return n;
 }
@@ -72,7 +88,9 @@ export function peelTrailingAmounts(
   for (let i = 0; i < max; i++) {
     const mm = cur.match(peelRe);
     if (!mm) break;
-    amounts.unshift(mm[2].trim());
+    const candidate = mm[2].trim();
+    if (!isPlausibleMoneyToken(candidate)) break;
+    amounts.unshift(candidate);
     cur = mm[1].trimEnd();
   }
 
@@ -91,7 +109,9 @@ export function peelTrailingAmountsTight(rest: string): {
   for (let i = 0; i < 2; i++) {
     const mm = cur.match(peelRe);
     if (!mm) break;
-    amounts.unshift(mm[2].trim());
+    const candidate = mm[2].trim();
+    if (!isPlausibleMoneyToken(candidate)) break;
+    amounts.unshift(candidate);
     cur = mm[1].trimEnd();
   }
 

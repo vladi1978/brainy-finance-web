@@ -2,9 +2,31 @@ import { AMOUNT_TOKEN, MONTH_WORD } from "./constants";
 import { matchDateSubstring, stripLeadingNoise } from "./dates";
 import {
   countParsableMoneyTokens,
-  parseAmountFragment,
+  isPlausibleMoneyToken,
 } from "./amounts";
 import { PAGE_HEADER_SIMPLE, SKIP_LINE, STATEMENT_PAGE_HEADER } from "./noise";
+
+/** BoA ACH/online continuation: "ID:1234567890 WEB" or "CO ID:… WEB -126.24" */
+function isBoaWebContinuation(line: string): boolean {
+  const t = stripLeadingNoise(line).trim();
+  return /^(?:CO\s+)?ID:\s*\d{6,}\s+WEB\b/iu.test(t);
+}
+
+function parentLooksLikeDatedTxnStructure(
+  block: string,
+  defaultYear: number
+): boolean {
+  const t = stripLeadingNoise(block).trim();
+  if (!t) return false;
+  // Prefer an explicit posting date near the start.
+  if (/^\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/.test(t)) return true;
+  if (/^\d{4}-\d{2}-\d{2}\b/.test(t)) return true;
+  // ACH-style parent body without requiring amount yet.
+  if (/\b(?:DES:|INDN:|CO\s+ID:)/iu.test(t) && matchDateSubstring(t, defaultYear)) {
+    return true;
+  }
+  return false;
+}
 
 function mergeDateOnlyLines(lines: string[]): string[] {
   const out: string[] = [];
@@ -41,7 +63,7 @@ function isAmountOnlyLine(line: string): boolean {
   return (
     /^[\u2212+-]?\(?[\p{Sc}]?\s*\d[\d.,]*(?:\.\d{1,2})?\s*\)?(?:\s*(?:USD|EUR|GBP|MXN|CAD|INR|JPY|AUD|NZD|CHF|CR|DR))?$/iu.test(
       t
-    ) && parseAmountFragment(t) != null
+    ) && isPlausibleMoneyToken(t)
   );
 }
 
@@ -70,7 +92,9 @@ function transactionAnchorScore(line: string, defaultYear: number): number {
   }
 
   AMOUNT_TOKEN.lastIndex = 0;
-  const amountMatches = [...t.matchAll(AMOUNT_TOKEN)];
+  const amountMatches = [...t.matchAll(AMOUNT_TOKEN)].filter((m) =>
+    isPlausibleMoneyToken(m[0])
+  );
   const lastAmt = amountMatches.at(-1);
   if (lastAmt?.index !== undefined) {
     const trimmedEnd = t.trimEnd();
@@ -78,8 +102,7 @@ function transactionAnchorScore(line: string, defaultYear: number): number {
     const tailGap = trimmedEnd.length - endIdx;
     if (tailGap <= 2) score += 4;
     else score += 2;
-    const parsed = parseAmountFragment(lastAmt[0]);
-    if (parsed && Math.abs(parsed.value) > 1e-9) score += 2;
+    score += 2;
   }
 
   if (t.length >= 12 && t.length <= 220) score += 1;
@@ -98,10 +121,7 @@ function lineHasStructuredTransactionSignals(
   const dh = matchDateSubstring(t, defaultYear);
   if (!dh || dh.start > 52) return false;
   const rx = new RegExp(AMOUNT_TOKEN.source, AMOUNT_TOKEN.flags);
-  const parts = [...t.matchAll(rx)].filter((m) => {
-    const q = parseAmountFragment(m[0]);
-    return q && Math.abs(q.value) > 1e-9;
-  });
+  const parts = [...t.matchAll(rx)].filter((m) => isPlausibleMoneyToken(m[0]));
   if (!parts.length) return false;
   const last = parts[parts.length - 1];
   if (typeof last.index !== "number") return false;
@@ -116,6 +136,8 @@ export function looksLikeTransactionAnchor(
   const t = stripLeadingNoise(line);
   if (!t || SKIP_LINE.test(t)) return false;
   if (PAGE_HEADER_SIMPLE.test(t)) return false;
+  // Continuations attach to a parent; never start a new block from ID/WEB alone.
+  if (isBoaWebContinuation(t)) return false;
 
   if (/^\d{4}-\d{2}-\d{2}\b/.test(t)) return true;
   if (/^\d{1,2}\s*[/.-]\s*\d{1,2}\s*[/.-]\s*\d{2,4}\b/.test(t)) return true;
@@ -154,6 +176,15 @@ function groupLinesIntoBlocks(lines: string[], defaultYear: number): string[] {
       }
       continue;
     }
+
+    if (isBoaWebContinuation(line)) {
+      if (cur && parentLooksLikeDatedTxnStructure(cur, defaultYear)) {
+        cur += " " + line;
+      }
+      // Else drop orphan continuation — do not invent a transaction.
+      continue;
+    }
+
     if (looksLikeTransactionAnchor(line, defaultYear)) {
       if (cur) blocks.push(cur.replace(/\s{2,}/gu, " ").trim());
       cur = line;

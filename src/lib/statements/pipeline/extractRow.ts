@@ -4,6 +4,7 @@ import {
   parseAmountFragment,
   peelTrailingAmounts,
   peelTrailingAmountsTight,
+  isPlausibleMoneyToken,
 } from "./amounts";
 import {
   matchDateSubstring,
@@ -14,6 +15,53 @@ import { NOISE_DESCRIPTION } from "./noise";
 
 export type ParsedRow = Transaction & { strategy: string };
 
+/**
+ * Strong incoming-money phrases win over the generic word PAYMENT.
+ * No global amount-sign fallback — unknown rows stay debit (conservative).
+ */
+function hasStrongIncomingCredit(upper: string, amountRaw: string): boolean {
+  if (/\bCR$/u.test(amountRaw.trim())) return true;
+  if (
+    /\b(?:CR|CREDITS?|DEPOSIT|REFUND|ABONO)\b/u.test(upper) &&
+    !/\b(?:CREDIT\s+CARD|CREDITS?\s+(?:CARD|LIMIT|AVAILABLE))\b/u.test(upper)
+  ) {
+    return true;
+  }
+  if (/\bPMNT\s+RCVD\b/u.test(upper)) return true;
+  if (/\bPAYMENT\s+RECEIVED\b/u.test(upper)) return true;
+  if (/\bPAYMENT\s+FROM\b/u.test(upper)) return true;
+  // Incoming Zelle: "ZELLE FROM …" / "ZELLE PAYMENT FROM …" (not "ZELLE TO …")
+  if (
+    /\bZELLE\b/u.test(upper) &&
+    /\bFROM\b/u.test(upper) &&
+    !/\bZELLE\b[\s\S]{0,48}\bTO\b/u.test(upper)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function hasOutgoingDebitHint(upper: string, amountRaw: string): boolean {
+  if (/\bDR$/u.test(amountRaw.trim())) return true;
+  if (/\bDES:PAYMENT\b/u.test(upper)) return true;
+  if (
+    /\b(?:DR|DEBITS?|PURCHASE|WITHDRAWAL|CHARGE|ATM|COMPRA|CHECKCARD|DEBIT\s+CARD)\b/u.test(
+      upper
+    )
+  ) {
+    return true;
+  }
+  // Generic PAYMENT / PAYMENTS — not the strong incoming phrases above
+  if (
+    /\bPAYMENTS?\b/u.test(upper) &&
+    !/\bPAYMENT\s+(?:RECEIVED|FROM)\b/u.test(upper) &&
+    !/\bPMNT\s+RCVD\b/u.test(upper)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function debitCreditFromDescription(
   description: string,
   amountRaw: string
@@ -22,21 +70,15 @@ function debitCreditFromDescription(
   if (!parsed || parsed.value === 0) return null;
 
   const upper = description.toUpperCase();
-  const creditHints =
-    /\b(CR|CREDIT|CREDITS|DEPOSIT|PAYMENT RECEIVED|REFUND|ABONO)\b/u.test(
-      upper
-    ) || /\bCR$/u.test(amountRaw.trim());
-  const debitHints =
-    /\b(DR|DEBIT|DEBITS|PURCHASE|PAYMENT|WITHDRAWAL|CHARGE|ATM|COMPRA)\b/u.test(
-      upper
-    ) || /\bDR$/u.test(amountRaw.trim());
-
-  let type: "debit" | "credit";
-  if (creditHints && !debitHints) type = "credit";
-  else if (debitHints && !creditHints) type = "debit";
-  else type = "debit";
-
-  return { type, signedValue: parsed.value, parsed };
+  // Precedence: explicit incoming phrases beat isolated PAYMENT.
+  if (hasStrongIncomingCredit(upper, amountRaw)) {
+    return { type: "credit", signedValue: parsed.value, parsed };
+  }
+  if (hasOutgoingDebitHint(upper, amountRaw)) {
+    return { type: "debit", signedValue: parsed.value, parsed };
+  }
+  // Conservative default for unknown direction — do not manufacture credits.
+  return { type: "debit", signedValue: parsed.value, parsed };
 }
 
 function tryLeadingDateTailAmount(
@@ -218,6 +260,16 @@ function tryLabeledAmountColumns(
   };
 }
 
+function isCheckcardPostingDateCode(token: string, surrounding: string): boolean {
+  const bare = token.trim().replace(/^[+\-(\u2212$€£]*/u, "").replace(/[)]*$/u, "");
+  if (!/^\d{4}$/u.test(bare)) return false;
+  const u = surrounding.toUpperCase();
+  return new RegExp(
+    String.raw`\b(?:CHECKCARD|DEBIT\s+CARD|POS|PURCHASE)\s+${bare}\b`,
+    "u"
+  ).test(u);
+}
+
 function tryFallbackAmountScan(
   block: string,
   defaultYear: number
@@ -240,12 +292,21 @@ function tryFallbackAmountScan(
       ): x is {
         r: string;
         p: NonNullable<ReturnType<typeof parseAmountFragment>>;
-      } => Boolean(x.p && Math.abs(x.p.value) > 1e-9)
+      } =>
+        Boolean(
+          x.p &&
+            Math.abs(x.p.value) > 1e-9 &&
+            isPlausibleMoneyToken(x.r) &&
+            !isCheckcardPostingDateCode(x.r, withoutDate)
+        )
     );
 
   if (!parsedList.length) return null;
 
-  const last = parsedList[parsedList.length - 1];
+  // Prefer a true money token with cents when present.
+  const withCents = parsedList.filter((x) => /[.,]\d{1,2}\b/u.test(x.r));
+  const pool = withCents.length ? withCents : parsedList;
+  const last = pool[pool.length - 1];
   const amountIdx = withoutDate.lastIndexOf(last.r);
   if (amountIdx < 0) return null;
 
@@ -277,6 +338,8 @@ export function parseBlockWithStrategies(
   trimB = trimB
     .replace(/\bcontinued on the next page\b/giu, " ")
     .replace(/\d{12,}(-\d+\.\d{2})\s*$/u, " $1")
+    // Bare trailing auth/ID refs are not amounts.
+    .replace(/\s+\d{12,}\s*$/u, "")
     .replace(/\s{2,}/gu, " ")
     .trim();
   if (trimB.length < 8) return null;
