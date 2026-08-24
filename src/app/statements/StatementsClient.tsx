@@ -418,7 +418,7 @@ export default function StatementsClient() {
   const [actions, setActions] = useState<
     Record<
       string,
-      "review" | "expected" | "not_mine" | "keep" | "alt" | "cancel" | undefined
+      "expected" | "not_mine" | "keep" | "cancel" | undefined
     >
   >({});
 
@@ -435,7 +435,6 @@ export default function StatementsClient() {
     modalKind,
     dispatchAction,
     closeModal,
-    acceptFromModal,
     resetActions: resetRecommendationActions,
     getLastActionId,
   } = useRecommendationActions(recommendationInputs);
@@ -962,9 +961,7 @@ export default function StatementsClient() {
                       open={modalOpen}
                       rec={modalRec}
                       modalKind={modalKind}
-                      formatMoney={formatMoney}
                       onClose={closeModal}
-                      onAccept={acceptFromModal}
                     />
                   </section>
                 ) : null}
@@ -1539,16 +1536,12 @@ function ActivityPresentationCardView(props: {
   card: ActivityPresentationCardPayload | ActivityPresentationCard;
   highlighted?: boolean;
   cardRef?: (element: HTMLDivElement | null) => void;
-  action?: "review" | "expected" | "not_mine" | "keep" | "alt" | "cancel";
-  onAction: (
-    key: "review" | "expected" | "not_mine" | "keep" | "alt"
-  ) => void;
+  action?: "expected" | "not_mine" | "keep" | "cancel";
+  onAction: (key: "expected" | "not_mine" | "keep") => void;
 }) {
   const { card, action, onAction, highlighted = false, cardRef } = props;
   const badge = statusBadge(card.status);
   const showExpectedAction = card.groupId === "expected_recurring_bills";
-  const showNotMine =
-    card.groupId === "subscriptions" || card.groupId === "unusual_recurring";
 
   return (
     <div
@@ -1628,17 +1621,6 @@ function ActivityPresentationCardView(props: {
       </div>
 
       <div className="mt-5 flex flex-wrap gap-2 border-t border-white/10 pt-4">
-        <ActionChip
-          label={
-            action === "review"
-              ? "Reviewing"
-              : card.groupId === "unusual_recurring"
-                ? "Review this activity"
-                : "Review"
-          }
-          pressed={action === "review"}
-          onClick={() => onAction("review")}
-        />
         {showExpectedAction ? (
           <ActionChip
             label="Expected"
@@ -1647,40 +1629,17 @@ function ActivityPresentationCardView(props: {
           />
         ) : (
           <ActionChip
-            label={action === "keep" ? "Keeping" : "Keep"}
+            label={action === "keep" ? "Recognized" : "I recognize this"}
             pressed={action === "keep"}
             onClick={() => onAction("keep")}
           />
         )}
-        {showNotMine ? (
-          <ActionChip
-            label={action === "not_mine" ? "Marked not mine" : "Not mine"}
-            pressed={action === "not_mine"}
-            onClick={() => onAction("not_mine")}
-          />
-        ) : null}
-        <button
-          type="button"
-          className={[
-            "rounded-lg border px-3 py-1.5 text-xs font-medium transition",
-            action === "alt"
-              ? "border-emerald-400/50 bg-emerald-400/15 text-emerald-100"
-              : "border-white/15 bg-white/5 text-white/80 hover:border-white/25",
-          ].join(" ")}
-          onClick={() => onAction("alt")}
-        >
-          {action === "alt" ? "Alternatives requested" : "Find alternative"}
-        </button>
+        <ActionChip
+          label={action === "not_mine" ? "Marked not mine" : "Not mine"}
+          pressed={action === "not_mine"}
+          onClick={() => onAction("not_mine")}
+        />
       </div>
-      {action === "review" ? (
-        <p
-          role="status"
-          className="mt-3 rounded-lg border border-violet-400/30 bg-violet-500/10 px-3 py-2 text-xs text-violet-100"
-        >
-          Marked for review in this session. This does not confirm recurrence,
-          record savings, or change your Health Score.
-        </p>
-      ) : null}
       {action === "not_mine" ? (
         <p
           role="status"
@@ -1698,16 +1657,6 @@ function ActivityPresentationCardView(props: {
         >
           Marked as recognized and kept for this session. This does not confirm
           recurrence, record savings, or change your Health Score.
-        </p>
-      ) : null}
-      {action === "alt" ? (
-        <p
-          role="status"
-          className="mt-3 rounded-lg border border-sky-400/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-100"
-        >
-          Service comparison is not available yet. Brainy has kept
-          this request in the current session without changing the statement
-          analysis, recording savings, or opening an unrelated product search.
         </p>
       ) : null}
       <p className="mt-2 text-[11px] text-white/35">

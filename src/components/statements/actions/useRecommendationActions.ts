@@ -21,7 +21,7 @@ export function useRecommendationActions(items: RecommendationInput[]) {
     Record<string, StoredRecommendationState>
   >(() => loadRecommendationStates());
   const [modalRecId, setModalRecId] = useState<string | null>(null);
-  const [modalKind, setModalKind] = useState<ActionModalKind>("provider_compare");
+  const [modalKind, setModalKind] = useState<ActionModalKind>("fee_education");
 
   const enriched = useMemo(
     () => enrichRecommendations(items, states),
@@ -96,11 +96,6 @@ export function useRecommendationActions(items: RecommendationInput[]) {
     setModalRecId(null);
   }, []);
 
-  const acceptFromModal = useCallback(() => {
-    if (!modalRec) return;
-    applyStatus(modalRec, "modal_accept", "accepted");
-  }, [modalRec, applyStatus]);
-
   const resetActions = useCallback(() => {
     clearRecommendationStates();
     setStates({});
@@ -116,7 +111,6 @@ export function useRecommendationActions(items: RecommendationInput[]) {
     modalKind,
     dispatchAction,
     closeModal,
-    acceptFromModal,
     resetActions,
     getLastActionId: (recId: string) => states[recId]?.lastActionId,
   };

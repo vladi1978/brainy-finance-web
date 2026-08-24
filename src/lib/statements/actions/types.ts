@@ -13,7 +13,7 @@ export type RecommendationStatus =
 
 export type FinancialActionId = string;
 
-export type ActionModalKind = "provider_compare" | "fee_education";
+export type ActionModalKind = "fee_education";
 
 export type StoredRecommendationState = {
   recommendationId: string;

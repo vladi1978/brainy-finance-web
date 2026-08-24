@@ -10,13 +10,13 @@ const DEFAULT_ACTIONS: FinancialActionDefinition[] = [
   },
   {
     id: "track",
-    label: "Track this",
+    label: "Add to checklist",
     kind: "secondary",
     resolvesTo: "tracked",
   },
   {
     id: "dismiss",
-    label: "Dismiss",
+    label: "Ignore",
     kind: "ghost",
     resolvesTo: "dismissed",
   },
@@ -27,42 +27,30 @@ const REGISTRY: Partial<
 > = {
   reduce_streaming: [
     {
-      id: "compare_plans",
-      label: "Compare plans",
-      kind: "primary",
-      opensModal: "provider_compare",
-    },
-    {
       id: "keep",
-      label: "Keep",
+      label: "This is essential",
       kind: "secondary",
       resolvesTo: "essential",
     },
     {
       id: "dismiss",
-      label: "Dismiss",
+      label: "Ignore",
       kind: "ghost",
       resolvesTo: "dismissed",
     },
   ],
   compare_telecom: [
     {
-      id: "find_alternatives",
-      label: "Find alternatives",
-      kind: "primary",
-      opensModal: "provider_compare",
-    },
-    {
-      id: "compare_providers",
-      label: "Compare providers",
-      kind: "secondary",
-      opensModal: "provider_compare",
-    },
-    {
       id: "keep_plan",
-      label: "Keep current plan",
-      kind: "ghost",
+      label: "This is essential",
+      kind: "secondary",
       resolvesTo: "essential",
+    },
+    {
+      id: "ignore",
+      label: "Ignore",
+      kind: "ghost",
+      resolvesTo: "dismissed",
     },
   ],
   setup_balance_alerts: [
@@ -74,13 +62,13 @@ const REGISTRY: Partial<
     },
     {
       id: "track",
-      label: "Track this",
+      label: "Add to checklist",
       kind: "secondary",
       resolvesTo: "tracked",
     },
     {
       id: "dismiss",
-      label: "Dismiss",
+      label: "Ignore",
       kind: "ghost",
       resolvesTo: "dismissed",
     },
@@ -94,13 +82,13 @@ const REGISTRY: Partial<
     },
     {
       id: "track",
-      label: "Track this",
+      label: "Add to checklist",
       kind: "secondary",
       resolvesTo: "tracked",
     },
     {
       id: "dismiss",
-      label: "Dismiss",
+      label: "Ignore",
       kind: "ghost",
       resolvesTo: "dismissed",
     },
@@ -108,13 +96,13 @@ const REGISTRY: Partial<
   review_recurring: [
     {
       id: "review_merchant",
-      label: "Review merchant",
+      label: "View details",
       kind: "primary",
       resolvesTo: "tracked",
     },
     {
       id: "mark_essential",
-      label: "Mark essential",
+      label: "This is essential",
       kind: "secondary",
       resolvesTo: "essential",
     },
@@ -128,13 +116,13 @@ const REGISTRY: Partial<
   review_merchant_group: [
     {
       id: "review_merchant",
-      label: "Review merchant",
+      label: "View details",
       kind: "primary",
       resolvesTo: "tracked",
     },
     {
       id: "mark_essential",
-      label: "Mark essential",
+      label: "This is essential",
       kind: "secondary",
       resolvesTo: "essential",
     },
@@ -148,13 +136,13 @@ const REGISTRY: Partial<
   review_subscription: [
     {
       id: "review_merchant",
-      label: "Review subscription",
+      label: "View details",
       kind: "primary",
       resolvesTo: "tracked",
     },
     {
       id: "mark_essential",
-      label: "Mark essential",
+      label: "This is essential",
       kind: "secondary",
       resolvesTo: "essential",
     },
