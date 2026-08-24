@@ -167,6 +167,7 @@ type StatementIntelligencePayload = {
     unusualRecurring: ActivityPresentationCardPayload[];
     oneTimeReview?: ActivityPresentationCardPayload[];
   };
+  statementActivity?: import("@/lib/statements/intelligence/statementActivity").StatementActivitySummary;
   copilot?: CopilotTimelinePayload;
   copilotAssistant?: CopilotAssistantContext;
 };
@@ -706,9 +707,8 @@ export default function StatementsClient() {
 
             <StatementOverview
               periodLabel={periodLabel}
-              transactionCount={data.meta.transactionCount}
               pageCount={data.meta.pageCount}
-              currency={summaryCurrency}
+              activity={intelligence?.statementActivity ?? null}
               healthScore={intelligence?.healthScore}
               groups={presentationGroups}
               formatMoney={formatMoney}

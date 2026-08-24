@@ -273,7 +273,12 @@ export function parseBlockWithStrategies(
   block: string,
   defaultYear: number
 ): ParsedRow | null {
-  const trimB = block.trim();
+  let trimB = block.trim();
+  trimB = trimB
+    .replace(/\bcontinued on the next page\b/giu, " ")
+    .replace(/\d{12,}(-\d+\.\d{2})\s*$/u, " $1")
+    .replace(/\s{2,}/gu, " ")
+    .trim();
   if (trimB.length < 8) return null;
 
   const strategies: Array<() => ParsedRow | null> = [

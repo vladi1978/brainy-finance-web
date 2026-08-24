@@ -93,7 +93,7 @@ export function inferSpendingInsightCategory(
   }
 
   if (
-    /\b(TARGET\b|WAL\s*-?\s*MART|WALMART|DOLLAR\s+GENERAL|DOLLAR\s+TREE|FAMILY\s+DOLLAR|CVS\b|WALGREENS|ROSS\b|TJ\s*MAXX|MARSHALLS|HOME\s+DEPOT|LOWE'?S\b|BEST\s+BUY|KOH'?S\b|OLD\s+NAVY|GAP\b|NIKE\b|\bTJMAXX\b)\b/ui.test(
+    /\b(TARGET\b|WAL\s*-?\s*MART|WALMART|DOLLAR\s+GENERAL|DOLLAR\s+TREE|FAMILY\s+DOLLAR|CVS\b|WALGREENS|ROSS\b|TJ\s*MAXX|MARSHALLS|HOME\s+DEPOT|LOWE'?S\b|BEST\s+BUY|KOH'?S\b|OLD\s+NAVY|GAP\b|NIKE\b|\bTJMAXX\b|SAMS(?:'?S|\s)CLUB|SAMSCLUB)\b/ui.test(
       blob
     )
   ) {

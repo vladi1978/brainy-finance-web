@@ -709,6 +709,12 @@ export function excludeClusterFromSubscriptions(
   // Zelle and P2P payment rails are never subscriptions
   if (isZelleOrTransferCluster(cluster)) return true;
 
+  if (/\bSAMS(?:'?S|\s)CLUB|SAMSCLUB\b/u.test(blob)) {
+    if (!/\b(MEMBERSHIP|MEMBER\s+FEE|ANNUAL\s+FEE|RENEWAL)\b/u.test(blob)) {
+      return true;
+    }
+  }
+
   if (
     /\b(PAYROLL|NÓMINA|NOMINA|NET\s+PAY|GROSS\s+PAY|SALARY|HOURLY\s+PAY|WAGE)\b/u.test(
       blob

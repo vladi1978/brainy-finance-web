@@ -10,6 +10,7 @@ import type {
   SubscriptionInsight,
 } from "../types";
 import type { ActivityPresentationGroups } from "./presentationGroups";
+import type { StatementActivitySummary } from "./statementActivity";
 
 export type InsightSeverity =
   | "positive"
@@ -89,6 +90,8 @@ export type StatementIntelligence = {
   lowConfidenceRows: EnrichedSpendingRow[];
   /** Consumer-facing presentation partitions (no new detection). */
   presentationGroups: ActivityPresentationGroups;
+  /** Full debit categorization with reconciliation. */
+  statementActivity: StatementActivitySummary;
 };
 
 export type IntelligenceInput = {

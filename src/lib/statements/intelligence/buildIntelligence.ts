@@ -8,6 +8,7 @@ import { buildFinancialSummary } from "./buildFinancialSummary";
 import { buildSavingsOpportunities } from "./savings";
 import { deriveSmartSignal } from "./smartSignals";
 import { buildActivityPresentationGroups } from "./presentationGroups";
+import { buildStatementActivitySummary } from "./statementActivity";
 import { buildCopilotAssistantContext } from "../copilot/buildAssistantContext";
 import { buildCopilotTimeline } from "../timeline/buildTimeline";
 import type {
@@ -63,6 +64,7 @@ export function buildStatementIntelligence(
     | "recurringExpenses"
     | "spendingInsights"
     | "transfers"
+    | "transactions"
   > & {
     merchantNormByClusterId?: Map<
       string,
@@ -125,6 +127,14 @@ export function buildStatementIntelligence(
     clusters: result.clusters,
   });
 
+  const statementActivity = buildStatementActivitySummary({
+    transactions: result.transactions,
+    clusters: result.clusters,
+    subscriptions: result.subscriptions,
+    statementPeriod: result.statementPeriod,
+    merchantNormByClusterId: result.merchantNormByClusterId,
+  });
+
   return {
     insights: buildInsightsFeed(input),
     healthScore,
@@ -138,5 +148,6 @@ export function buildStatementIntelligence(
     visibleInsights,
     lowConfidenceRows,
     presentationGroups,
+    statementActivity,
   };
 }

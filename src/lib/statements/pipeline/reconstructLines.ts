@@ -4,7 +4,7 @@ import {
   countParsableMoneyTokens,
   parseAmountFragment,
 } from "./amounts";
-import { PAGE_HEADER_SIMPLE, SKIP_LINE } from "./noise";
+import { PAGE_HEADER_SIMPLE, SKIP_LINE, STATEMENT_PAGE_HEADER } from "./noise";
 
 function mergeDateOnlyLines(lines: string[]): string[] {
   const out: string[] = [];
@@ -119,6 +119,10 @@ export function looksLikeTransactionAnchor(
 
   if (/^\d{4}-\d{2}-\d{2}\b/.test(t)) return true;
   if (/^\d{1,2}\s*[/.-]\s*\d{1,2}\s*[/.-]\s*\d{2,4}\b/.test(t)) return true;
+  if (/^\d{1,2}\/\d{1,2}\/\d{2}\b/i.test(t)) return true;
+  if (/^\d{1,2}\/\d{1,2}\/\d{2}(?:CHECKCARD|DEBIT|POS|PURCHASE|DES:|WEB\b)/iu.test(t)) {
+    return true;
+  }
 
   const md = /^\d{1,2}\s*[/.-]\s*\d{1,2}(?:\s|$|[^\d/.-])/.test(t);
   if (md) {
@@ -139,7 +143,11 @@ function groupLinesIntoBlocks(lines: string[], defaultYear: number): string[] {
   let cur = "";
 
   for (const line of mergedDate) {
-    if (SKIP_LINE.test(line) || PAGE_HEADER_SIMPLE.test(line)) {
+    if (
+      SKIP_LINE.test(line) ||
+      PAGE_HEADER_SIMPLE.test(line) ||
+      STATEMENT_PAGE_HEADER.test(line)
+    ) {
       if (cur) {
         blocks.push(cur.replace(/\s{2,}/gu, " ").trim());
         cur = "";

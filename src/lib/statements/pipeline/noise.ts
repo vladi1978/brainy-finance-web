@@ -1,6 +1,10 @@
 /** Lines usually not part of transaction tables */
 export const SKIP_LINE =
-  /^(?:page\s*\d+|page\s+of|P\.\s*\d+|continued\s+from|statement\s+(?:period|date|coverage|cycle)|routing|total\s+(?:debits|credits)|balance\s+carried|previous\s+balance|new\s+balance)/iu;
+  /^(?:page\s*\d+|page\s+of|P\.\s*\d+|continued\s+from|continued\s+on\s+the\s+next\s+page|statement\s+(?:period|date|coverage|cycle)|routing|total\s+(?:debits|credits)|balance\s+carried|previous\s+balance|new\s+balance)/iu;
+
+/** Repeating BoA page chrome — never merge with transaction rows */
+export const STATEMENT_PAGE_HEADER =
+  /(?:! Account #|Account number:\s*\d|Account summary\b)/iu;
 
 export const PAGE_HEADER_SIMPLE = /^(?:PAGE|Pg\.?)\s*\d+/iu;
 

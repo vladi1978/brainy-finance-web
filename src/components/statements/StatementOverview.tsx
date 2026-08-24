@@ -1,107 +1,67 @@
-type OverviewCard = {
-  clusterId: string;
-  merchant: string;
-  status: "confirmed" | "possible" | "expected" | "unusual";
-  categoryLabel: string;
-  chargeCount: number;
-  periodTotal: number;
-  latestCharge: number;
-  currency: string;
-  estimatedCadence: string | null;
-  reason: string;
-};
+"use client";
+
+import { useState } from "react";
+
+import type { StatementActivitySummary } from "@/lib/statements/intelligence/statementActivity";
 
 type OverviewGroups = {
-  expectedRecurringBills: OverviewCard[];
-  subscriptions: OverviewCard[];
-  repeatedDiscretionary: OverviewCard[];
-  unusualRecurring: OverviewCard[];
-  oneTimeReview?: OverviewCard[];
+  expectedRecurringBills: unknown[];
+  subscriptions: unknown[];
+  repeatedDiscretionary: unknown[];
+  unusualRecurring: unknown[];
+  oneTimeReview?: unknown[];
 };
 
 type Props = {
   periodLabel: string | null;
-  transactionCount: number;
   pageCount: number;
-  currency: string;
-  healthScore?: { score: number; label: string };
+  activity: StatementActivitySummary | null;
   groups: OverviewGroups | null;
+  healthScore?: { score: number; label: string; factors: Array<{ id: string; label: string; impact: number }> };
   formatMoney: (amount: number, currency: string) => string;
 };
 
-function uniqueCards(groups: OverviewGroups): OverviewCard[] {
-  const seen = new Set<string>();
-  return [
-    ...groups.expectedRecurringBills,
-    ...groups.subscriptions,
-    ...groups.repeatedDiscretionary,
-    ...groups.unusualRecurring,
-    ...(groups.oneTimeReview ?? []),
-  ].filter((card) => {
-    if (seen.has(card.clusterId)) return false;
-    seen.add(card.clusterId);
-    return true;
-  });
-}
+const ATTENTION_TONE: Record<string, string> = {
+  fee: "border-amber-400/20 bg-amber-500/[0.06] text-amber-100",
+  subscription: "border-violet-400/20 bg-violet-500/[0.06] text-violet-100",
+  review: "border-sky-400/20 bg-sky-500/[0.06] text-sky-100",
+  bill: "border-emerald-400/20 bg-emerald-500/[0.06] text-emerald-100",
+};
 
 export function StatementOverview({
   periodLabel,
-  transactionCount,
   pageCount,
-  currency,
-  healthScore,
+  activity,
   groups,
+  healthScore,
   formatMoney,
 }: Props) {
-  if (!groups) return null;
+  const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
 
-  const cards = uniqueCards(groups);
-  const organizedTotal = cards.reduce((sum, card) => sum + card.periodTotal, 0);
-  const confirmedSubscriptions = groups.subscriptions.filter(
-    (card) => card.status === "confirmed"
-  );
-  const possibleSubscriptions = groups.subscriptions.filter(
-    (card) => card.status !== "confirmed"
-  );
-  const reviewCount =
-    possibleSubscriptions.length +
-    groups.unusualRecurring.length +
-    (groups.oneTimeReview?.length ?? 0);
+  if (!activity) return null;
 
-  const priorities = [
-    ...(groups.oneTimeReview ?? []).map((card) => ({
-      title: `Review ${card.merchant}`,
-      detail: `${formatMoney(card.periodTotal, card.currency)} was observed and separated for review.`,
-      tone: "border-red-400/20 bg-red-500/[0.06] text-red-100",
-    })),
-    ...possibleSubscriptions.map((card) => ({
-      title: `Do you still use ${card.merchant}?`,
-      detail: `${card.chargeCount} charge${card.chargeCount === 1 ? "" : "s"} detected; recurrence is not yet confirmed.`,
-      tone: "border-amber-400/20 bg-amber-500/[0.06] text-amber-100",
-    })),
-    ...groups.repeatedDiscretionary.map((card) => ({
-      title: `Notice the pattern at ${card.merchant}`,
-      detail: `${card.chargeCount} charges totaling ${formatMoney(card.periodTotal, card.currency)} in this statement.`,
-      tone: "border-sky-400/20 bg-sky-500/[0.06] text-sky-100",
-    })),
-  ].slice(0, 3);
-
-  const summary = priorities.length
-    ? `Brainy found ${priorities.length} item${priorities.length === 1 ? "" : "s"} worth your attention first. The goal is not to tell you what to stop buying, but to make recurring charges, fees, and flexible spending easier to see.`
-    : "Brainy did not find an urgent review item in this statement. You can still inspect expected bills and spending groups below.";
+  const { currency } = activity;
+  const confirmedSubs =
+    activity.subscriptionCards.filter((s) => s.status === "confirmed") ?? [];
+  const possibleSubs =
+    activity.subscriptionCards.filter((s) => s.status === "possible") ?? [];
 
   return (
-    <section className="space-y-7 rounded-3xl border border-emerald-400/15 bg-gradient-to-br from-emerald-500/[0.08] via-white/[0.025] to-violet-500/[0.05] p-5 sm:p-7">
+    <section className="space-y-8 rounded-3xl border border-emerald-400/15 bg-gradient-to-br from-emerald-500/[0.08] via-white/[0.025] to-violet-500/[0.05] p-5 sm:p-7">
+      {/* A. Your statement at a glance */}
       <div className="flex flex-wrap items-start justify-between gap-5">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-300/80">
             Your statement at a glance
           </p>
           <h2 className="mt-2 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
-            Here is what deserves your attention
+            Complete activity from this PDF
           </h2>
           <p className="mt-2 max-w-3xl text-sm leading-relaxed text-white/60">
-            {summary}
+            {pageCount} page{pageCount === 1 ? "" : "s"} analyzed ·{" "}
+            {activity.debitCount} debits and {activity.creditCount} credits parsed
+            · categories reconcile to total debits
+            {activity.reconciliation.ok ? "" : " (reconciliation mismatch — review parser output)"}.
           </p>
         </div>
         {healthScore ? (
@@ -115,75 +75,223 @@ export function StatementOverview({
         ) : null}
       </div>
 
-      <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <OverviewMetric label="Statement window" value={periodLabel ?? "Not confirmed"} />
+      <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        <OverviewMetric label="Money in" value={formatMoney(activity.moneyIn, currency)} />
+        <OverviewMetric label="Money out" value={formatMoney(activity.moneyOut, currency)} />
         <OverviewMetric
-          label="PDF analyzed"
-          value={`${pageCount} page${pageCount === 1 ? "" : "s"} · ${transactionCount} transactions`}
+          label="Net cash flow"
+          value={formatMoney(activity.netCashFlow, currency)}
+        />
+        <OverviewMetric label="Statement period" value={periodLabel ?? "Not confirmed"} />
+        <OverviewMetric
+          label="Transactions"
+          value={String(activity.transactionCount)}
         />
         <OverviewMetric
-          label="Organized activity"
-          value={formatMoney(organizedTotal, currency)}
-          note="Only activity shown in the groups below"
-        />
-        <OverviewMetric
-          label="Needs your review"
-          value={String(reviewCount)}
-          note="Possible subscriptions and flagged activity"
+          label="Health factors"
+          value={healthScore ? `${healthScore.factors.length} visible` : "—"}
+          note={
+            healthScore?.factors[0]
+              ? healthScore.factors[0].label.slice(0, 48)
+              : undefined
+          }
         />
       </dl>
 
+      {/* B. What deserves your attention */}
       <div>
         <h3 className="text-sm font-semibold uppercase tracking-widest text-white/55">
-          Start with these
+          What deserves your attention
         </h3>
-        {priorities.length ? (
+        {activity.attentionItems.length ? (
           <ul className="mt-3 grid gap-3 lg:grid-cols-3">
-            {priorities.map((priority) => (
+            {activity.attentionItems.map((item) => (
               <li
-                key={`${priority.title}-${priority.detail}`}
-                className={`rounded-2xl border p-4 ${priority.tone}`}
+                key={item.id}
+                className={`rounded-2xl border p-4 ${ATTENTION_TONE[item.tone] ?? ATTENTION_TONE.review}`}
               >
-                <p className="font-semibold">{priority.title}</p>
-                <p className="mt-1.5 text-xs leading-relaxed text-white/55">
-                  {priority.detail}
-                </p>
+                <p className="font-semibold">{item.title}</p>
+                <p className="mt-1.5 text-xs leading-relaxed text-white/55">{item.detail}</p>
               </li>
             ))}
           </ul>
         ) : (
           <p className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-4 text-sm text-white/55">
-            No urgent item crossed the current evidence threshold.
+            No urgent review item crossed the current evidence threshold.
           </p>
         )}
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <GroupLink
-          href="#expected-bills"
-          label="Expected bills"
-          count={groups.expectedRecurringBills.length}
-          description="Phone, utilities, insurance and necessities"
-        />
-        <GroupLink
-          href="#subscriptions-review"
-          label="Subscriptions"
-          count={groups.subscriptions.length}
-          description={`${confirmedSubscriptions.length} confirmed · ${possibleSubscriptions.length} possible`}
-        />
-        <GroupLink
-          href="#flexible-spending"
-          label="Flexible spending"
-          count={groups.repeatedDiscretionary.length}
-          description="Repeated dining, delivery or rideshare"
-        />
-        <GroupLink
-          href="#activity-review"
-          label="Review activity"
-          count={groups.unusualRecurring.length + (groups.oneTimeReview?.length ?? 0)}
-          description="Charges that deserve a closer look"
-        />
+      {/* C. Where your money went */}
+      <div>
+        <h3 className="text-sm font-semibold uppercase tracking-widest text-white/55">
+          Where your money went
+        </h3>
+        <div className="mt-3 grid gap-3 lg:grid-cols-2">
+          {activity.categories
+            .filter((c) => c.transactionCount > 0)
+            .map((cat) => (
+              <div
+                key={cat.id}
+                className="rounded-2xl border border-white/10 bg-black/20 p-4"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="font-semibold text-white">{cat.label}</p>
+                    <p className="mt-1 text-sm tabular-nums text-white/70">
+                      {formatMoney(cat.total, currency)} · {cat.transactionCount}{" "}
+                      txn{cat.transactionCount === 1 ? "" : "s"} · {cat.percentOfDebits}%
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpandedCategory((prev) =>
+                        prev === cat.id ? null : cat.id
+                      )
+                    }
+                    className="rounded-full border border-white/10 px-2.5 py-1 text-[11px] text-white/55 hover:border-white/25"
+                  >
+                    {expandedCategory === cat.id ? "Hide" : "Expand"}
+                  </button>
+                </div>
+                {cat.topMerchants.length ? (
+                  <p className="mt-2 text-xs text-white/45">
+                    Top:{" "}
+                    {cat.topMerchants
+                      .map((m) => `${m.name} (${formatMoney(m.total, currency)})`)
+                      .join(" · ")}
+                  </p>
+                ) : null}
+                {expandedCategory === cat.id ? (
+                  <ul className="mt-3 max-h-48 space-y-1 overflow-y-auto border-t border-white/10 pt-3 text-xs text-white/60">
+                    {cat.transactions.map((txn) => (
+                      <li key={txn.id} className="flex justify-between gap-2">
+                        <span className="truncate">{txn.normalizedName}</span>
+                        <span className="shrink-0 tabular-nums">
+                          {formatMoney(txn.amount, txn.currency)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ))}
+        </div>
       </div>
+
+      {/* D. Bills and services */}
+      <div id="expected-bills">
+        <h3 className="text-sm font-semibold uppercase tracking-widest text-white/55">
+          Bills and services
+        </h3>
+        {activity.billCards.length ? (
+          <ul className="mt-3 grid gap-3 sm:grid-cols-2">
+            {activity.billCards.map((bill) => (
+              <li
+                key={bill.id}
+                className="rounded-2xl border border-emerald-400/15 bg-emerald-500/[0.05] p-4"
+              >
+                <p className="font-semibold text-white">{bill.normalizedName}</p>
+                <p className="mt-1 text-sm tabular-nums text-white/70">
+                  {formatMoney(bill.observedAmount, bill.currency)} · {bill.chargeCount}{" "}
+                  charge{bill.chargeCount === 1 ? "" : "s"}
+                </p>
+                <p className="mt-1 text-xs text-white/45">
+                  {bill.dateRange
+                    ? `${bill.dateRange.start} → ${bill.dateRange.end}`
+                    : "Date range not confirmed"}
+                  {bill.cadenceLabel
+                    ? ` · ${bill.cadenceLabel}`
+                    : bill.chargeCount === 1
+                      ? " · Recurrence not confirmed"
+                      : ""}
+                </p>
+                {bill.insuranceSubtype ? (
+                  <p className="mt-1 text-xs text-emerald-200/70">{bill.insuranceSubtype}</p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-3 rounded-2xl border border-dashed border-white/15 px-4 py-5 text-sm text-white/50">
+            No phone, internet, utility, or insurance payments were separated for this upload.
+          </p>
+        )}
+      </div>
+
+      {/* E. Subscriptions */}
+      <div id="subscriptions-review">
+        <h3 className="text-sm font-semibold uppercase tracking-widest text-white/55">
+          Subscriptions
+        </h3>
+        <div className="mt-3 grid gap-4 lg:grid-cols-2">
+          <SubscriptionBucket
+            title="Confirmed subscriptions"
+            empty="None with enough recurrence evidence."
+            items={confirmedSubs}
+            formatMoney={formatMoney}
+          />
+          <SubscriptionBucket
+            title="Possible subscriptions"
+            empty="No possible subscriptions — ordinary purchases stay out of this list."
+            items={possibleSubs}
+            formatMoney={formatMoney}
+            highlightForgotten
+          />
+        </div>
+      </div>
+
+      {/* F. Activity needing classification */}
+      <div id="activity-review">
+        <h3 className="text-sm font-semibold uppercase tracking-widest text-white/55">
+          Activity needing classification
+        </h3>
+        {activity.uncategorized.length ? (
+          <ul className="mt-3 space-y-2">
+            {activity.uncategorized.map((row) => (
+              <li
+                key={row.id}
+                className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm"
+              >
+                <span className="truncate text-white/80">{row.normalizedName}</span>
+                <span className="shrink-0 tabular-nums text-white/60">
+                  {formatMoney(row.amount, row.currency)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-4 text-sm text-white/55">
+            All parsed debits mapped to a category above.
+          </p>
+        )}
+      </div>
+
+      {groups ? (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <GroupLink
+            href="#expected-bills"
+            label="Expected bills"
+            count={groups.expectedRecurringBills.length}
+          />
+          <GroupLink
+            href="#subscriptions-review"
+            label="Subscriptions"
+            count={groups.subscriptions.length}
+          />
+          <GroupLink
+            href="#flexible-spending"
+            label="Flexible spending"
+            count={groups.repeatedDiscretionary.length}
+          />
+          <GroupLink
+            href="#activity-review"
+            label="Other / review"
+            count={activity.uncategorized.length + (groups.oneTimeReview?.length ?? 0)}
+          />
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -210,12 +318,10 @@ function GroupLink({
   href,
   label,
   count,
-  description,
 }: {
   href: string;
   label: string;
   count: number;
-  description: string;
 }) {
   return (
     <a
@@ -228,7 +334,52 @@ function GroupLink({
           {count}
         </span>
       </div>
-      <p className="mt-1.5 text-xs leading-relaxed text-white/45">{description}</p>
     </a>
+  );
+}
+
+function SubscriptionBucket({
+  title,
+  empty,
+  items,
+  formatMoney,
+  highlightForgotten,
+}: {
+  title: string;
+  empty: string;
+  items: StatementActivitySummary["subscriptionCards"];
+  formatMoney: (amount: number, currency: string) => string;
+  highlightForgotten?: boolean;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+      <p className="text-sm font-semibold text-white">{title}</p>
+      {items.length ? (
+        <ul className="mt-3 space-y-2">
+          {items.map((sub) => (
+            <li
+              key={sub.id}
+              className={[
+                "rounded-xl border px-3 py-2.5 text-sm",
+                highlightForgotten && sub.status === "possible"
+                  ? "border-amber-400/25 bg-amber-500/[0.06]"
+                  : "border-white/10 bg-white/[0.03]",
+              ].join(" ")}
+            >
+              <p className="font-medium text-white">{sub.normalizedName}</p>
+              <p className="mt-0.5 text-xs text-white/50">
+                {sub.chargeCount} charge{sub.chargeCount === 1 ? "" : "s"} ·{" "}
+                {formatMoney(sub.periodTotal, sub.currency)} total
+                {sub.cadenceLabel
+                  ? ` · ${sub.cadenceLabel}`
+                  : " · Recurrence not confirmed"}
+              </p>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-3 text-xs text-white/45">{empty}</p>
+      )}
+    </div>
   );
 }

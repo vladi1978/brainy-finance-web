@@ -510,6 +510,7 @@ export async function analyzeStatementPdf(
     recurringExpenses,
     spendingInsights,
     transfers,
+    transactions,
     merchantNormByClusterId,
   });
 

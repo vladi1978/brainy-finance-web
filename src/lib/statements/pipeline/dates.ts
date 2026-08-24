@@ -67,9 +67,24 @@ export function normalizeDate(
     if (y < 100) y += 2000;
     const mo = String(Number(mdy[1])).padStart(2, "0");
     const d = String(Number(mdy[2])).padStart(2, "0");
+    if (Number(mo) < 1 || Number(mo) > 12 || Number(d) < 1 || Number(d) > 31) {
+      return null;
+    }
     const yyyy = String(y);
     if (Number(mo) > 12) return `${yyyy}-${d}-${mo}`;
     return `${yyyy}-${mo}-${d}`;
+  }
+
+  const mdyyCompact = t.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2})$/);
+  if (mdyyCompact) {
+    const mo = String(Number(mdyyCompact[1])).padStart(2, "0");
+    const d = String(Number(mdyyCompact[2])).padStart(2, "0");
+    let y = Number(mdyyCompact[3]);
+    if (y < 100) y += 2000;
+    if (Number(mo) < 1 || Number(mo) > 12 || Number(d) < 1 || Number(d) > 31) {
+      return null;
+    }
+    return `${y}-${mo}-${d}`;
   }
 
   const mdOnly = t.match(/^(\d{1,2})[/.-](\d{1,2})$/);

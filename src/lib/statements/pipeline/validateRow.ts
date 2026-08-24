@@ -2,12 +2,16 @@ import { DROP_LINE_METADATA, NOISE_DESCRIPTION, PHONE_PRIMARY } from "./noise";
 import type { ParsedRow } from "./extractRow";
 import type { Transaction } from "../types";
 import { matchDateSubstring, stripLeadingNoise } from "./dates";
+import { isValidTransactionDate } from "../intelligence/period";
 
 export const LARGE_TXN_AMOUNT = 25_000;
 export const HIGH_PARSE_CONFIDENCE = 0.82;
 
 const IGNORE_KEYWORDS =
-  /\b(?:balance|\b(?:account|acct)\b|customers?\s+service|important\s+information|privacy\s+(?:notice|policy)|\bbanking\b|\bsummary\b|\b(?:bank\s+)?statement\b|deposit\s+accounts|online\s+banking)\b/ui;
+  /\b(?:balance|\b(?:account|acct)\b|customers?\s+service|important\s+information|privacy\s+(?:notice|policy)|\bbanking\b|\bsummary\b|\b(?:bank\s+)?statement\b|deposit\s+accounts|online\s+banking|total\s+overdraft\s+fees|total\s+service\s+fees|total\s+nsf|calculated\s+on\s+a\s+purchase|preferred\s+rewards|customer\s+bonus)\b/ui;
+
+const BANK_DESCRIPTOR =
+  /\b(CHECKCARD|DEBIT\s+CARD|POS\b|PURCHASE|MOBILE\s+PURCHASE|DES:|INDN:|CO ID:|PMNT|WEB\b|CHECK\s+CARD)\b/ui;
 
 function descriptionLooksMerchantLike(description: string): boolean {
   const d = description.trim().replace(/\s+/gu, " ");
@@ -21,6 +25,7 @@ function descriptionLooksMerchantLike(description: string): boolean {
 }
 
 function isDominantUppercaseLegalText(text: string): boolean {
+  if (BANK_DESCRIPTOR.test(text)) return false;
   const letters = text.replace(/[^a-zA-Z]/gu, "");
   if (letters.length < 26) return false;
   const up = letters.replace(/[^A-Z]/gu, "").length;
@@ -28,10 +33,11 @@ function isDominantUppercaseLegalText(text: string): boolean {
 }
 
 function containsAccountNumberSignals(text: string): boolean {
-  return (
-    /\b(?:acct|account)\s+(?:number|no\.|#)/ui.test(text) ||
-    /\*{3,}\d{3,}/u.test(text)
-  );
+  if (/\b(?:acct|account)\s+(?:number|no\.|#)/ui.test(text)) return true;
+  if (/\*{3,}\d{3,}/u.test(text)) return true;
+  // Long card-auth reference numbers are not account numbers.
+  if (/\b\d{17,}\b/u.test(text) && !BANK_DESCRIPTOR.test(text)) return true;
+  return false;
 }
 
 function parseRowConfidence(
@@ -67,6 +73,7 @@ export function passesPostParseValidation(
   sourcePenalty = 0
 ): boolean {
   if (!descriptionLooksMerchantLike(row.description)) return false;
+  if (!isValidTransactionDate(row.date)) return false;
   if (containsAccountNumberSignals(row.description)) return false;
   if (isDominantUppercaseLegalText(row.description)) return false;
 
