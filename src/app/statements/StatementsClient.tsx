@@ -1649,7 +1649,7 @@ function ActivityPresentationCardView(props: {
           />
         ) : (
           <ActionChip
-            label="Keep"
+            label={action === "keep" ? "Keeping" : "Keep"}
             pressed={action === "keep"}
             onClick={() => onAction("keep")}
           />
@@ -1691,6 +1691,15 @@ function ActivityPresentationCardView(props: {
           Marked as not recognized for this session. Brainy keeps the original
           statement activity visible and does not record savings or change your
           Health Score.
+        </p>
+      ) : null}
+      {action === "keep" ? (
+        <p
+          role="status"
+          className="mt-3 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100"
+        >
+          Marked as recognized and kept for this session. This does not confirm
+          recurrence, record savings, or change your Health Score.
         </p>
       ) : null}
       <p className="mt-2 text-[11px] text-white/35">
