@@ -1,5 +1,6 @@
 import { clusterMerchantPresentation } from "./merchantNormalization";
 import type { MerchantNormalizationResult } from "./merchantNormalization";
+import { isDebtFinancingText } from "./expectedBills";
 import {
   inferSpendingInsightCategory,
   spendingCategoryDisplay,
@@ -291,12 +292,15 @@ export function buildSpendingInsightsFromClusters(args: {
     });
 
     const blob = clusterBlobUpper(cluster);
-    if (
+    if (isDebtFinancingText(`${blob} ${presentation.normalizedName}`)) {
+      kind = "possible_recurring_expense";
+      recommendation = "Review this expense";
+    } else if (
       /\b(MORTGAGE|HOME\s+LOAN|MORT\s+PMT|MORTG\s+PMT)\b/ui.test(blob) &&
       debits.length >= 2
     ) {
       kind = "possible_recurring_expense";
-      recommendation = "Possible savings opportunity";
+      recommendation = "Review this expense";
     }
 
     const last = debits[debits.length - 1];

@@ -9,7 +9,10 @@ const EXPECTED_BILL_SUB_CATEGORIES = new Set(["utilities", "insurance"]);
 export function isUtilityLikeMerchantText(text: string): boolean {
   const blob = text.toUpperCase();
   if (isInsuranceRelatedText(blob)) return true;
-  return /\b(UTILITY|UTILITIES|ELECTRIC|POWER|WATER|GAS\s+CO|INTERNET|PHONE|MOBILE|WIRELESS|VERIZON|AT&T|ATT\b|T-MOBILE|COMCAST|SPECTRUM|REPUBLIC\s*SERVICES|REPUBLICSERVICES|RSIBILLPAY|WASTE\s+MGMT|WASTE\s+MANAGEMENT|RECYCLING)\b/u.test(
+  // Never treat bare MOBILE/PHONE as utility evidence — BoA POS lines often
+  // include "Mobile" (e.g. Marathon Mobile) which is not a telecom bill.
+  // T-Mobile / mobile phone / wireless / cellular remain valid phone evidence.
+  return /\b(UTILITY|UTILITIES|ELECTRIC|POWER|WATER|GAS\s+CO|INTERNET|WIRELESS|CELLULAR|CELL\s*PHONE|PHONE\s+BILL|MOBILE\s+PHONE|MOBILE\s+(?:BILL|PAYMENT|SERVICE)|VERIZON|AT&T|ATT\b|T[-\s]*MOBILE|COMCAST|SPECTRUM|REPUBLIC\s*SERVICES|REPUBLICSERVICES|RSIBILLPAY|WASTE\s+MGMT|WASTE\s+MANAGEMENT|RECYCLING)\b/u.test(
     blob
   );
 }

@@ -199,5 +199,7 @@ export function buildHealthScore(
     provisional: false,
     displayMode: "numeric",
     analysisConfidence: "high",
+    statusNote:
+      "Statement Health measures detected fees, recurring patterns, and statement activity—not overall financial wellbeing.",
   };
 }

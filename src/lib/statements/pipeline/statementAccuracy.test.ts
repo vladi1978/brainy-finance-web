@@ -6,6 +6,10 @@ import { describe, it } from "node:test";
 
 import { buildMerchantClusters } from "../clusters";
 import {
+  billServiceLabel,
+  classifyBillServiceKind,
+} from "../billServiceClassify";
+import {
   isDebtFinancingText,
   isHousingPaymentText,
 } from "../expectedBills";
@@ -523,20 +527,204 @@ describe("reconciliation sprint parser protections", () => {
     assert.equal(row.amount, 126.24);
   });
 
-  it("classifies Republic Services bill card as utility", () => {
+  it("classifies Republic Services bill card as utility/waste", () => {
     const txns = [
       txn("2026-06-08", "REPUBLICSERVICES DES:RSIBILLPAY ID:123 DES:PAYMENT", 105.04),
     ];
     const summary = activityFor(txns);
     const bill = summary.billCards.find((b) =>
-      /REPUBLIC|RSI/i.test(b.normalizedName + b.merchant)
+      /REPUBLIC|RSI/i.test(b.normalizedName + b.merchant + b.serviceLabel)
     );
     assert.ok(bill);
     assert.equal(bill!.billKind, "utility");
+    assert.equal(bill!.serviceKind, "waste");
     assert.equal(
       summary.categories.find((c) => c.id === "bills")?.transactionCount,
       1
     );
+  });
+
+  it("classifies T-Mobile and mobile phone payments as bills/phone", () => {
+    const txns = [
+      txn("2026-06-10", "T-MOBILE DES:PAYMENT ID:123 INDN:CUSTOMER WEB", 85),
+      txn("2026-06-11", "MOBILE PHONE PAYMENT DES:PAYMENT ID:999 WEB", 62.5),
+    ];
+    const summary = activityFor(txns);
+    assert.equal(
+      summary.categories.find((c) => c.id === "bills")?.transactionCount,
+      2
+    );
+    assert.equal(
+      summary.categories.find((c) => c.id === "fuel")?.transactionCount ?? 0,
+      0
+    );
+    const phoneCards = summary.billCards.filter((b) => b.serviceKind === "phone");
+    assert.equal(phoneCards.length, 2);
+    assert.equal(classifyBillServiceKind("T-MOBILE DES:PAYMENT"), "phone");
+    assert.equal(classifyBillServiceKind("MOBILE PHONE PAYMENT"), "phone");
+  });
+
+  it("keeps MOBILE MARATHON / MARATHON MOBILE / THORNTONS as fuel, never bills", () => {
+    const txns = [
+      txn(
+        "2026-06-20",
+        "PURCHASE 0619 MOBILE MARATHON #000101644 PROSPECT KY",
+        15.93
+      ),
+      txn(
+        "2026-06-20",
+        "PURCHASE 0619 MARATHON #000101644 MOBILE MARATHON PROSPECT KY",
+        12.4
+      ),
+      txn(
+        "2026-06-21",
+        "PURCHASE 0620 THORNTONS #016 #000203640 MOBILE THORNTONS #0169 LOUISVILLE KY",
+        14.61
+      ),
+    ];
+    const summary = activityFor(txns);
+    assert.equal(
+      summary.categories.find((c) => c.id === "fuel")?.transactionCount,
+      3
+    );
+    assert.equal(
+      summary.categories.find((c) => c.id === "bills")?.transactionCount ?? 0,
+      0
+    );
+    assert.equal(summary.billCards.length, 0);
+    // Exclusivity: each debit in exactly one category
+    const debitCats = summary.categories.flatMap((c) =>
+      c.transactions.map((t) => t.categoryId)
+    );
+    assert.equal(debitCats.length, 3);
+    assert.ok(debitCats.every((id) => id === "fuel"));
+  });
+
+  it("does not treat bare MOBILE without phone context as a bill", () => {
+    const txns = [
+      txn(
+        "2026-06-22",
+        "PURCHASE 0621 ACME MARKET 123 MOBILE PURCHASE LOUISVILLE KY",
+        9.99
+      ),
+    ];
+    const summary = activityFor(txns);
+    assert.equal(
+      summary.categories.find((c) => c.id === "bills")?.transactionCount ?? 0,
+      0
+    );
+    assert.equal(
+      summary.billCards.filter((b) => /Phone|mobile/i.test(b.serviceLabel))
+        .length,
+      0
+    );
+    assert.equal(classifyBillServiceKind("ACME MARKET MOBILE PURCHASE"), "unknown");
+  });
+
+  it("keeps two AT&T services distinct with provider total", () => {
+    const txns = [
+      txn(
+        "2026-06-12",
+        "ATT DES:PAYMENT ID:XXXXXXXXXEPAYP INDN:CUSTOMER CO ID:123 PPD",
+        338.19
+      ),
+      txn("2026-06-12", "PURCHASE 0611 ATT*BILL PAYMENT 8002882020 TX", 70.22),
+    ];
+    const summary = activityFor(txns);
+    assert.equal(
+      summary.categories.find((c) => c.id === "bills")?.transactionCount,
+      2
+    );
+    assert.equal(
+      summary.categories.find((c) => c.id === "shopping")?.transactionCount ?? 0,
+      0
+    );
+    const services = summary.billCards.filter((b) => b.providerKey === "att");
+    assert.equal(services.length, 2);
+    const phone = services.find((s) => s.serviceKind === "phone");
+    const internet = services.find((s) => s.serviceKind === "internet");
+    assert.ok(phone);
+    assert.ok(internet);
+    assert.equal(phone!.observedAmount, 338.19);
+    assert.equal(internet!.observedAmount, 70.22);
+    assert.match(phone!.serviceLabel, /Phone/i);
+    assert.match(internet!.serviceLabel, /Internet/i);
+    const group = summary.billProviderGroups.find((g) => g.providerKey === "att");
+    assert.ok(group);
+    assert.equal(group!.totalObserved, 408.41);
+    assert.equal(group!.serviceCount, 2);
+    assert.equal(summary.crossSurface.ok, true);
+    assert.equal(summary.crossSurface.billServicesSumEqualsProvidersOk, true);
+  });
+
+  it("labels unknown AT&T subtype as type not confirmed", () => {
+    const kind = classifyBillServiceKind("AT&T PAYMENT CENTER");
+    assert.equal(kind, "unknown");
+    assert.match(billServiceLabel("AT&T", kind), /not confirmed/i);
+  });
+
+  it("classifies SerpAPI as software, not shopping", () => {
+    const txns = [txn("2026-06-11", "PURCHASE 0610 SERPAPI, LLC 5126668245 TX", 75)];
+    const summary = activityFor(txns);
+    assert.equal(
+      summary.categories.find((c) => c.id === "software_services")?.total,
+      75
+    );
+    assert.equal(
+      summary.categories.find((c) => c.id === "shopping")?.transactionCount ?? 0,
+      0
+    );
+  });
+
+  it("single OpenAI charge is possible subscription without monthly claim", () => {
+    const txns = [
+      txn("2026-06-22", "PURCHASE 0619 OPENAI *CHATGPT SUBSCR 4155550100 CA", 21.2),
+    ];
+    const summary = activityFor(txns);
+    assert.equal(
+      summary.categories.find((c) => c.id === "software_services")?.transactionCount,
+      1
+    );
+    const possible = summary.subscriptionCards.filter((s) =>
+      /OPENAI|CHATGPT/i.test(s.normalizedName + s.merchant)
+    );
+    assert.equal(possible.length, 1);
+    assert.equal(possible[0]!.status, "possible");
+    assert.equal(possible[0]!.cadenceLabel, null);
+    assert.equal(possible[0]!.chargeCount, 1);
+  });
+
+  it("moves Goodwill, Leslie pool, Score Liquor, and law office correctly", () => {
+    const txns = [
+      txn("2026-07-05", "CHECKCARD GOODWILL KY OKOLO LOUISVILLE KY", 9.51),
+      txn("2026-07-07", "CHECKCARD LESLIES POOLMART LOUISVILLE KY", 31.79),
+      txn("2026-06-30", "CHECKCARD SCORE LIQUOR LOUISVILLE KY", 4.76),
+      txn("2026-07-03", "CHECKCARD O`BRYAN LAW OFFIC 5025895959 KY", 100),
+    ];
+    const summary = activityFor(txns);
+    assert.equal(
+      summary.categories.find((c) => c.id === "shopping")?.transactionCount,
+      3
+    );
+    assert.equal(
+      summary.categories.find((c) => c.id === "professional_services")?.total,
+      100
+    );
+  });
+
+  it("cross-surface check passes and category totals equal debits", () => {
+    const txns = [
+      txn("2026-06-01", "ATT DES:PAYMENT EPAYP", 338.19),
+      txn("2026-06-02", "PURCHASE ATT*BILL PAYMENT TX", 70.22),
+      txn("2026-06-03", "SERPAPI, LLC", 75),
+      txn("2026-06-04", "SYNCHRONY BANK PAYMENT", 63),
+      txn("2026-06-05", "PMNT RCVD", 50, "credit"),
+    ];
+    const summary = activityFor(txns);
+    assert.equal(summary.reconciliation.ok, true);
+    assert.equal(summary.crossSurface.ok, true);
+    assert.equal(summary.crossSurface.creditsOnlyInMoneyInOk, true);
+    assert.equal(summary.crossSurface.categorySumEqualsDebitsOk, true);
   });
 
   it("excludes debt financing from presentation subscriptions and unusual groups", () => {

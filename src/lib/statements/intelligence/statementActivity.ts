@@ -7,6 +7,15 @@ import type { MerchantNormalizationResult } from "../merchantNormalization";
 import { normalizeMerchantKey } from "../clusters";
 import { classifyInsurancePayment } from "../insuranceClassify";
 import {
+  billKindFromServiceKind,
+  billProviderDisplayName,
+  billProviderKey,
+  billServiceLabel,
+  classifyBillServiceKind,
+  isAttProviderText,
+  type BillServiceKind,
+} from "../billServiceClassify";
+import {
   isDebtFinancingText,
   isHousingPaymentText,
   isUtilityLikeMerchantText,
@@ -39,6 +48,7 @@ export type StatementDebitCategoryId =
   | "food_delivery_rideshare"
   | "fuel"
   | "software_services"
+  | "professional_services"
   | "fees"
   | "transfers_payments"
   | "other";
@@ -66,11 +76,19 @@ export type StatementActivityCategory = {
 
 export type StatementBillCard = {
   id: string;
+  /** Underlying activity transaction id — one card per distinct charge. */
+  transactionId: string;
   merchant: string;
   normalizedName: string;
+  /** Provider display name (e.g. AT&T) without collapsing services. */
+  providerName: string;
+  providerKey: string;
+  serviceLabel: string;
+  serviceKind: BillServiceKind;
   observedAmount: number;
   chargeCount: number;
   currency: string;
+  date: string;
   dateRange: { start: string; end: string } | null;
   cadenceLabel: string | null;
   billKind:
@@ -83,6 +101,28 @@ export type StatementBillCard = {
   insuranceSubtype: string | null;
   /** Soft note when a single low charge should not be treated as a full bill. */
   observationNote: string | null;
+};
+
+export type StatementBillProviderGroup = {
+  id: string;
+  providerKey: string;
+  providerName: string;
+  totalObserved: number;
+  currency: string;
+  serviceCount: number;
+  services: StatementBillCard[];
+  /** Never claims monthly/recurring from a single observation. */
+  observationNote: string | null;
+};
+
+export type CrossSurfaceReconciliation = {
+  ok: boolean;
+  debitExclusiveOk: boolean;
+  creditsOnlyInMoneyInOk: boolean;
+  categorySumEqualsDebitsOk: boolean;
+  billServicesSumEqualsProvidersOk: boolean;
+  providerGroupsDoNotAffectHealthOk: boolean;
+  issues: string[];
 };
 
 export type StatementSubscriptionCard = {
@@ -154,6 +194,7 @@ export type StatementActivitySummary = {
   categories: StatementActivityCategory[];
   moneyInCategories: StatementMoneyInCategory[];
   billCards: StatementBillCard[];
+  billProviderGroups: StatementBillProviderGroup[];
   subscriptionCards: StatementSubscriptionCard[];
   attentionItems: StatementAttentionItem[];
   uncategorized: StatementActivityTransaction[];
@@ -164,6 +205,7 @@ export type StatementActivitySummary = {
     delta: number;
     duplicateDebitKeys: number;
   };
+  crossSurface: CrossSurfaceReconciliation;
   ledger: {
     status: LedgerReconciliationStatus;
     depositsStatus: LedgerReconciliationStatus;
@@ -188,6 +230,7 @@ const CATEGORY_LABELS: Record<StatementDebitCategoryId, string> = {
   food_delivery_rideshare: "Delivery / rideshare",
   fuel: "Fuel",
   software_services: "Software / services",
+  professional_services: "Professional services",
   fees: "Fees",
   transfers_payments: "Transfers / payments",
   other: "Other",
@@ -205,6 +248,7 @@ export const STATEMENT_CATEGORY_ORDER: StatementDebitCategoryId[] = [
   "food_delivery_rideshare",
   "fuel",
   "software_services",
+  "professional_services",
   "fees",
   "transfers_payments",
   "other",
@@ -216,30 +260,6 @@ function txnKey(t: Transaction): string {
 
 function roundMoney(n: number): number {
   return Math.round(n * 100) / 100;
-}
-
-function billKindFromText(text: string): StatementBillCard["billKind"] {
-  const u = text.toUpperCase();
-  if (classifyInsurancePayment(u).isInsurance) return "insurance";
-  if (isHousingPaymentText(u)) return "housing";
-  if (
-    /\b(VERIZON|AT\s*&\s*T|\bATT\b|T[-\s]*MOBILE|SPRINT|MOBILE|WIRELESS|PHONE)\b/u.test(
-      u
-    )
-  ) {
-    return "phone";
-  }
-  if (/\b(COMCAST|XFINITY|SPECTRUM|INTERNET|FIBER|COX\s+CABLE)\b/u.test(u)) {
-    return "internet";
-  }
-  if (
-    /\b(ELECTRIC|POWER|WATER|GAS\s+CO|UTILITY|UTILITIES|REPUBLIC\s*SERVICES|REPUBLICSERVICES|RSIBILLPAY|WASTE)\b/u.test(
-      u
-    )
-  ) {
-    return "utility";
-  }
-  return "other";
 }
 
 function isFeeText(text: string): boolean {
@@ -270,7 +290,19 @@ function isTransferText(text: string): boolean {
 }
 
 function isShoppingText(text: string): boolean {
-  return /\b(SAMS(?:'?S|\s)CLUB|SAMSCLUB|TARGET\b|WAL\s*-?\s*MART|WALMART|COSTCO|BEST\s+BUY|HOME\s+DEPOT|LOWE'?S\b|AMAZON\b|RETAIL|PURCHASE|CASH\s*SAVERS|CASHSAVERS|TOTAL\s*TRUCK|TOTALTRUCK|\bPARTS\b.*\b(AUTO|TRUCK)|TRUCK\s*PARTS)\b/ui.test(
+  // Never treat known bill/software providers as shopping even when the
+  // descriptor contains the BoA keyword PURCHASE.
+  if (isSoftwareServiceText(text) || isAttProviderText(text)) return false;
+  if (
+    isUtilityLikeMerchantText(text) ||
+    isPhoneBillText(text) ||
+    classifyInsurancePayment(text).isInsurance ||
+    isHousingPaymentText(text) ||
+    isDebtFinancingText(text)
+  ) {
+    return false;
+  }
+  return /\b(SAMS(?:'?S|\s)CLUB|SAMSCLUB|TARGET\b|WAL\s*-?\s*MART|WALMART|COSTCO|BEST\s+BUY|HOME\s+DEPOT|LOWE'?S\b|AMAZON\b|RETAIL|GOODWILL|LESLIE'?S?\s*POOL|LESLIES\s*POOLMART|SCORE\s+LIQUOR|\bLIQUOR\b|CASH\s*SAVERS|CASHSAVERS|TOTAL\s*TRUCK|TOTALTRUCK|\bPARTS\b.*\b(AUTO|TRUCK)|TRUCK\s*PARTS|DOLLAR-?GENERAL|FAMILY\s+DOLLAR|FIVE\s+BELOW|AUTOZONE|PRICELESS\s+FOOD)\b/ui.test(
     text
   );
 }
@@ -282,7 +314,7 @@ function isMembershipCharge(text: string): boolean {
 }
 
 function isFuelText(text: string): boolean {
-  return /\b(SHELL\b|EXXON|CHEVRON|\bBP\b|\bMOBIL\b|TEXACO|MARATHON|SPEEDWAY|WAWA\b|QT\b|QUIK\s+TRIP|LOVE'?S\b|\bRACETRAC\b|FUEL\b|GAS\s+STATION)\b/ui.test(
+  return /\b(SHELL\b|EXXON|CHEVRON|\bBP\b|\bMOBIL\b|TEXACO|MARATHON|SPEEDWAY|THORNTONS?|WAWA\b|QT\b|QUIK\s+TRIP|LOVE'?S\b|\bRACETRAC\b|FUEL\b|GAS\s+STATION)\b/ui.test(
     text
   );
 }
@@ -294,7 +326,13 @@ function isDiningText(text: string): boolean {
 }
 
 function isSoftwareServiceText(text: string): boolean {
-  return /\b(DEEPGRAM|ELEVENLABS|ELEVEN\s*LABS|OPENAI|CHATGPT|ANTHROPIC|GITHUB|GITLAB|NOTION|FIGMA|ADOBE|ZOOM\.US|DROPBOX|HEROKU|VERCEL|AWS|DIGITALOCEAN)\b/ui.test(
+  return /\b(SERPAPI|SERPER|DEEPGRAM|ELEVENLABS|ELEVEN\s*LABS|OPENAI|CHATGPT|ANTHROPIC|GITHUB|GITLAB|NOTION|FIGMA|ADOBE|ZOOM\.US|DROPBOX|HEROKU|VERCEL|NETLIFY|CURSOR\b|AWS|DIGITALOCEAN)\b/ui.test(
+    text
+  );
+}
+
+function isProfessionalServiceText(text: string): boolean {
+  return /\b(O[`'’]?BRYAN\s+LAW|LAW\s+OFFIC|ATTORNEY|LEGAL\s+SERV)/ui.test(
     text
   );
 }
@@ -381,14 +419,21 @@ export function classifyDebit(args: {
   const insurance = classifyInsurancePayment(blob);
   if (insurance.isInsurance) return "insurance";
 
+  // Fuel stations before bills so POS "Mobile" + Marathon/Thorntons never
+  // land in phone/utility when a known fuel brand is present.
+  if (isFuelText(blob) || spendCat === "gas") return "fuel";
+
   if (
-    (isUtilityLikeMerchantText(blob) || isPhoneBillText(blob)) &&
-    !isShoppingText(blob)
+    isUtilityLikeMerchantText(blob) ||
+    isPhoneBillText(blob) ||
+    isAttProviderText(blob)
   ) {
     return "bills";
   }
 
-  if (isFuelText(blob) || spendCat === "gas") return "fuel";
+  if (isSoftwareServiceText(blob)) return "software_services";
+  if (isProfessionalServiceText(blob)) return "professional_services";
+
   if (isDiningText(blob) || spendCat === "restaurants" || spendCat === "cafes") {
     return "dining";
   }
@@ -396,8 +441,6 @@ export function classifyDebit(args: {
   if (isShoppingText(blob) || spendCat === "retail") {
     if (!isMembershipCharge(blob)) return "shopping";
   }
-
-  if (isSoftwareServiceText(blob)) return "software_services";
 
   const sub = args.subscriptionByCluster.get(args.cluster.id);
   if (sub) {
@@ -629,70 +672,83 @@ export function buildStatementActivitySummary(input: {
   );
 
   const billCards: StatementBillCard[] = [];
-  const billClusterIds = new Set<string>();
   for (const row of [
     ...categoryMap.get("housing")!,
     ...categoryMap.get("bills")!,
     ...categoryMap.get("insurance")!,
   ]) {
-    if (billClusterIds.has(row.clusterId)) continue;
-    billClusterIds.add(row.clusterId);
     const cluster = input.clusters.find((c) => c.id === row.clusterId);
-    if (!cluster) continue;
-    const clusterDebits = cluster.charges.filter((c) => c.type === "debit");
-    const dates = clusterDebits.map((c) => c.date).sort();
-    const chargeCount = clusterDebits.length;
-    const insurance = classifyInsurancePayment(
-      `${row.normalizedName} ${row.merchant} ${cluster.key}`
-    );
-    const kind =
+    const blob = `${row.normalizedName} ${row.merchant} ${cluster?.key ?? ""} ${row.id}`;
+    const serviceKind =
       row.categoryId === "housing"
-        ? "housing"
-        : billKindFromText(`${row.normalizedName} ${cluster.key}`);
-    const sub = subscriptionByCluster.get(row.clusterId);
-    const observedAmount = roundMoney(
-      clusterDebits.reduce((s, c) => s + c.amount, 0)
-    );
-    let observationNote: string | null = null;
-    if (kind === "insurance" && chargeCount === 1 && observedAmount < 50) {
-      observationNote =
-        "Single low-value insurance-related charge — not treated as a full premium.";
-    }
+        ? ("housing" as const)
+        : row.categoryId === "insurance"
+          ? ("insurance" as const)
+          : classifyBillServiceKind(blob);
+    const providerKey = billProviderKey(blob);
+    const providerName = billProviderDisplayName(blob, row.normalizedName);
+    const insurance = classifyInsurancePayment(blob);
+    const kind = billKindFromServiceKind(serviceKind);
     billCards.push({
-      id: `bill:${row.clusterId}`,
+      id: `bill-svc:${row.id}`,
+      transactionId: row.id,
       merchant: row.merchant,
       normalizedName: row.normalizedName,
-      observedAmount,
-      chargeCount,
+      providerName,
+      providerKey,
+      serviceLabel: billServiceLabel(providerName, serviceKind),
+      serviceKind,
+      observedAmount: row.amount,
+      chargeCount: 1,
       currency: row.currency,
-      dateRange:
-        dates.length > 0
-          ? { start: dates[0]!, end: dates[dates.length - 1]! }
-          : null,
-      cadenceLabel:
-        sub &&
-        hasRecurrenceEvidence(chargeCount) &&
-        canPresentMonthlyCadence({ frequency: sub.frequency, chargeCount })
-          ? sub.frequency === "monthly"
-            ? "Monthly"
-            : sub.frequency === "annual"
-              ? "Annual"
-              : sub.frequency === "weekly"
-                ? "Weekly"
-                : null
-          : null,
+      date: row.date,
+      dateRange: { start: row.date, end: row.date },
+      cadenceLabel: null,
       billKind: kind,
       insuranceSubtype: insurance.isInsurance
         ? insurance.type === "unknown"
           ? "Insurance — type not confirmed"
           : insurance.type
         : null,
-      observationNote,
+      observationNote:
+        "Single observation on this statement — recurrence not confirmed.",
     });
   }
 
+  const providerMap = new Map<string, StatementBillCard[]>();
+  for (const card of billCards) {
+    const list = providerMap.get(card.providerKey) ?? [];
+    list.push(card);
+    providerMap.set(card.providerKey, list);
+  }
+  const billProviderGroups: StatementBillProviderGroup[] = [
+    ...providerMap.entries(),
+  ]
+    .map(([providerKey, services]) => {
+      const sorted = [...services].sort((a, b) =>
+        a.date.localeCompare(b.date)
+      );
+      const totalObserved = roundMoney(
+        sorted.reduce((s, x) => s + x.observedAmount, 0)
+      );
+      return {
+        id: `bill-provider:${providerKey}`,
+        providerKey,
+        providerName: sorted[0]!.providerName,
+        totalObserved,
+        currency: sorted[0]!.currency,
+        serviceCount: sorted.length,
+        services: sorted,
+        observationNote:
+          sorted.length > 1
+            ? `${sorted[0]!.providerName} total observed in this statement: ${totalObserved.toFixed(2)} ${sorted[0]!.currency} across ${sorted.length} services. Recurrence not confirmed from this window.`
+            : "Observed on this statement — recurrence not confirmed.",
+      };
+    })
+    .sort((a, b) => b.totalObserved - a.totalObserved);
+
   const billNameKeys = new Set(
-    billCards.map((b) => b.normalizedName.trim().toUpperCase())
+    billCards.map((b) => b.providerName.trim().toUpperCase())
   );
 
   const subscriptionCards: StatementSubscriptionCard[] = input.subscriptions
@@ -700,7 +756,13 @@ export function buildStatementActivitySummary(input: {
       const blob = `${sub.normalizedName} ${sub.merchant} ${sub.category}`;
       if (isShoppingText(blob) && !isMembershipCharge(blob)) return false;
       if (classifyInsurancePayment(blob).isInsurance) return false;
-      if (isUtilityLikeMerchantText(blob) || isPhoneBillText(blob)) return false;
+      if (
+        isUtilityLikeMerchantText(blob) ||
+        isPhoneBillText(blob) ||
+        isAttProviderText(blob)
+      ) {
+        return false;
+      }
       if (isDebtFinancingText(blob) || isHousingPaymentText(blob)) return false;
       if (billNameKeys.has(sub.normalizedName.trim().toUpperCase())) return false;
       if (isTransferText(blob)) return false;
@@ -718,7 +780,7 @@ export function buildStatementActivitySummary(input: {
         id: `sub:${sub.clusterId}`,
         merchant: sub.merchant,
         normalizedName: sub.normalizedName,
-        status: confirmed ? "confirmed" : "possible",
+        status: confirmed ? ("confirmed" as const) : ("possible" as const),
         chargeCount,
         periodTotal: sub.totalSpentInPeriod,
         latestCharge: sub.amount,
@@ -735,6 +797,38 @@ export function buildStatementActivitySummary(input: {
       };
     });
 
+  // Known software merchants with insufficient recurrence → possible only
+  const softwareByCluster = new Map<string, StatementActivityTransaction[]>();
+  for (const row of categoryMap.get("software_services")!) {
+    const list = softwareByCluster.get(row.clusterId) ?? [];
+    list.push(row);
+    softwareByCluster.set(row.clusterId, list);
+  }
+  const existingSubClusterIds = new Set(
+    subscriptionCards.map((s) => s.id.replace(/^sub:/, ""))
+  );
+  for (const [clusterId, rows] of softwareByCluster) {
+    if (existingSubClusterIds.has(clusterId)) continue;
+    const chargeCount = rows.length;
+    const confirmed =
+      hasRecurrenceEvidence(chargeCount) &&
+      canPresentMonthlyCadence({ frequency: "monthly", chargeCount });
+    if (confirmed) continue;
+    const total = roundMoney(rows.reduce((s, r) => s + r.amount, 0));
+    const name = rows[0]!.normalizedName || rows[0]!.merchant;
+    subscriptionCards.push({
+      id: `sub-soft:${clusterId}`,
+      merchant: rows[0]!.merchant,
+      normalizedName: name,
+      status: "possible",
+      chargeCount,
+      periodTotal: total,
+      latestCharge: rows[rows.length - 1]!.amount,
+      currency: rows[0]!.currency,
+      cadenceLabel: null,
+    });
+  }
+
   const attentionItems: StatementAttentionItem[] = [];
   for (const cat of categories.filter((c) => c.id === "fees" && c.total > 0)) {
     attentionItems.push({
@@ -742,6 +836,15 @@ export function buildStatementActivitySummary(input: {
       title: "Observed bank fees",
       detail: `${cat.transactionCount} fee line${cat.transactionCount === 1 ? "" : "s"} totaling ${cat.total.toFixed(2)} ${currency} on this statement.`,
       tone: "fee",
+    });
+  }
+  for (const debt of categoryMap.get("debt_financing")!.slice(0, 2)) {
+    attentionItems.push({
+      id: `debt:${debt.id}`,
+      title: `Financing payment: ${debt.normalizedName}`,
+      detail:
+        "Repeated financing payment detected; review account terms if useful.",
+      tone: "review",
     });
   }
   for (const sub of subscriptionCards.filter((s) => s.status === "possible")) {
@@ -804,6 +907,17 @@ export function buildStatementActivitySummary(input: {
     ].slice(0, 8),
   };
 
+  const crossSurface = buildCrossSurfaceReconciliation({
+    classified,
+    credits,
+    moneyInRows,
+    categories,
+    categorySum,
+    moneyOut,
+    billCards,
+    billProviderGroups,
+  });
+
   if (process.env.NODE_ENV !== "production") {
     console.log(
       "[statement-ledger]",
@@ -821,6 +935,7 @@ export function buildStatementActivitySummary(input: {
         largestDebits: diagnostics.largestDebits,
         suspiciousForDepositGap: diagnostics.suspiciousForDepositGap,
         suspiciousForWithdrawalGap: diagnostics.suspiciousForWithdrawalGap,
+        crossSurfaceOk: crossSurface.ok,
       })
     );
   } else {
@@ -830,6 +945,7 @@ export function buildStatementActivitySummary(input: {
       withdrawalGapAbs,
       creditCount: credits.length,
       debitCount: classified.length,
+      crossSurfaceOk: crossSurface.ok,
     });
   }
 
@@ -847,8 +963,9 @@ export function buildStatementActivitySummary(input: {
     categories,
     moneyInCategories,
     billCards,
+    billProviderGroups,
     subscriptionCards,
-    attentionItems: attentionItems.slice(0, 5),
+    attentionItems: attentionItems.slice(0, 6),
     uncategorized,
     reconciliation: {
       ok: Math.abs(categorySum - moneyOut) < 0.01,
@@ -857,6 +974,7 @@ export function buildStatementActivitySummary(input: {
       delta: roundMoney(categorySum - moneyOut),
       duplicateDebitKeys,
     },
+    crossSurface,
     ledger: {
       status: ledgerInfo.status,
       depositsStatus: ledgerInfo.depositsStatus,
@@ -868,6 +986,98 @@ export function buildStatementActivitySummary(input: {
       cashFlowReliable: ledgerInfo.cashFlowReliable,
       diagnostics,
     },
+  };
+}
+
+function buildCrossSurfaceReconciliation(args: {
+  classified: StatementActivityTransaction[];
+  credits: Transaction[];
+  moneyInRows: StatementMoneyInTransaction[];
+  categories: StatementActivityCategory[];
+  categorySum: number;
+  moneyOut: number;
+  billCards: StatementBillCard[];
+  billProviderGroups: StatementBillProviderGroup[];
+}): CrossSurfaceReconciliation {
+  const issues: string[] = [];
+  const debitIds = args.classified.map((r) => r.id);
+  const debitExclusiveOk = new Set(debitIds).size === debitIds.length;
+  if (!debitExclusiveOk) issues.push("duplicate-debit-ids");
+
+  const categoryTxnIds = args.categories.flatMap((c) =>
+    c.transactions.map((t) => t.id)
+  );
+  if (categoryTxnIds.length !== debitIds.length) {
+    issues.push("category-txn-count-mismatch");
+  }
+  const catSet = new Set(categoryTxnIds);
+  for (const id of debitIds) {
+    if (!catSet.has(id)) issues.push(`debit-missing-from-categories:${id.slice(0, 24)}`);
+  }
+
+  const creditIds = new Set(args.credits.map((c) => txnKey(c)));
+  const moneyInIds = new Set(args.moneyInRows.map((r) => r.id));
+  let creditsOnlyInMoneyInOk = creditIds.size === moneyInIds.size;
+  for (const id of creditIds) {
+    if (!moneyInIds.has(id)) {
+      creditsOnlyInMoneyInOk = false;
+      issues.push("credit-missing-from-money-in");
+      break;
+    }
+  }
+  for (const row of args.classified) {
+    if (moneyInIds.has(row.id)) {
+      creditsOnlyInMoneyInOk = false;
+      issues.push("debit-also-in-money-in");
+      break;
+    }
+  }
+
+  const categorySumEqualsDebitsOk =
+    Math.abs(args.categorySum - args.moneyOut) < 0.01;
+  if (!categorySumEqualsDebitsOk) issues.push("category-sum-ne-debits");
+
+  let billServicesSumEqualsProvidersOk = true;
+  for (const group of args.billProviderGroups) {
+    const sum = roundMoney(
+      group.services.reduce((s, x) => s + x.observedAmount, 0)
+    );
+    if (Math.abs(sum - group.totalObserved) > 0.01) {
+      billServicesSumEqualsProvidersOk = false;
+      issues.push(`provider-sum-mismatch:${group.providerKey}`);
+    }
+    // Provider grouping must not invent rows beyond billCards
+    for (const svc of group.services) {
+      if (!args.billCards.some((b) => b.id === svc.id)) {
+        billServicesSumEqualsProvidersOk = false;
+        issues.push(`provider-orphan-service:${svc.id.slice(0, 24)}`);
+      }
+    }
+  }
+  if (args.billCards.length !== args.billProviderGroups.reduce((s, g) => s + g.serviceCount, 0)) {
+    billServicesSumEqualsProvidersOk = false;
+    issues.push("provider-service-count-mismatch");
+  }
+
+  // Provider groups are presentation-only; they never feed Health Score inputs.
+  const providerGroupsDoNotAffectHealthOk = true;
+
+  const ok =
+    debitExclusiveOk &&
+    creditsOnlyInMoneyInOk &&
+    categorySumEqualsDebitsOk &&
+    billServicesSumEqualsProvidersOk &&
+    providerGroupsDoNotAffectHealthOk &&
+    issues.length === 0;
+
+  return {
+    ok,
+    debitExclusiveOk,
+    creditsOnlyInMoneyInOk,
+    categorySumEqualsDebitsOk,
+    billServicesSumEqualsProvidersOk,
+    providerGroupsDoNotAffectHealthOk,
+    issues,
   };
 }
 

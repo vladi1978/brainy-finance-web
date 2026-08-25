@@ -88,6 +88,14 @@ export function deriveSmartSignal(
   }
 
   if (
+    /\b(SYNCHRONY|AFFIRM|COMENITY|KLARNA|AFTERPAY)\b/i.test(
+      `${row.normalizedName} ${row.merchant} ${row.categoryLabel}`
+    )
+  ) {
+    return "Repeated financing payment detected; review account terms if useful.";
+  }
+
+  if (
     row.kind === "possible_recurring_expense" &&
     row.recommendation === "Possible savings opportunity"
   ) {

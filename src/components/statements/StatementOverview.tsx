@@ -107,7 +107,9 @@ export function StatementOverview({
         {healthScore ? (
           <div className="min-w-28 rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-center">
             <p className="text-xs uppercase tracking-wider text-white/40">
-              {healthScore.provisional ? "Health (provisional)" : "Health"}
+              {healthScore.provisional
+                ? "Statement Health (provisional)"
+                : "Statement Health"}
             </p>
             {showHealthNumeric || healthScore.provisional ? (
               <p className="mt-1 text-3xl font-bold tabular-nums text-emerald-200">
@@ -117,8 +119,13 @@ export function StatementOverview({
               <p className="mt-1 text-lg font-semibold text-white/70">—</p>
             )}
             <p className="text-xs text-white/55">{healthScore.label}</p>
-            {healthScore.statusNote ? (
-              <p className="mt-2 max-w-[11rem] text-[10px] leading-snug text-white/40">
+            <p className="mt-2 max-w-[12rem] text-[10px] leading-snug text-white/40">
+              Measures detected fees, recurring patterns, and statement
+              activity—not overall financial wellbeing.
+            </p>
+            {healthScore.statusNote &&
+            healthScore.provisional ? (
+              <p className="mt-1.5 max-w-[12rem] text-[10px] leading-snug text-white/35">
                 {healthScore.statusNote}
               </p>
             ) : null}
@@ -314,29 +321,55 @@ export function StatementOverview({
         currency={currency}
         empty="No housing, utility, phone, or insurance payments were separated."
       />
-      {activity.billCards.length ? (
+      {activity.billProviderGroups.length ? (
+        <ul className="grid gap-3 sm:grid-cols-2">
+          {activity.billProviderGroups.map((group) => (
+            <li
+              key={group.id}
+              className="rounded-2xl border border-emerald-400/15 bg-emerald-500/[0.05] p-4"
+            >
+              <p className="font-semibold text-white">{group.providerName}</p>
+              <p className="mt-1 text-sm tabular-nums text-white/70">
+                {formatMoney(group.totalObserved, group.currency)} total
+                observed · {group.serviceCount} service
+                {group.serviceCount === 1 ? "" : "s"}
+              </p>
+              <ul className="mt-3 space-y-2 border-t border-white/10 pt-3">
+                {group.services.map((svc) => (
+                  <li key={svc.id} className="text-sm">
+                    <p className="font-medium text-white/90">{svc.serviceLabel}</p>
+                    <p className="tabular-nums text-white/60">
+                      {formatMoney(svc.observedAmount, svc.currency)}
+                      {svc.date ? ` · ${svc.date}` : ""}
+                    </p>
+                    <p className="text-xs text-white/40">
+                      Recurrence not confirmed
+                    </p>
+                  </li>
+                ))}
+              </ul>
+              {group.observationNote ? (
+                <p className="mt-2 text-xs text-white/40">{group.observationNote}</p>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : activity.billCards.length ? (
         <ul className="grid gap-3 sm:grid-cols-2">
           {activity.billCards.map((bill) => (
             <li
               key={bill.id}
               className="rounded-2xl border border-emerald-400/15 bg-emerald-500/[0.05] p-4"
             >
-              <p className="font-semibold text-white">{bill.normalizedName}</p>
+              <p className="font-semibold text-white">
+                {bill.serviceLabel || bill.normalizedName}
+              </p>
               <p className="mt-1 text-sm tabular-nums text-white/70">
-                {formatMoney(bill.observedAmount, bill.currency)} ·{" "}
-                {bill.chargeCount} charge{bill.chargeCount === 1 ? "" : "s"}
+                {formatMoney(bill.observedAmount, bill.currency)}
               </p>
               <p className="mt-1 text-xs text-white/45">
-                {bill.billKind}
-                {bill.cadenceLabel
-                  ? ` · ${bill.cadenceLabel}`
-                  : bill.chargeCount === 1
-                    ? " · Recurrence not confirmed"
-                    : ""}
+                {bill.billKind} · Recurrence not confirmed
               </p>
-              {bill.observationNote ? (
-                <p className="mt-1 text-xs text-amber-100/70">{bill.observationNote}</p>
-              ) : null}
             </li>
           ))}
         </ul>
@@ -400,6 +433,19 @@ export function StatementOverview({
         empty="No software/service merchants separated."
       />
 
+      <CategorySection
+        title="Professional services"
+        sectionId="professional-services"
+        categories={orderedCategories.filter(
+          (c) => c.id === "professional_services"
+        )}
+        expandedCategory={expandedCategory}
+        setExpandedCategory={setExpandedCategory}
+        formatMoney={formatMoney}
+        currency={currency}
+        empty="No professional-service merchants separated."
+      />
+
       {/* 7. Fees + transfers */}
       <CategorySection
         title="Fees and transfers"
@@ -445,7 +491,9 @@ export function StatementOverview({
           <GroupLink
             href="#expected-bills"
             label="Bills"
-            count={activity.billCards.length}
+            count={
+              activity.billProviderGroups.length || activity.billCards.length
+            }
           />
           <GroupLink
             href="#subscriptions-review"
