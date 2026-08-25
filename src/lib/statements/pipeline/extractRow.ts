@@ -95,7 +95,8 @@ function hasOutgoingDebitHint(upper: string, amountRaw: string): boolean {
 
 function debitCreditFromDescription(
   description: string,
-  amountRaw: string
+  amountRaw: string,
+  sectionHint?: "deposits" | "withdrawals" | null
 ): { type: "debit" | "credit"; signedValue: number; parsed: NonNullable<ReturnType<typeof parseAmountFragment>> } | null {
   const parsed = parseAmountFragment(amountRaw);
   if (!parsed || parsed.value === 0) return null;
@@ -107,6 +108,11 @@ function debitCreditFromDescription(
   }
   if (hasOutgoingDebitHint(upper, amountRaw)) {
     return { type: "debit", signedValue: parsed.value, parsed };
+  }
+  // Deposits-section context is supporting evidence only when direction
+  // is otherwise unknown — never overrides strong outgoing descriptors.
+  if (sectionHint === "deposits") {
+    return { type: "credit", signedValue: parsed.value, parsed };
   }
   // Conservative default for unknown direction — do not manufacture credits.
   return { type: "debit", signedValue: parsed.value, parsed };
@@ -141,7 +147,8 @@ function amountLooksLikeEmbeddedRef(amountRaw: string, surrounding: string): boo
 function tryLeadingDateTailAmount(
   block: string,
   defaultYear: number,
-  strategyBase: string
+  strategyBase: string,
+  sectionHint?: "deposits" | "withdrawals" | null
 ): ParsedRow | null {
   const hit = matchDateSubstring(block.trim(), defaultYear);
   if (!hit) return null;
@@ -177,7 +184,7 @@ function tryLeadingDateTailAmount(
 
   if (NOISE_DESCRIPTION.test(descCore)) return null;
 
-  const dc = debitCreditFromDescription(descCore, primaryRaw);
+  const dc = debitCreditFromDescription(descCore, primaryRaw, sectionHint);
   if (!dc) return null;
 
   let strategy = strategyBase;
@@ -195,7 +202,8 @@ function tryLeadingDateTailAmount(
 
 function tryDualColumnDebitCredit(
   block: string,
-  defaultYear: number
+  defaultYear: number,
+  sectionHint?: "deposits" | "withdrawals" | null
 ): ParsedRow | null {
   const hit = matchDateSubstring(block.trim(), defaultYear);
   if (!hit) return null;
@@ -249,11 +257,16 @@ function tryDualColumnDebitCredit(
   }
 
   const signed = chosen.value;
+  const dc = debitCreditFromDescription(
+    desc,
+    String(Math.abs(signed)),
+    sectionHint
+  );
   return {
     date: hit.iso,
     description: desc.replace(/\s{2,}/gu, " "),
     amount: Math.abs(signed),
-    type,
+    type: dc?.type ?? type,
     currency: chosen.currency,
     strategy: "dual-column",
   };
@@ -261,7 +274,8 @@ function tryDualColumnDebitCredit(
 
 function tryLabeledAmountColumns(
   block: string,
-  defaultYear: number
+  defaultYear: number,
+  sectionHint?: "deposits" | "withdrawals" | null
 ): ParsedRow | null {
   const hit = matchDateSubstring(block.trim(), defaultYear);
   if (!hit) return null;
@@ -279,7 +293,6 @@ function tryLabeledAmountColumns(
   if (!debitLab && !creditLab) return null;
 
   let amountRaw: string | undefined;
-  let type: "debit" | "credit";
 
   if (debitLab && creditLab) {
     const d = parseAmountFragment(debitLab[1]);
@@ -289,19 +302,15 @@ function tryLabeledAmountColumns(
     const cz = Math.abs(c.value) < 1e-9;
     if (!dz && cz) {
       amountRaw = debitLab[1];
-      type = "debit";
     } else if (dz && !cz) {
       amountRaw = creditLab[1];
-      type = "credit";
     } else {
       return null;
     }
   } else if (debitLab) {
     amountRaw = debitLab[1];
-    type = "debit";
   } else {
     amountRaw = creditLab![1];
-    type = "credit";
   }
 
   const description = mid
@@ -310,14 +319,14 @@ function tryLabeledAmountColumns(
     .replace(/\s{2,}/gu, " ")
     .trim();
 
-  const dc = debitCreditFromDescription(description, amountRaw!);
+  const dc = debitCreditFromDescription(description, amountRaw!, sectionHint);
   if (!dc || !description || NOISE_DESCRIPTION.test(description)) return null;
 
   return {
     date: hit.iso,
     description,
     amount: Math.abs(dc.signedValue),
-    type,
+    type: dc.type,
     currency: dc.parsed.currency,
     strategy: "labeled-columns",
   };
@@ -335,7 +344,8 @@ function isCheckcardPostingDateCode(token: string, surrounding: string): boolean
 
 function tryFallbackAmountScan(
   block: string,
-  defaultYear: number
+  defaultYear: number,
+  sectionHint?: "deposits" | "withdrawals" | null
 ): ParsedRow | null {
   const hit = matchDateSubstring(block.trim(), defaultYear);
   if (!hit) return null;
@@ -383,7 +393,7 @@ function tryFallbackAmountScan(
   if (description.length < 2 || NOISE_DESCRIPTION.test(description))
     return null;
 
-  const dc = debitCreditFromDescription(description, last.r);
+  const dc = debitCreditFromDescription(description, last.r, sectionHint);
   if (!dc) return null;
 
   return {
@@ -396,11 +406,22 @@ function tryFallbackAmountScan(
   };
 }
 
+/** Strip BoA marketing/legal glue that pdf.js sometimes concatenates onto txn rows. */
+function stripTrailingBoilerplate(block: string): string {
+  return block
+    .replace(
+      /\s+(?:Can you spot a scam\?|Be aware of these common red flags|When you use the QRC feature|Braille and Large Print|We want to help you avoid overdraft)[\s\S]*$/iu,
+      ""
+    )
+    .trim();
+}
+
 export function parseBlockWithStrategies(
   block: string,
-  defaultYear: number
+  defaultYear: number,
+  sectionHint?: "deposits" | "withdrawals" | null
 ): ParsedRow | null {
-  let trimB = block.trim();
+  let trimB = stripTrailingBoilerplate(block.trim());
   trimB = trimB
     .replace(/\bcontinued on the next page\b/giu, " ")
     .replace(/\d{12,}(-\d+\.\d{2})\s*$/u, " $1")
@@ -411,16 +432,23 @@ export function parseBlockWithStrategies(
   if (trimB.length < 8) return null;
 
   const strategies: Array<() => ParsedRow | null> = [
-    () => tryLeadingDateTailAmount(trimB, defaultYear, "leading-date-tail"),
+    () =>
+      tryLeadingDateTailAmount(
+        trimB,
+        defaultYear,
+        "leading-date-tail",
+        sectionHint
+      ),
     () =>
       tryLeadingDateTailAmount(
         stripLeadingNoise(trimB.replace(/^[^\dA-Za-z]{1,12}\s*/u, "")),
         defaultYear,
-        "leading-date-skipped-prefix"
+        "leading-date-skipped-prefix",
+        sectionHint
       ),
-    () => tryLabeledAmountColumns(trimB, defaultYear),
-    () => tryFallbackAmountScan(trimB, defaultYear),
-    () => tryDualColumnDebitCredit(trimB, defaultYear),
+    () => tryLabeledAmountColumns(trimB, defaultYear, sectionHint),
+    () => tryFallbackAmountScan(trimB, defaultYear, sectionHint),
+    () => tryDualColumnDebitCredit(trimB, defaultYear, sectionHint),
   ];
 
   for (const run of strategies) {

@@ -80,7 +80,8 @@ export function passesPostParseValidation(
   if (IGNORE_KEYWORDS.test(row.description)) return false;
 
   if (PHONE_PRIMARY.test(row.description) && row.description.length < 48) {
-    return false;
+    // BoA purchase/checkcard rows often embed phone-shaped reference numbers.
+    if (!BANK_DESCRIPTOR.test(row.description)) return false;
   }
 
   if (row.amount <= 0 || row.amount > 1e7) return false;

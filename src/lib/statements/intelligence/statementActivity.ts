@@ -233,7 +233,7 @@ function billKindFromText(text: string): StatementBillCard["billKind"] {
     return "internet";
   }
   if (
-    /\b(ELECTRIC|POWER|WATER|GAS\s+CO|UTILITY|UTILITIES|REPUBLIC\s+SERVICES|WASTE)\b/u.test(
+    /\b(ELECTRIC|POWER|WATER|GAS\s+CO|UTILITY|UTILITIES|REPUBLIC\s*SERVICES|REPUBLICSERVICES|RSIBILLPAY|WASTE)\b/u.test(
       u
     )
   ) {

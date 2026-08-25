@@ -10,12 +10,14 @@ import {
   isHousingPaymentText,
 } from "../expectedBills";
 import { buildHealthScore } from "../intelligence/healthScore";
+import { buildActivityPresentationGroups } from "../intelligence/presentationGroups";
 import { buildSavingsOpportunities } from "../intelligence/savings";
 import {
   buildStatementActivitySummary,
   classifyDebit,
 } from "../intelligence/statementActivity";
-import { inferStatementYear } from "./dates";
+import { isPlausibleMoneyToken } from "./amounts";
+import { inferStatementYear, matchDateSubstring } from "./dates";
 import { parseBlockWithStrategies } from "./extractRow";
 import { reconstructStatementLines } from "./reconstructLines";
 import {
@@ -446,5 +448,149 @@ describe("ledger reconciliation status", () => {
     for (let i = 0; i < 10; i++) {
       assert.equal(JSON.stringify(activityFor(txns)), first);
     }
+  });
+});
+
+describe("reconciliation sprint parser protections", () => {
+  it("does not treat signed money like -8.27 as a calendar date", () => {
+    const hit = matchDateSubstring("KY -8.27", YEAR);
+    assert.equal(hit, null);
+  });
+
+  it("attaches state+amount orphan onto Marathon parent and uses cents amount", () => {
+    const physical = [
+      "DEPOSITS AND OTHER ADDITIONS",
+      "06/01/26 SAMPLE CREDIT DEPOSIT 10.00",
+      "TOTAL DEPOSITS AND OTHER ADDITIONS $10.00",
+      "WITHDRAWALS AND OTHER SUBTRACTIONS",
+      "06/18/26 MARATHON 18408 06/18 #000492824 MOBILE PURCHASE MARATHON 184085 PROSPECT",
+      "KY",
+      "-8.27",
+      "TOTAL WITHDRAWALS AND OTHER SUBTRACTIONS $8.27",
+    ];
+    const blocks = reconstructStatementLines(
+      physical,
+      inferStatementYear(physical)
+    );
+    const marathon = blocks.find((b) => /MARATHON/i.test(b));
+    assert.ok(marathon);
+    assert.match(marathon!, /8\.27/);
+    const row = parseOk(marathon!);
+    assert.equal(row.amount, 8.27);
+    assert.equal(row.type, "debit");
+    assert.notEqual(row.amount, 184085);
+  });
+
+  it("rejects store-id integers as money tokens", () => {
+    assert.equal(isPlausibleMoneyToken("184085"), false);
+    assert.equal(isPlausibleMoneyToken("8.27"), true);
+  });
+
+  it("uses deposits section as supporting credit evidence for Cash App DES", () => {
+    const row = parseBlockWithStrategies(
+      "06/11/26 CASH APP DES:PERSON F ID:ABC123 INDN:NAME CO ID:999 PPD 800.00",
+      YEAR,
+      "deposits"
+    );
+    assert.ok(row);
+    assert.equal(row.type, "credit");
+    assert.equal(row.amount, 800);
+  });
+
+  it("does not let deposits section override PURCHASE debit", () => {
+    const row = parseBlockWithStrategies(
+      "06/10/26 PURCHASE 0610 RING SOLO PLAN 8006561918 CA -5.29",
+      YEAR,
+      "deposits"
+    );
+    assert.ok(row);
+    assert.equal(row.type, "debit");
+    assert.equal(row.amount, 5.29);
+  });
+
+  it("accepts short PURCHASE rows with phone-shaped references", () => {
+    const line = "06/10/26 PURCHASE 0610 RING SOLO PLAN 8006561918 CA -5.29";
+    const row = parseOk(line);
+    assert.equal(row.type, "debit");
+    assert.equal(row.amount, 5.29);
+  });
+
+  it("strips marketing glue so Affirm payment still parses as debit", () => {
+    const line =
+      "06/08/26 AFFIRM.COM PAYME DES:AFFIRM.COM ID:ST-ABC123 INDN:NAME CO ID:4270465600 WEB -126.24 Can you spot a scam? Be aware of these common red flags: Contacted unexpectedly";
+    const row = parseOk(line);
+    assert.equal(row.type, "debit");
+    assert.equal(row.amount, 126.24);
+  });
+
+  it("classifies Republic Services bill card as utility", () => {
+    const txns = [
+      txn("2026-06-08", "REPUBLICSERVICES DES:RSIBILLPAY ID:123 DES:PAYMENT", 105.04),
+    ];
+    const summary = activityFor(txns);
+    const bill = summary.billCards.find((b) =>
+      /REPUBLIC|RSI/i.test(b.normalizedName + b.merchant)
+    );
+    assert.ok(bill);
+    assert.equal(bill!.billKind, "utility");
+    assert.equal(
+      summary.categories.find((c) => c.id === "bills")?.transactionCount,
+      1
+    );
+  });
+
+  it("excludes debt financing from presentation subscriptions and unusual groups", () => {
+    const txns = [txn("2026-06-09", "SYNCHRONY BANK PAYMENT", 200)];
+    const clusters = buildMerchantClusters(txns);
+    const sub: SubscriptionInsight = {
+      merchant: "Synchrony",
+      normalizedName: "Synchrony Bank",
+      category: "other",
+      amount: 200,
+      currency: "USD",
+      frequency: "monthly",
+      lastCharged: "2026-06-09",
+      monthlyEquivalent: 200,
+      annualEquivalent: 2400,
+      confidence: 0.9,
+      trueSubscriptionScore: 0.9,
+      clusterId: clusters[0]!.id,
+      flags: {
+        forgotten: true,
+        duplicate: false,
+        priceIncreased: false,
+        trialConverted: false,
+        suspicious: true,
+        reviewSuggested: true,
+        confirmed: true,
+      },
+    };
+    const groups = buildActivityPresentationGroups({
+      subscriptions: [sub],
+      visibleRecurring: [],
+      visibleInsights: [],
+      clusters,
+    });
+    assert.equal(groups.subscriptions.length, 0);
+    assert.equal(groups.unusualRecurring.length, 0);
+    assert.equal(groups.expectedRecurringBills.length, 0);
+    const summary = activityFor(txns, [sub]);
+    assert.equal(
+      summary.categories.find((c) => c.id === "debt_financing")?.transactionCount,
+      1
+    );
+    assert.equal(summary.subscriptionCards.length, 0);
+  });
+
+  it("keeps net cash flow hidden while ledger is not fully reconciled", () => {
+    const summary = activityFor([
+      txn("2026-06-01", "SHELL OIL", 40),
+      txn("2026-06-02", "PMNT RCVD", 100, "credit"),
+    ]);
+    assert.notEqual(summary.ledger.status, "reconciled");
+    assert.equal(summary.cashFlowReliable, false);
+    assert.equal(summary.netCashFlow, null);
+    assert.ok(summary.ledger.diagnostics);
+    assert.ok(summary.ledger.reportedDeposits != null);
   });
 });

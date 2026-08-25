@@ -176,6 +176,71 @@ export function StatementOverview({
         />
       </dl>
 
+      {/* Ledger reconciliation diagnostics — aggregates only */}
+      <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-xs text-white/60">
+        <p className="font-semibold uppercase tracking-wider text-white/45">
+          Ledger reconciliation
+        </p>
+        <dl className="mt-2 grid gap-x-6 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="flex justify-between gap-3">
+            <dt>Bank deposits</dt>
+            <dd className="tabular-nums text-white/80">
+              {activity.ledger.reportedDeposits != null
+                ? formatMoney(activity.ledger.reportedDeposits, currency)
+                : "—"}
+            </dd>
+          </div>
+          <div className="flex justify-between gap-3">
+            <dt>Parsed credits</dt>
+            <dd className="tabular-nums text-white/80">
+              {formatMoney(activity.moneyIn, currency)}
+            </dd>
+          </div>
+          <div className="flex justify-between gap-3">
+            <dt>Deposit gap</dt>
+            <dd className="tabular-nums text-white/80">
+              {activity.ledger.diagnostics.depositGapAbs != null
+                ? `${formatMoney(activity.ledger.diagnostics.depositGapAbs, currency)}${
+                    activity.ledger.diagnostics.depositGapPct != null
+                      ? ` (${activity.ledger.diagnostics.depositGapPct}%)`
+                      : ""
+                  }`
+                : "—"}
+            </dd>
+          </div>
+          <div className="flex justify-between gap-3">
+            <dt>Bank withdrawals</dt>
+            <dd className="tabular-nums text-white/80">
+              {activity.ledger.reportedWithdrawals != null
+                ? formatMoney(activity.ledger.reportedWithdrawals, currency)
+                : "—"}
+            </dd>
+          </div>
+          <div className="flex justify-between gap-3">
+            <dt>Parsed debits</dt>
+            <dd className="tabular-nums text-white/80">
+              {formatMoney(activity.moneyOut, currency)}
+            </dd>
+          </div>
+          <div className="flex justify-between gap-3">
+            <dt>Withdrawal gap</dt>
+            <dd className="tabular-nums text-white/80">
+              {activity.ledger.diagnostics.withdrawalGapAbs != null
+                ? `${formatMoney(activity.ledger.diagnostics.withdrawalGapAbs, currency)}${
+                    activity.ledger.diagnostics.withdrawalGapPct != null
+                      ? ` (${activity.ledger.diagnostics.withdrawalGapPct}%)`
+                      : ""
+                  }`
+                : "—"}
+            </dd>
+          </div>
+          <div className="flex justify-between gap-3 sm:col-span-2 lg:col-span-3">
+            <dt>Status</dt>
+            <dd className="text-white/80">{ledgerLabel}</dd>
+          </div>
+        </dl>
+      </div>
+
       {activity.attentionItems.length ? (
         <div>
           <h3 className="text-sm font-semibold uppercase tracking-widest text-white/55">

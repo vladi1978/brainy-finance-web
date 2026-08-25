@@ -10,7 +10,8 @@ export function isPlausibleMoneyToken(raw: string): boolean {
   const digitRuns = trimmed.match(/\d+/g) ?? [];
   const digitCount = digitRuns.reduce((n, r) => n + r.length, 0);
   const hasDecimal = /[.,]\d{1,2}(?:\b|$)/u.test(trimmed);
-  if (!hasDecimal && digitCount >= 8) return false;
+  // Bare 6+ digit runs are store/auth/IDs (e.g. MARATHON 184085), not amounts.
+  if (!hasDecimal && digitCount >= 6) return false;
   const parsed = parseAmountFragment(trimmed);
   if (!parsed || Math.abs(parsed.value) < 1e-9) return false;
   if (Math.abs(parsed.value) > 1e7) return false;

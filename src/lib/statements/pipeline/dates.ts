@@ -87,13 +87,15 @@ export function normalizeDate(
     return `${y}-${mo}-${d}`;
   }
 
-  const mdOnly = t.match(/^(\d{1,2})[/.-](\d{1,2})$/);
+  // MD without year: slash/dash only (dot form is money, not a date).
+  const mdOnly = t.match(/^(\d{1,2})[/-](\d{1,2})$/);
   if (mdOnly && opts?.defaultYear != null) {
     const y = opts.defaultYear;
     const mo = String(Number(mdOnly[1])).padStart(2, "0");
     const d = String(Number(mdOnly[2])).padStart(2, "0");
-    if (Number(mo) > 12)
-      return `${y}-${d}-${String(Number(mdOnly[1])).padStart(2, "0")}`;
+    if (Number(mo) < 1 || Number(mo) > 12 || Number(d) < 1 || Number(d) > 31) {
+      return null;
+    }
     return `${y}-${mo}-${d}`;
   }
 
@@ -144,8 +146,10 @@ export function matchDateSubstring(
   while ((m = mdyRe.exec(line)))
     pushIso(m[0], m.index, m.index + m[0].length, true);
 
+  // MD-only dates: allow / or - only — never "." (that is almost always money, e.g. "-8.27").
+  // Also reject matches preceded by a money sign.
   const mdOnlyRe =
-    /\b\d{1,2}\s*[/.-]\s*\d{1,2}(?=\s|$|[^\d/.-])(?![/.-]\s*\d)/gu;
+    /(?<![\d.,+\-(\u2212$€£])\b\d{1,2}\s*[/-]\s*\d{1,2}(?=\s|$|[^\d/.-])(?![/.-]\s*\d)/gu;
   while ((m = mdOnlyRe.exec(line))) {
     pushIso(m[0].replace(/\s+/gu, ""), m.index, m.index + m[0].length, true);
   }

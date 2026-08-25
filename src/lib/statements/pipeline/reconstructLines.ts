@@ -31,6 +31,16 @@ function isBoaAchContinuation(line: string): boolean {
   ) {
     return true;
   }
+  // Masked CO ID / CCD tails (BoA redacts digits as XXXXXXXXX CCD).
+  if (
+    /^(?:CO\s+)?ID:\s*[X*]{4,}\b/iu.test(t) ||
+    /^[X*]{5,}\s*CCD\b/iu.test(t) ||
+    /^[X*]{5,}(?:\s+CCD)?(?:\s+[\u2212+-]?\(?[\p{Sc}]?\s*\d[\d.,]*(?:\.\d{1,2})?\)?)?\s*$/iu.test(
+      t
+    )
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -181,21 +191,91 @@ export function looksLikeTransactionAnchor(
   return transactionAnchorScore(line, defaultYear) >= 7;
 }
 
-function groupLinesIntoBlocks(lines: string[], defaultYear: number): string[] {
+export type StatementSectionHint = "deposits" | "withdrawals" | null;
+
+export type ReconstructedStatementLine = {
+  text: string;
+  section: StatementSectionHint;
+};
+
+function updateSectionFromHeading(
+  line: string,
+  current: StatementSectionHint
+): StatementSectionHint {
+  const t = line.trim();
+  const u = t.toUpperCase();
+  if (
+    /^DEPOSITS AND OTHER ADDITIONS\s*$/i.test(t) ||
+    /^DEPOSITS AND OTHER ADDITIONS\s*-?\s*CONTINUED\b/i.test(t)
+  ) {
+    return "deposits";
+  }
+  if (/TOTAL DEPOSITS AND OTHER ADDITIONS/i.test(u)) {
+    return null;
+  }
+  if (
+    /^WITHDRAWALS AND OTHER SUBTRACTIONS\s*$/i.test(t) ||
+    /^WITHDRAWALS AND OTHER SUBTRACTIONS\s*-?\s*CONTINUED\b/i.test(t)
+  ) {
+    return "withdrawals";
+  }
+  if (/TOTAL WITHDRAWALS AND OTHER SUBTRACTIONS/i.test(u)) {
+    return null;
+  }
+  // Account-summary totals (same phrases + amounts) must not set section.
+  if (
+    /^DEPOSITS AND OTHER ADDITIONS/i.test(t) &&
+    /\d/.test(t) &&
+    t.length < 64
+  ) {
+    return current;
+  }
+  if (
+    /^WITHDRAWALS AND OTHER SUBTRACTIONS/i.test(t) &&
+    /\d/.test(t) &&
+    t.length < 64
+  ) {
+    return current;
+  }
+  return current;
+}
+
+function groupLinesIntoBlocks(
+  lines: string[],
+  defaultYear: number
+): ReconstructedStatementLine[] {
   const mergedDate = mergeDateOnlyLines(mergeAmountOnlyLines(lines));
-  const blocks: string[] = [];
+  const blocks: ReconstructedStatementLine[] = [];
   let cur = "";
+  let curSection: StatementSectionHint = null;
+  let section: StatementSectionHint = null;
+
+  const flush = () => {
+    if (!cur) return;
+    blocks.push({
+      text: cur.replace(/\s{2,}/gu, " ").trim(),
+      section: curSection,
+    });
+    cur = "";
+  };
 
   for (const line of mergedDate) {
+    const nextSection = updateSectionFromHeading(line, section);
+    if (nextSection !== section) {
+      flush();
+      section = nextSection;
+    }
+
     if (
       SKIP_LINE.test(line) ||
       PAGE_HEADER_SIMPLE.test(line) ||
-      STATEMENT_PAGE_HEADER.test(line)
+      STATEMENT_PAGE_HEADER.test(line) ||
+      /^DEPOSITS AND OTHER ADDITIONS/i.test(line.trim()) ||
+      /^WITHDRAWALS AND OTHER SUBTRACTIONS/i.test(line.trim()) ||
+      /TOTAL DEPOSITS AND OTHER ADDITIONS/i.test(line) ||
+      /TOTAL WITHDRAWALS AND OTHER SUBTRACTIONS/i.test(line)
     ) {
-      if (cur) {
-        blocks.push(cur.replace(/\s{2,}/gu, " ").trim());
-        cur = "";
-      }
+      flush();
       continue;
     }
 
@@ -203,18 +283,18 @@ function groupLinesIntoBlocks(lines: string[], defaultYear: number): string[] {
       if (cur && parentLooksLikeDatedTxnStructure(cur, defaultYear)) {
         cur += " " + line;
       }
-      // Else drop orphan continuation — do not invent a transaction.
       continue;
     }
 
     if (looksLikeTransactionAnchor(line, defaultYear)) {
-      if (cur) blocks.push(cur.replace(/\s{2,}/gu, " ").trim());
+      flush();
       cur = line;
+      curSection = section;
     } else if (cur) {
       cur += " " + line;
     }
   }
-  if (cur) blocks.push(cur.replace(/\s{2,}/gu, " ").trim());
+  flush();
 
   return blocks;
 }
@@ -226,6 +306,15 @@ export function reconstructStatementLines(
   physicalLines: string[],
   defaultYear: number
 ): string[] {
+  return reconstructStatementLinesWithSections(physicalLines, defaultYear).map(
+    (b) => b.text
+  );
+}
+
+export function reconstructStatementLinesWithSections(
+  physicalLines: string[],
+  defaultYear: number
+): ReconstructedStatementLine[] {
   const afterAmountMerge = mergeAmountOnlyLines(physicalLines);
   return groupLinesIntoBlocks(afterAmountMerge, defaultYear);
 }

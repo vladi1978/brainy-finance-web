@@ -8,6 +8,7 @@ import {
   resolveChargeCount,
 } from "../recurrenceEvidence";
 import {
+  isDebtFinancingText,
   isExpectedBillSubscription as isExpectedBillSubscriptionShared,
   isUtilityLikeSpending as isUtilityLikeSpendingShared,
 } from "../expectedBills";
@@ -473,6 +474,11 @@ export function buildActivityPresentationGroups(input: {
 
   for (const sub of input.subscriptions) {
     if (used.has(sub.clusterId)) continue;
+    const debtBlob = `${sub.normalizedName} ${sub.merchant} ${sub.category}`;
+    if (isDebtFinancingText(debtBlob)) {
+      used.add(sub.clusterId);
+      continue;
+    }
     used.add(sub.clusterId);
     const cluster = clusterById.get(sub.clusterId);
     const chargeCount = chargeCountFor(
@@ -556,6 +562,14 @@ export function buildActivityPresentationGroups(input: {
   const spendRows = [...input.visibleRecurring, ...input.visibleInsights];
   for (const row of spendRows) {
     if (used.has(row.clusterId)) continue;
+    if (
+      isDebtFinancingText(
+        `${row.normalizedName} ${row.merchant} ${row.categoryLabel}`
+      )
+    ) {
+      used.add(row.clusterId);
+      continue;
+    }
     used.add(row.clusterId);
     const cluster = clusterById.get(row.clusterId);
     const chargeCount = chargeCountFor(

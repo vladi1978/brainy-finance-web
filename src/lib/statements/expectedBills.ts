@@ -39,7 +39,9 @@ export function isExpectedBillSubscription(
 ): boolean {
   if (EXPECTED_BILL_SUB_CATEGORIES.has(sub.category)) return true;
   const blob = `${sub.category} ${sub.normalizedName} ${sub.merchant}`;
-  if (isDebtFinancingText(blob) || isHousingPaymentText(blob)) return true;
+  // Debt/financing is never an "expected bill" or subscription target.
+  if (isDebtFinancingText(blob)) return false;
+  if (isHousingPaymentText(blob)) return true;
   return isUtilityLikeMerchantText(blob);
 }
 

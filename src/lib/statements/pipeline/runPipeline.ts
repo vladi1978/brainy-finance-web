@@ -3,7 +3,7 @@ import { scoreTransactionCandidate } from "./candidateScore";
 import { parseBlockWithStrategies, type ParsedRow } from "./extractRow";
 import { inferStatementYear } from "./dates";
 import { normalizePdfText, splitPhysicalLines } from "./textNormalize";
-import { reconstructStatementLines } from "./reconstructLines";
+import { reconstructStatementLinesWithSections } from "./reconstructLines";
 import { extractBankStatementSummaryTotals } from "./statementSummary";
 import type { ParsePipelineDebug, Transaction } from "../types";
 import type { PipelineResult } from "./types";
@@ -39,17 +39,28 @@ export async function runTransactionPipeline(
   const normalized = normalizePdfText(rawText);
   const physical = splitPhysicalLines(normalized);
   const defaultYear = inferStatementYear(physical);
-  const reconstructed = reconstructStatementLines(physical, defaultYear);
+  const reconstructed = reconstructStatementLinesWithSections(
+    physical,
+    defaultYear
+  );
 
   const rejected: ParsePipelineDebug["rejected"] = [];
   const aiPayloads: Array<{ globalIndex: number; text: string }> = [];
   const regexAccepted: ParsedRow[] = [];
 
-  reconstructed.forEach((line, globalIndex) => {
-    const cs = scoreTransactionCandidate(line, defaultYear);
-    const row = parseBlockWithStrategies(line, defaultYear);
+  reconstructed.forEach((entry, globalIndex) => {
+    const line = entry.text;
+    const sectionHint = entry.section;
+    const cleanedLine = line
+      .replace(
+        /\s+(?:Can you spot a scam\?|Be aware of these common red flags|When you use the QRC feature|Braille and Large Print|We want to help you avoid overdraft)[\s\S]*$/iu,
+        ""
+      )
+      .trim();
+    const cs = scoreTransactionCandidate(cleanedLine, defaultYear);
+    const row = parseBlockWithStrategies(cleanedLine, defaultYear, sectionHint);
     const validRow =
-      row && passesPostParseValidation(line, row, defaultYear);
+      row && passesPostParseValidation(cleanedLine, row, defaultYear);
 
     if (validRow && cs.score >= REGEX_ACCEPT_SCORE) {
       regexAccepted.push(row);
