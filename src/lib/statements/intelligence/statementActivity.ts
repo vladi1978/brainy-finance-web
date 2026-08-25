@@ -104,6 +104,44 @@ export type StatementAttentionItem = {
   tone: "fee" | "subscription" | "review" | "bill";
 };
 
+export type StatementCreditCategoryId =
+  | "payroll"
+  | "refunds"
+  | "p2p_incoming"
+  | "other_deposits";
+
+export type StatementMoneyInTransaction = {
+  id: string;
+  date: string;
+  amount: number;
+  currency: string;
+  merchant: string;
+  normalizedName: string;
+  categoryId: StatementCreditCategoryId;
+};
+
+export type StatementMoneyInCategory = {
+  id: StatementCreditCategoryId;
+  label: string;
+  total: number;
+  transactionCount: number;
+  topSources: Array<{ name: string; total: number; count: number }>;
+  dateRange: { start: string; end: string } | null;
+  transactions: StatementMoneyInTransaction[];
+};
+
+export type LedgerGapDiagnostics = {
+  depositGapAbs: number | null;
+  depositGapPct: number | null;
+  withdrawalGapAbs: number | null;
+  withdrawalGapPct: number | null;
+  largestCredits: Array<{ amount: number; kind: StatementCreditCategoryId }>;
+  largestDebits: Array<{ amount: number; kind: StatementDebitCategoryId }>;
+  /** Sanitized hints only — no full descriptors. */
+  suspiciousForDepositGap: string[];
+  suspiciousForWithdrawalGap: string[];
+};
+
 export type StatementActivitySummary = {
   currency: string;
   moneyIn: number;
@@ -114,6 +152,7 @@ export type StatementActivitySummary = {
   debitCount: number;
   creditCount: number;
   categories: StatementActivityCategory[];
+  moneyInCategories: StatementMoneyInCategory[];
   billCards: StatementBillCard[];
   subscriptionCards: StatementSubscriptionCard[];
   attentionItems: StatementAttentionItem[];
@@ -134,6 +173,7 @@ export type StatementActivitySummary = {
     depositsDelta: number | null;
     withdrawalsDelta: number | null;
     cashFlowReliable: boolean;
+    diagnostics: LedgerGapDiagnostics;
   };
 };
 
@@ -230,7 +270,7 @@ function isTransferText(text: string): boolean {
 }
 
 function isShoppingText(text: string): boolean {
-  return /\b(SAMS(?:'?S|\s)CLUB|SAMSCLUB|TARGET\b|WAL\s*-?\s*MART|WALMART|COSTCO|BEST\s+BUY|HOME\s+DEPOT|LOWE'?S\b|AMAZON\b|RETAIL|PURCHASE)\b/ui.test(
+  return /\b(SAMS(?:'?S|\s)CLUB|SAMSCLUB|TARGET\b|WAL\s*-?\s*MART|WALMART|COSTCO|BEST\s+BUY|HOME\s+DEPOT|LOWE'?S\b|AMAZON\b|RETAIL|PURCHASE|CASH\s*SAVERS|CASHSAVERS|TOTAL\s*TRUCK|TOTALTRUCK|\bPARTS\b.*\b(AUTO|TRUCK)|TRUCK\s*PARTS)\b/ui.test(
     text
   );
 }
@@ -263,6 +303,63 @@ function isPhoneBillText(text: string): boolean {
   return /\b(VERIZON|AT\s*&\s*T|\bATT\b|T[-\s]*MOBILE|SPRINT)\b/u.test(
     text.toUpperCase()
   );
+}
+
+const MONEY_IN_LABELS: Record<StatementCreditCategoryId, string> = {
+  payroll: "Payroll",
+  refunds: "Refunds",
+  p2p_incoming: "Incoming transfers",
+  other_deposits: "Other deposits",
+};
+
+export const MONEY_IN_CATEGORY_ORDER: StatementCreditCategoryId[] = [
+  "payroll",
+  "refunds",
+  "p2p_incoming",
+  "other_deposits",
+];
+
+export function classifyCredit(description: string): StatementCreditCategoryId {
+  const u = description.toUpperCase();
+  if (
+    /\bDES:PAYROLL/u.test(u) ||
+    /\bPAYROLL(?:\s*ID|\s+DEPOSIT|\b)/u.test(u) ||
+    /\bDIRECT\s+DEP(?:OSIT)?\b/u.test(u) ||
+    /\bDIR\s+DEP\b/u.test(u) ||
+    /\bEMPLOYER\s+PAY\b/u.test(u) ||
+    /\bSALARY\b/u.test(u)
+  ) {
+    return "payroll";
+  }
+  if (/\bREFUND\b/u.test(u)) return "refunds";
+  if (
+    /\b(ZELLE|VENMO|CASH\s*APP|CASHAPP|PAYPAL)\b/u.test(u) ||
+    /\bPMNT\s+RCVD\b/u.test(u) ||
+    /\bPAYMENT\s+FROM\b/u.test(u) ||
+    /\bPAYMENT\s+RECEIVED\b/u.test(u)
+  ) {
+    return "p2p_incoming";
+  }
+  return "other_deposits";
+}
+
+function redactKindHint(description: string): string {
+  const u = description.toUpperCase();
+  if (/\bDES:PAYROLL/u.test(u)) return "ach-payroll";
+  if (/\bDES:PAYMENT/u.test(u)) return "ach-payment";
+  if (/\bCHECKCARD/u.test(u)) return "checkcard";
+  if (/\bPMNT\s+RCVD/u.test(u)) return "pmnt-rcvd";
+  if (/\bCASH\s*APP/u.test(u)) return "cash-app";
+  if (/\bZELLE/u.test(u)) return "zelle";
+  if (/\bMORT|MTG/u.test(u)) return "mortgage";
+  if (/\bSYNCHRONY|AFFIRM|COMENITY/u.test(u)) return "debt-financing";
+  if (/\bREFUND/u.test(u)) return "refund";
+  return "other";
+}
+
+function gapPct(reported: number | null, parsed: number): number | null {
+  if (reported == null || reported <= 0) return null;
+  return Math.round((Math.abs(reported - parsed) / reported) * 1000) / 10;
 }
 
 export function classifyDebit(args: {
@@ -424,6 +521,71 @@ export function buildStatementActivitySummary(input: {
     parsedCredits: moneyIn,
     parsedDebits: moneyOut,
   });
+
+  // Money-in classification (credits only — mutually exclusive from debit categories)
+  const moneyInRows: StatementMoneyInTransaction[] = credits.map((txn) => {
+    const key = txnKey(txn);
+    const clusterKey = normalizeMerchantKey(txn.description);
+    const cluster = clusterByKey.get(clusterKey);
+    const presentation = cluster
+      ? clusterMerchantPresentation(
+          cluster,
+          input.merchantNormByClusterId?.get(cluster.id)
+        )
+      : {
+          merchant: txn.description.slice(0, 48),
+          normalizedName: txn.description.slice(0, 48),
+        };
+    return {
+      id: key,
+      date: txn.date,
+      amount: txn.amount,
+      currency: txn.currency,
+      merchant: presentation.merchant,
+      normalizedName: presentation.normalizedName,
+      categoryId: classifyCredit(txn.description),
+    };
+  });
+
+  const moneyInMap = new Map<
+    StatementCreditCategoryId,
+    StatementMoneyInTransaction[]
+  >();
+  for (const id of MONEY_IN_CATEGORY_ORDER) moneyInMap.set(id, []);
+  for (const row of moneyInRows) {
+    moneyInMap.get(row.categoryId)!.push(row);
+  }
+
+  const moneyInCategories: StatementMoneyInCategory[] =
+    MONEY_IN_CATEGORY_ORDER.map((id) => {
+      const rows = moneyInMap.get(id)!;
+      const total = roundMoney(rows.reduce((s, r) => s + r.amount, 0));
+      const sourceTotals = new Map<string, { total: number; count: number }>();
+      for (const row of rows) {
+        const name = row.normalizedName || row.merchant;
+        const prev = sourceTotals.get(name) ?? { total: 0, count: 0 };
+        sourceTotals.set(name, {
+          total: prev.total + row.amount,
+          count: prev.count + 1,
+        });
+      }
+      const dates = rows.map((r) => r.date).sort();
+      return {
+        id,
+        label: MONEY_IN_LABELS[id],
+        total,
+        transactionCount: rows.length,
+        topSources: [...sourceTotals.entries()]
+          .map(([name, v]) => ({ name, ...v, total: roundMoney(v.total) }))
+          .sort((a, b) => b.total - a.total)
+          .slice(0, 5),
+        dateRange:
+          dates.length > 0
+            ? { start: dates[0]!, end: dates[dates.length - 1]! }
+            : null,
+        transactions: rows.sort((a, b) => a.date.localeCompare(b.date)),
+      };
+    });
 
   const categoryMap = new Map<
     StatementDebitCategoryId,
@@ -602,6 +764,75 @@ export function buildStatementActivitySummary(input: {
   const categorySum = roundMoney(categories.reduce((s, c) => s + c.total, 0));
   const uncategorized = categoryMap.get("other")!;
 
+  const reportedDep = input.statementSummary?.depositsTotal ?? null;
+  const reportedWd = input.statementSummary?.withdrawalsTotal ?? null;
+  const depositGapAbs =
+    reportedDep == null ? null : roundMoney(Math.abs(moneyIn - reportedDep));
+  const withdrawalGapAbs =
+    reportedWd == null ? null : roundMoney(Math.abs(moneyOut - reportedWd));
+
+  const diagnostics: LedgerGapDiagnostics = {
+    depositGapAbs,
+    depositGapPct: gapPct(reportedDep, moneyIn),
+    withdrawalGapAbs,
+    withdrawalGapPct: gapPct(reportedWd, moneyOut),
+    largestCredits: [...moneyInRows]
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 5)
+      .map((r) => ({ amount: r.amount, kind: r.categoryId })),
+    largestDebits: [...classified]
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 5)
+      .map((r) => ({ amount: r.amount, kind: r.categoryId })),
+    suspiciousForDepositGap: [
+      ...(depositGapAbs != null && depositGapAbs > 50
+        ? ["deposit-gap-remaining-after-payroll-credits"]
+        : []),
+      ...credits
+        .filter((c) => classifyCredit(c.description) === "other_deposits")
+        .slice(0, 3)
+        .map((c) => `credit:${redactKindHint(c.description)}`),
+    ].slice(0, 6),
+    suspiciousForWithdrawalGap: [
+      ...(withdrawalGapAbs != null && moneyOut > (reportedWd ?? 0)
+        ? ["parsed-debits-exceed-reported-withdrawals"]
+        : []),
+      ...classified
+        .filter((r) => r.categoryId === "other" || r.amount >= 400)
+        .slice(0, 5)
+        .map((r) => `debit:${r.categoryId}:${redactKindHint(r.merchant)}`),
+    ].slice(0, 8),
+  };
+
+  if (process.env.NODE_ENV !== "production") {
+    console.log(
+      "[statement-ledger]",
+      JSON.stringify({
+        parsedCredits: moneyIn,
+        reportedDeposits: reportedDep,
+        depositGapAbs,
+        depositGapPct: diagnostics.depositGapPct,
+        parsedDebits: moneyOut,
+        reportedWithdrawals: reportedWd,
+        withdrawalGapAbs,
+        withdrawalGapPct: diagnostics.withdrawalGapPct,
+        status: ledgerInfo.status,
+        largestCredits: diagnostics.largestCredits,
+        largestDebits: diagnostics.largestDebits,
+        suspiciousForDepositGap: diagnostics.suspiciousForDepositGap,
+        suspiciousForWithdrawalGap: diagnostics.suspiciousForWithdrawalGap,
+      })
+    );
+  } else {
+    console.log("[statement-ledger]", {
+      status: ledgerInfo.status,
+      depositGapAbs,
+      withdrawalGapAbs,
+      creditCount: credits.length,
+      debitCount: classified.length,
+    });
+  }
+
   return {
     currency,
     moneyIn,
@@ -614,6 +845,7 @@ export function buildStatementActivitySummary(input: {
     debitCount: debits.length,
     creditCount: credits.length,
     categories,
+    moneyInCategories,
     billCards,
     subscriptionCards,
     attentionItems: attentionItems.slice(0, 5),
@@ -629,11 +861,12 @@ export function buildStatementActivitySummary(input: {
       status: ledgerInfo.status,
       depositsStatus: ledgerInfo.depositsStatus,
       withdrawalsStatus: ledgerInfo.withdrawalsStatus,
-      reportedDeposits: input.statementSummary?.depositsTotal ?? null,
-      reportedWithdrawals: input.statementSummary?.withdrawalsTotal ?? null,
+      reportedDeposits: reportedDep,
+      reportedWithdrawals: reportedWd,
       depositsDelta: ledgerInfo.depositsDelta,
       withdrawalsDelta: ledgerInfo.withdrawalsDelta,
       cashFlowReliable: ledgerInfo.cashFlowReliable,
+      diagnostics,
     },
   };
 }

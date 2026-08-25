@@ -79,6 +79,10 @@ export function StatementOverview({
     healthScore.displayMode !== "suppressed" &&
     !healthScore.provisional;
 
+  const moneyInVisible = activity.moneyInCategories.filter(
+    (c) => c.transactionCount > 0
+  );
+
   return (
     <section className="space-y-8 rounded-3xl border border-emerald-400/15 bg-gradient-to-br from-emerald-500/[0.08] via-white/[0.025] to-violet-500/[0.05] p-5 sm:p-7">
       {/* 1. Statement status and reconciliation */}
@@ -190,6 +194,47 @@ export function StatementOverview({
               </li>
             ))}
           </ul>
+        </div>
+      ) : null}
+
+      {/* Money received — credits only, never mixed into spending */}
+      {moneyInVisible.length ? (
+        <div id="money-received">
+          <h3 className="text-sm font-semibold uppercase tracking-widest text-white/55">
+            Money received
+          </h3>
+          <p className="mt-1 text-xs text-white/40">
+            Incoming activity only — not counted in spending categories below.
+          </p>
+          <div className="mt-3 grid gap-3 lg:grid-cols-2">
+            {moneyInVisible.map((cat) => (
+              <div
+                key={cat.id}
+                className="rounded-2xl border border-sky-400/15 bg-sky-500/[0.05] p-4"
+              >
+                <p className="font-semibold text-white">{cat.label}</p>
+                <p className="mt-1 text-sm tabular-nums text-white/70">
+                  {formatMoney(cat.total, currency)} · {cat.transactionCount}{" "}
+                  txn{cat.transactionCount === 1 ? "" : "s"}
+                </p>
+                {cat.dateRange ? (
+                  <p className="mt-1 text-xs text-white/40">
+                    {cat.dateRange.start} → {cat.dateRange.end}
+                  </p>
+                ) : null}
+                {cat.topSources.length ? (
+                  <p className="mt-2 text-xs text-white/45">
+                    Top:{" "}
+                    {cat.topSources
+                      .map(
+                        (s) => `${s.name} (${formatMoney(s.total, currency)})`
+                      )
+                      .join(" · ")}
+                  </p>
+                ) : null}
+              </div>
+            ))}
+          </div>
         </div>
       ) : null}
 

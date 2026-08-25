@@ -19,8 +19,26 @@ export type ParsedRow = Transaction & { strategy: string };
  * Strong incoming-money phrases win over the generic word PAYMENT.
  * No global amount-sign fallback — unknown rows stay debit (conservative).
  */
-function hasStrongIncomingCredit(upper: string, amountRaw: string): boolean {
+export function hasStrongIncomingCredit(
+  upper: string,
+  amountRaw: string
+): boolean {
   if (/\bCR$/u.test(amountRaw.trim())) return true;
+
+  // Payroll / direct deposit — including BoA glued "DES:PAYROLLID:…"
+  if (
+    /\bDES:PAYROLL/u.test(upper) ||
+    /\bPAYROLL(?:\s*ID|\s+DEPOSIT|\b)/u.test(upper) ||
+    /\bDIRECT\s+DEP(?:OSIT)?\b/u.test(upper) ||
+    /\bDIR\s+DEP\b/u.test(upper) ||
+    /\bEMPLOYER\s+PAY\b/u.test(upper) ||
+    (/\bSALARY\b/u.test(upper) &&
+      !/\bCREDIT\s+CARD\b/u.test(upper) &&
+      !/\bDES:PAYMENT\b/u.test(upper))
+  ) {
+    return true;
+  }
+
   if (
     /\b(?:CR|CREDITS?|DEPOSIT|REFUND|ABONO)\b/u.test(upper) &&
     !/\b(?:CREDIT\s+CARD|CREDITS?\s+(?:CARD|LIMIT|AVAILABLE))\b/u.test(upper)
@@ -30,7 +48,7 @@ function hasStrongIncomingCredit(upper: string, amountRaw: string): boolean {
   if (/\bPMNT\s+RCVD\b/u.test(upper)) return true;
   if (/\bPAYMENT\s+RECEIVED\b/u.test(upper)) return true;
   if (/\bPAYMENT\s+FROM\b/u.test(upper)) return true;
-  // Incoming Zelle: "ZELLE FROM …" / "ZELLE PAYMENT FROM …" (not "ZELLE TO …")
+  // Incoming Zelle: "ZELLE FROM …" (not "ZELLE TO …")
   if (
     /\bZELLE\b/u.test(upper) &&
     /\bFROM\b/u.test(upper) &&
@@ -43,7 +61,10 @@ function hasStrongIncomingCredit(upper: string, amountRaw: string): boolean {
 
 function hasOutgoingDebitHint(upper: string, amountRaw: string): boolean {
   if (/\bDR$/u.test(amountRaw.trim())) return true;
-  if (/\bDES:PAYMENT\b/u.test(upper)) return true;
+  // Explicit bill/ACH payment — not payroll.
+  if (/\bDES:PAYMENT\b/u.test(upper) && !/\bDES:PAYROLL/u.test(upper)) {
+    return true;
+  }
   if (
     /\b(?:DR|DEBITS?|PURCHASE|WITHDRAWAL|CHARGE|ATM|COMPRA|CHECKCARD|DEBIT\s+CARD)\b/u.test(
       upper
@@ -51,11 +72,21 @@ function hasOutgoingDebitHint(upper: string, amountRaw: string): boolean {
   ) {
     return true;
   }
-  // Generic PAYMENT / PAYMENTS — not the strong incoming phrases above
+  // Outgoing Zelle
+  if (
+    /\bZELLE\b/u.test(upper) &&
+    /\bTO\b/u.test(upper) &&
+    !/\bZELLE\b[\s\S]{0,48}\bFROM\b/u.test(upper)
+  ) {
+    return true;
+  }
+  // Generic PAYMENT / PAYMENTS — not incoming phrases or payroll
   if (
     /\bPAYMENTS?\b/u.test(upper) &&
     !/\bPAYMENT\s+(?:RECEIVED|FROM)\b/u.test(upper) &&
-    !/\bPMNT\s+RCVD\b/u.test(upper)
+    !/\bPMNT\s+RCVD\b/u.test(upper) &&
+    !/\bDES:PAYROLL/u.test(upper) &&
+    !/\bPAYROLL\b/u.test(upper)
   ) {
     return true;
   }
@@ -190,7 +221,7 @@ function tryDualColumnDebitCredit(
   const debitUpper = /\b(DEBIT|DR|WITHDRAWAL|CHARGE|PURCHASE|ATM)\b/u.test(
     block.toUpperCase()
   );
-  const creditUpper = /\b(CREDIT|CR|DEPOSIT|REFUND)\b/u.test(
+  const creditUpper = /\b(CREDIT|CR|DEPOSIT|REFUND|PAYROLL|DIRECT\s+DEP)\b/u.test(
     block.toUpperCase()
   );
 

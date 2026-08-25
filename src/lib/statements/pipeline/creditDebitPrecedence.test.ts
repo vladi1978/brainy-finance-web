@@ -228,6 +228,7 @@ describe("statement activity with credits still reconciles debits", () => {
     assert.equal(summary.debitCount, 2);
     assert.equal(summary.reconciliation.ok, true);
     assert.equal(summary.reconciliation.delta, 0);
+    assert.ok(summary.moneyInCategories.some((c) => c.transactionCount > 0));
     const assigned = summary.categories.reduce(
       (s, c) => s + c.transactionCount,
       0

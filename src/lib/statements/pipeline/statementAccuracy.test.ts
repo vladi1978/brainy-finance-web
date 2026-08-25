@@ -88,6 +88,91 @@ describe("Cash App ACH amount merge", () => {
   });
 });
 
+describe("payroll credit precedence", () => {
+  it("classifies JCWLLC DES:PAYROLLID glued form as credit", () => {
+    const row = parseOk(
+      "06/20/26 JCWLLC DES:PAYROLLID:944040089821RFX INDN:WORKER CO ID:999 WEB 585.01"
+    );
+    assert.equal(row.type, "credit");
+    assert.equal(row.amount, 585.01);
+  });
+
+  it("classifies DIRECT DEP EMPLOYER as credit", () => {
+    const row = parseOk("06/15/26 DIRECT DEP EMPLOYER ACME CORP 2200.00");
+    assert.equal(row.type, "credit");
+  });
+
+  it("classifies PAYROLL DEPOSIT as credit", () => {
+    const row = parseOk("06/15/26 PAYROLL DEPOSIT ACME CORP 1800.00");
+    assert.equal(row.type, "credit");
+  });
+
+  it("keeps DES:PAYMENT as debit", () => {
+    const row = parseOk(
+      "06/10/26 ATT DES:PAYMENT ID:123456 INDN:CUSTOMER CO ID:999 WEB 95.00"
+    );
+    assert.equal(row.type, "debit");
+  });
+
+  it("keeps US BANK MTGPYMENT as debit", () => {
+    const row = parseOk(
+      "06/05/26 US BANK MTGPYMENT DES:PAYMENT ID:1 INDN:NAME CO 1100.00"
+    );
+    assert.equal(row.type, "debit");
+  });
+
+  it("keeps Affirm/Synchrony/Comenity as debit", () => {
+    for (const line of [
+      "06/09/26 AFFIRM PAYMENT 120.00",
+      "06/09/26 SYNCHRONY BANK PAYMENT 200.00",
+      "06/09/26 COMENITY PAYMENT 85.00",
+    ]) {
+      assert.equal(parseOk(line).type, "debit");
+    }
+  });
+
+  it("keeps PAYMENT RECEIVED and REFUND as credit", () => {
+    assert.equal(parseOk("06/10/26 PAYMENT RECEIVED THANK YOU 200.00").type, "credit");
+    assert.equal(parseOk("06/10/26 AMAZON REFUND 12.34").type, "credit");
+  });
+
+  it("classifies incoming Zelle as credit and outgoing as debit", () => {
+    assert.equal(
+      parseOk("06/12/26 ZELLE FROM J DOE CONF#ABC123 75.50").type,
+      "credit"
+    );
+    assert.equal(
+      parseOk("06/12/26 ZELLE TO J DOE CONF#XYZ 40.00").type,
+      "debit"
+    );
+  });
+
+  it("puts payroll credits under Money received, not spending", () => {
+    const txns = [
+      txn(
+        "2026-06-20",
+        "JCWLLC DES:PAYROLLID:944040089821RFX INDN:WORKER",
+        585.01,
+        "credit"
+      ),
+      txn("2026-06-10", "SHELL OIL", 40),
+    ];
+    const summary = activityFor(txns);
+    assert.equal(summary.creditCount, 1);
+    assert.equal(summary.debitCount, 1);
+    const payroll = summary.moneyInCategories.find((c) => c.id === "payroll");
+    assert.equal(payroll?.transactionCount, 1);
+    assert.equal(payroll?.total, 585.01);
+    assert.equal(
+      summary.categories.reduce((s, c) => s + c.transactionCount, 0),
+      1
+    );
+    assert.equal(summary.reconciliation.ok, true);
+    assert.equal(summary.netCashFlow, null);
+    assert.equal(summary.cashFlowReliable, false);
+  });
+});
+
 describe("classification exclusivity", () => {
   it("classifies mortgage as housing", () => {
     assert.equal(isHousingPaymentText("US BANK HOME MORTGAGE PAYMENT"), true);
@@ -102,8 +187,10 @@ describe("classification exclusivity", () => {
     assert.equal(id, "housing");
   });
 
-  it("classifies Republic Services as bills/utility", () => {
-    const txns = [txn("2026-06-08", "REPUBLIC SERVICES DES:PAYMENT", 48.2)];
+  it("classifies Republic Services / RSIBILLPAY as bills", () => {
+    const txns = [
+      txn("2026-06-08", "REPUBLICSERVICES RSIBILLPAY DES:PAYMENT", 48.2),
+    ];
     const clusters = buildMerchantClusters(txns);
     const id = classifyDebit({
       txn: txns[0]!,
@@ -112,6 +199,22 @@ describe("classification exclusivity", () => {
       subscriptionByCluster: new Map(),
     });
     assert.equal(id, "bills");
+  });
+
+  it("classifies Cashsavers and Totaltruck as shopping", () => {
+    for (const desc of ["CASHSAVERS MARKET #12", "TOTALTRUCK PARTS LLC"]) {
+      const txns = [txn("2026-06-08", desc, 22)];
+      const clusters = buildMerchantClusters(txns);
+      assert.equal(
+        classifyDebit({
+          txn: txns[0]!,
+          cluster: clusters[0]!,
+          normalizedName: desc,
+          subscriptionByCluster: new Map(),
+        }),
+        "shopping"
+      );
+    }
   });
 
   it("classifies Synchrony/Affirm/Comenity as debt financing", () => {
