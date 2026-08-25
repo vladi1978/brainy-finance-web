@@ -74,6 +74,11 @@ export type HealthScoreResult = {
   score: number;
   label: HealthScoreLabel;
   factors: Array<{ id: string; label: string; impact: number }>;
+  /** True when ledger reconciliation is incomplete — score must not read as final. */
+  provisional?: boolean;
+  displayMode?: "numeric" | "provisional" | "suppressed";
+  analysisConfidence?: "high" | "medium" | "low";
+  statusNote?: string;
 };
 
 export type StatementIntelligence = {

@@ -6,7 +6,11 @@ import {
 } from "../recurrenceEvidence";
 import { ANNUAL_ESTIMATE_UNAVAILABLE } from "../evidenceGuarded";
 import { collectDedupedFees } from "../feeDedupe";
-import { isExpectedBillSubscription } from "../expectedBills";
+import {
+  isDebtFinancingText,
+  isExpectedBillSubscription,
+  isHousingPaymentText,
+} from "../expectedBills";
 import type { IntelligenceInput, SavingsOpportunity } from "./types";
 import { categoryForSavingsId } from "./financialCategories";
 import { annualizePeriodAmount, statementPeriodDays } from "./period";
@@ -205,6 +209,12 @@ export function buildSavingsOpportunities(
 
   const flagged = subscriptions.filter((s) => {
     if (isExpectedBillSubscription(s)) return false;
+    if (isDebtFinancingText(`${s.normalizedName} ${s.merchant} ${s.category}`)) {
+      return false;
+    }
+    if (isHousingPaymentText(`${s.normalizedName} ${s.merchant}`)) {
+      return false;
+    }
     if (
       !(
         s.flags.forgotten ||
@@ -235,6 +245,8 @@ export function buildSavingsOpportunities(
     const weakFlagged = subscriptions.filter(
       (s) =>
         !isExpectedBillSubscription(s) &&
+        !isDebtFinancingText(`${s.normalizedName} ${s.merchant}`) &&
+        !isHousingPaymentText(`${s.normalizedName} ${s.merchant}`) &&
         (s.flags.forgotten ||
           s.flags.duplicate ||
           s.flags.priceIncreased ||

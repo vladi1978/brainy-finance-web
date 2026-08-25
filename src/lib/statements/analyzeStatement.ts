@@ -512,6 +512,7 @@ export async function analyzeStatementPdf(
     transfers,
     transactions,
     merchantNormByClusterId,
+    statementSummary: parseDebug?.statementSummary ?? null,
   });
 
   return {

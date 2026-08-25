@@ -147,6 +147,7 @@ describe("statement activity reconciliation", () => {
       clusters,
       subscriptions: [],
       statementPeriod: { start: "2026-06-01", end: "2026-06-30" },
+      statementSummary: { depositsTotal: null, withdrawalsTotal: null },
     });
     const assigned = summary.categories.reduce(
       (s, c) => s + c.transactionCount,
@@ -155,6 +156,7 @@ describe("statement activity reconciliation", () => {
     assert.equal(assigned, txns.length);
     assert.equal(summary.reconciliation.ok, true);
     assert.equal(summary.reconciliation.delta, 0);
+    assert.ok(summary.ledger);
   });
 
   it("produces deterministic output for the same fixture", () => {
@@ -168,6 +170,7 @@ describe("statement activity reconciliation", () => {
       clusters,
       subscriptions: [] as SubscriptionInsight[],
       statementPeriod: { start: "2026-06-01", end: "2026-06-30" as const },
+      statementSummary: { depositsTotal: null, withdrawalsTotal: null },
     };
     const a = buildStatementActivitySummary(input);
     const b = buildStatementActivitySummary(input);

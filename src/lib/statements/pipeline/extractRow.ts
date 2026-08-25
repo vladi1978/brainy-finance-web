@@ -81,6 +81,32 @@ function debitCreditFromDescription(
   return { type: "debit", signedValue: parsed.value, parsed };
 }
 
+function isAchDescriptorBody(text: string): boolean {
+  return /\bDES:/iu.test(text) || /\bINDN:/iu.test(text);
+}
+
+function amountHasCents(raw: string): boolean {
+  return /[.,]\d{1,2}\b/u.test(raw.trim());
+}
+
+/**
+ * Reject integer tokens that are clearly ID/INDN field fragments, not money.
+ */
+function amountLooksLikeEmbeddedRef(amountRaw: string, surrounding: string): boolean {
+  if (amountHasCents(amountRaw)) return false;
+  const digits = amountRaw.replace(/[^\d]/g, "");
+  if (digits.length < 3) return false;
+  const u = surrounding.toUpperCase().replace(/\s+/g, " ");
+  if (new RegExp(String.raw`\b(?:ID|INDN|CO ID):\s*[^ ]*${digits}`, "u").test(u)) {
+    return true;
+  }
+  // ACH bodies without any xx.xx money must not invent an integer amount.
+  if (isAchDescriptorBody(u) && !/\d+[.,]\d{2}/.test(u)) {
+    return true;
+  }
+  return false;
+}
+
 function tryLeadingDateTailAmount(
   block: string,
   defaultYear: number,
@@ -109,6 +135,12 @@ function tryLeadingDateTailAmount(
     primaryParsed = parseAmountFragment(primaryRaw);
   }
   if (!primaryParsed || primaryParsed.value === 0) return null;
+  if (!isPlausibleMoneyToken(primaryRaw)) return null;
+  if (amountLooksLikeEmbeddedRef(primaryRaw, afterDate)) return null;
+  // ACH DES:/INDN: rows require a real cents amount (prevents ID→$7419).
+  if (isAchDescriptorBody(peeled.prefix) && !amountHasCents(primaryRaw)) {
+    return null;
+  }
 
   const descCore = peeled.prefix.trim();
 
@@ -304,9 +336,12 @@ function tryFallbackAmountScan(
   if (!parsedList.length) return null;
 
   // Prefer a true money token with cents when present.
-  const withCents = parsedList.filter((x) => /[.,]\d{1,2}\b/u.test(x.r));
+  const withCents = parsedList.filter((x) => amountHasCents(x.r));
+  // ACH DES:/INDN: bodies must use cents — never invent from ID integers.
+  if (isAchDescriptorBody(withoutDate) && !withCents.length) return null;
   const pool = withCents.length ? withCents : parsedList;
   const last = pool[pool.length - 1];
+  if (amountLooksLikeEmbeddedRef(last.r, withoutDate)) return null;
   const amountIdx = withoutDate.lastIndexOf(last.r);
   if (amountIdx < 0) return null;
 

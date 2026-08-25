@@ -6,10 +6,32 @@ import {
 } from "./amounts";
 import { PAGE_HEADER_SIMPLE, SKIP_LINE, STATEMENT_PAGE_HEADER } from "./noise";
 
-/** BoA ACH/online continuation: "ID:1234567890 WEB" or "CO ID:… WEB -126.24" */
-function isBoaWebContinuation(line: string): boolean {
+/**
+ * BoA ACH continuation fragments that must attach to a dated DES:/INDN: parent.
+ * Includes "ID:… WEB", "ID:…", and "ID:… <amount>" — never start a new txn alone.
+ */
+function isBoaAchContinuation(line: string): boolean {
   const t = stripLeadingNoise(line).trim();
-  return /^(?:CO\s+)?ID:\s*\d{6,}\s+WEB\b/iu.test(t);
+  if (!t || /^\d{1,2}\/\d{1,2}/.test(t) || /^\d{4}-\d{2}-\d{2}/.test(t)) {
+    return false;
+  }
+  if (/^(?:CO\s+)?ID:\s*\d{4,}\s+WEB\b/iu.test(t)) return true;
+  if (
+    /^(?:CO\s+)?ID:\s*\d{4,}(?:\s+[\u2212+-]?\(?[\p{Sc}]?\s*\d[\d.,]*(?:\.\d{1,2})?\)?)?\s*$/iu.test(
+      t
+    )
+  ) {
+    return true;
+  }
+  // Short "ID:xxxx TOKEN" tails without a posting date.
+  if (
+    /^(?:CO\s+)?ID:\s*\d{4,}\b/iu.test(t) &&
+    t.length <= 96 &&
+    !/\bDES:/iu.test(t)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function parentLooksLikeDatedTxnStructure(
@@ -137,7 +159,7 @@ export function looksLikeTransactionAnchor(
   if (!t || SKIP_LINE.test(t)) return false;
   if (PAGE_HEADER_SIMPLE.test(t)) return false;
   // Continuations attach to a parent; never start a new block from ID/WEB alone.
-  if (isBoaWebContinuation(t)) return false;
+  if (isBoaAchContinuation(t)) return false;
 
   if (/^\d{4}-\d{2}-\d{2}\b/.test(t)) return true;
   if (/^\d{1,2}\s*[/.-]\s*\d{1,2}\s*[/.-]\s*\d{2,4}\b/.test(t)) return true;
@@ -177,7 +199,7 @@ function groupLinesIntoBlocks(lines: string[], defaultYear: number): string[] {
       continue;
     }
 
-    if (isBoaWebContinuation(line)) {
+    if (isBoaAchContinuation(line)) {
       if (cur && parentLooksLikeDatedTxnStructure(cur, defaultYear)) {
         cur += " " + line;
       }

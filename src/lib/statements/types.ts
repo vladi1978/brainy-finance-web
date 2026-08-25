@@ -144,6 +144,11 @@ export type ParsePipelineDebug = {
     currency: string;
     source: string;
   }>;
+  /** Bank-printed summary totals when detectable (for ledger reconciliation). */
+  statementSummary?: {
+    depositsTotal: number | null;
+    withdrawalsTotal: number | null;
+  };
 };
 
 import type { MerchantNormalizationDiagnostic } from "./merchantNormalization";

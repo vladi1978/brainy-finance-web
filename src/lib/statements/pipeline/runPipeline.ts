@@ -4,6 +4,7 @@ import { parseBlockWithStrategies, type ParsedRow } from "./extractRow";
 import { inferStatementYear } from "./dates";
 import { normalizePdfText, splitPhysicalLines } from "./textNormalize";
 import { reconstructStatementLines } from "./reconstructLines";
+import { extractBankStatementSummaryTotals } from "./statementSummary";
 import type { ParsePipelineDebug, Transaction } from "../types";
 import type { PipelineResult } from "./types";
 import { passesPostParseValidation } from "./validateRow";
@@ -160,6 +161,8 @@ export async function runTransactionPipeline(
     );
   }
 
+  const statementSummary = extractBankStatementSummaryTotals(normalized);
+
   const debug: ParsePipelineDebug = {
     totalExtractedChars,
     physicalLineCount: physical.length,
@@ -181,6 +184,7 @@ export async function runTransactionPipeline(
       currency: t.currency,
       source: fullTextAiFallbackUsed ? "ia-texto-completo" : "mezcla",
     })),
+    statementSummary,
   };
 
   return { transactions: merged, debug };

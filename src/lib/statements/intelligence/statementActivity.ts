@@ -6,13 +6,21 @@ import { clusterMerchantPresentation } from "../merchantNormalization";
 import type { MerchantNormalizationResult } from "../merchantNormalization";
 import { normalizeMerchantKey } from "../clusters";
 import { classifyInsurancePayment } from "../insuranceClassify";
-import { isUtilityLikeMerchantText } from "../expectedBills";
+import {
+  isDebtFinancingText,
+  isHousingPaymentText,
+  isUtilityLikeMerchantText,
+} from "../expectedBills";
 import {
   hasRecurrenceEvidence,
   canPresentMonthlyCadence,
 } from "../recurrenceEvidence";
 import { inferSpendingInsightCategory } from "../spendingSignals";
 import { isRideshareOrDeliveryMerchant } from "./presentationGroups";
+import {
+  classifyLedgerReconciliation,
+  type LedgerReconciliationStatus,
+} from "../pipeline/statementSummary";
 import type {
   MerchantCluster,
   StatementPeriod,
@@ -21,11 +29,16 @@ import type {
 } from "../types";
 
 export type StatementDebitCategoryId =
+  | "housing"
   | "bills"
   | "insurance"
+  | "debt_financing"
   | "subscriptions"
   | "shopping"
+  | "dining"
   | "food_delivery_rideshare"
+  | "fuel"
+  | "software_services"
   | "fees"
   | "transfers_payments"
   | "other";
@@ -60,8 +73,16 @@ export type StatementBillCard = {
   currency: string;
   dateRange: { start: string; end: string } | null;
   cadenceLabel: string | null;
-  billKind: "phone" | "internet" | "utility" | "insurance" | "other";
+  billKind:
+    | "phone"
+    | "internet"
+    | "utility"
+    | "insurance"
+    | "housing"
+    | "other";
   insuranceSubtype: string | null;
+  /** Soft note when a single low charge should not be treated as a full bill. */
+  observationNote: string | null;
 };
 
 export type StatementSubscriptionCard = {
@@ -87,7 +108,8 @@ export type StatementActivitySummary = {
   currency: string;
   moneyIn: number;
   moneyOut: number;
-  netCashFlow: number;
+  netCashFlow: number | null;
+  cashFlowReliable: boolean;
   transactionCount: number;
   debitCount: number;
   creditCount: number;
@@ -103,18 +125,50 @@ export type StatementActivitySummary = {
     delta: number;
     duplicateDebitKeys: number;
   };
+  ledger: {
+    status: LedgerReconciliationStatus;
+    depositsStatus: LedgerReconciliationStatus;
+    withdrawalsStatus: LedgerReconciliationStatus;
+    reportedDeposits: number | null;
+    reportedWithdrawals: number | null;
+    depositsDelta: number | null;
+    withdrawalsDelta: number | null;
+    cashFlowReliable: boolean;
+  };
 };
 
 const CATEGORY_LABELS: Record<StatementDebitCategoryId, string> = {
-  bills: "Bills",
+  housing: "Housing",
+  bills: "Bills & utilities",
   insurance: "Insurance",
+  debt_financing: "Debt & financing",
   subscriptions: "Subscriptions",
   shopping: "Shopping",
-  food_delivery_rideshare: "Food / delivery / rideshare",
+  dining: "Dining",
+  food_delivery_rideshare: "Delivery / rideshare",
+  fuel: "Fuel",
+  software_services: "Software / services",
   fees: "Fees",
   transfers_payments: "Transfers / payments",
   other: "Other",
 };
+
+/** Display order for overview hierarchy. */
+export const STATEMENT_CATEGORY_ORDER: StatementDebitCategoryId[] = [
+  "housing",
+  "bills",
+  "insurance",
+  "debt_financing",
+  "subscriptions",
+  "shopping",
+  "dining",
+  "food_delivery_rideshare",
+  "fuel",
+  "software_services",
+  "fees",
+  "transfers_payments",
+  "other",
+];
 
 function txnKey(t: Transaction): string {
   return `${t.date}|${t.description}|${t.amount}|${t.type}|${t.currency}`;
@@ -127,13 +181,22 @@ function roundMoney(n: number): number {
 function billKindFromText(text: string): StatementBillCard["billKind"] {
   const u = text.toUpperCase();
   if (classifyInsurancePayment(u).isInsurance) return "insurance";
-  if (/\b(VERIZON|AT\s*&\s*T|\bATT\b|T[-\s]*MOBILE|SPRINT|MOBILE|WIRELESS|PHONE)\b/u.test(u)) {
+  if (isHousingPaymentText(u)) return "housing";
+  if (
+    /\b(VERIZON|AT\s*&\s*T|\bATT\b|T[-\s]*MOBILE|SPRINT|MOBILE|WIRELESS|PHONE)\b/u.test(
+      u
+    )
+  ) {
     return "phone";
   }
   if (/\b(COMCAST|XFINITY|SPECTRUM|INTERNET|FIBER|COX\s+CABLE)\b/u.test(u)) {
     return "internet";
   }
-  if (/\b(ELECTRIC|POWER|WATER|GAS\s+CO|UTILITY|UTILITIES)\b/u.test(u)) {
+  if (
+    /\b(ELECTRIC|POWER|WATER|GAS\s+CO|UTILITY|UTILITIES|REPUBLIC\s+SERVICES|WASTE)\b/u.test(
+      u
+    )
+  ) {
     return "utility";
   }
   return "other";
@@ -147,15 +210,22 @@ function isFeeText(text: string): boolean {
 
 function isTransferText(text: string): boolean {
   const u = text.toUpperCase();
-  if (isUtilityLikeMerchantText(u) || classifyInsurancePayment(u).isInsurance) {
+  if (
+    isUtilityLikeMerchantText(u) ||
+    classifyInsurancePayment(u).isInsurance ||
+    isDebtFinancingText(u) ||
+    isHousingPaymentText(u)
+  ) {
     return false;
   }
   return (
-    /\b(ZELLE|VENMO|CASH\s*APP|PAYPAL|WIRE\s+TRANSFER|ACH\s+TRANSFER)\b/u.test(
+    /\b(ZELLE|VENMO|CASH\s*APP|CASHAPP|PAYPAL|WIRE\s+TRANSFER|ACH\s+TRANSFER)\b/u.test(
       u
     ) ||
     (/\b(TRANSFER\b|PMNT\s+RCVD|PAYMENT\s+FROM|PAYMENT\s+TO)\b/u.test(u) &&
-      !/\b(DES:PAYMENT|UTILITY|ELECTRIC|POWER|INSURANCE|PREM)\b/u.test(u))
+      !/\b(DES:PAYMENT|UTILITY|ELECTRIC|POWER|INSURANCE|PREM|MORTGAGE)\b/u.test(
+        u
+      ))
   );
 }
 
@@ -171,7 +241,31 @@ function isMembershipCharge(text: string): boolean {
   );
 }
 
-function classifyDebit(args: {
+function isFuelText(text: string): boolean {
+  return /\b(SHELL\b|EXXON|CHEVRON|\bBP\b|\bMOBIL\b|TEXACO|MARATHON|SPEEDWAY|WAWA\b|QT\b|QUIK\s+TRIP|LOVE'?S\b|\bRACETRAC\b|FUEL\b|GAS\s+STATION)\b/ui.test(
+    text
+  );
+}
+
+function isDiningText(text: string): boolean {
+  return /\b(GOLDEN\s+CORRAL|MCDONALD|CHIPOTLE|TACO\s+BELL|SUBWAY|PANDA\s+EXPRESS|RESTAURANT|\bGRILL\b|\bDINER\b|WENDY'?S|BURGER\s+KING|CHILI'?S|APPLEBEE)\b/ui.test(
+    text
+  );
+}
+
+function isSoftwareServiceText(text: string): boolean {
+  return /\b(DEEPGRAM|ELEVENLABS|ELEVEN\s*LABS|OPENAI|CHATGPT|ANTHROPIC|GITHUB|GITLAB|NOTION|FIGMA|ADOBE|ZOOM\.US|DROPBOX|HEROKU|VERCEL|AWS|DIGITALOCEAN)\b/ui.test(
+    text
+  );
+}
+
+function isPhoneBillText(text: string): boolean {
+  return /\b(VERIZON|AT\s*&\s*T|\bATT\b|T[-\s]*MOBILE|SPRINT)\b/u.test(
+    text.toUpperCase()
+  );
+}
+
+export function classifyDebit(args: {
   txn: Transaction;
   cluster: MerchantCluster;
   normalizedName: string;
@@ -181,45 +275,69 @@ function classifyDebit(args: {
   const spendCat = inferSpendingInsightCategory(args.cluster);
 
   if (isFeeText(blob) || spendCat === "fees") return "fees";
-  if (isTransferText(blob) || spendCat === "transfers") return "transfers_payments";
+  if (isDebtFinancingText(blob)) return "debt_financing";
+  if (isHousingPaymentText(blob)) return "housing";
+  if (isTransferText(blob) || spendCat === "transfers") {
+    return "transfers_payments";
+  }
 
   const insurance = classifyInsurancePayment(blob);
   if (insurance.isInsurance) return "insurance";
 
   if (
-    isUtilityLikeMerchantText(blob) &&
-    !isShoppingText(blob) &&
-    billKindFromText(blob) !== "insurance"
+    (isUtilityLikeMerchantText(blob) || isPhoneBillText(blob)) &&
+    !isShoppingText(blob)
   ) {
     return "bills";
+  }
+
+  if (isFuelText(blob) || spendCat === "gas") return "fuel";
+  if (isDiningText(blob) || spendCat === "restaurants" || spendCat === "cafes") {
+    return "dining";
   }
 
   if (isShoppingText(blob) || spendCat === "retail") {
     if (!isMembershipCharge(blob)) return "shopping";
   }
 
+  if (isSoftwareServiceText(blob)) return "software_services";
+
   const sub = args.subscriptionByCluster.get(args.cluster.id);
   if (sub) {
-    const chargeCount = args.cluster.charges.filter((c) => c.type === "debit").length;
-    const confirmed =
-      sub.flags.confirmed &&
-      hasRecurrenceEvidence(chargeCount) &&
-      canPresentMonthlyCadence({ frequency: sub.frequency, chargeCount });
-    const possible =
-      !confirmed &&
-      chargeCount >= 1 &&
-      !isShoppingText(blob) &&
-      !isMembershipCharge(blob);
-    if (confirmed || possible) return "subscriptions";
+    const chargeCount = args.cluster.charges.filter(
+      (c) => c.type === "debit"
+    ).length;
+    const subBlob = `${sub.normalizedName} ${sub.merchant} ${sub.category}`;
+    if (
+      isDebtFinancingText(subBlob) ||
+      isHousingPaymentText(subBlob) ||
+      isUtilityLikeMerchantText(subBlob) ||
+      isPhoneBillText(subBlob) ||
+      classifyInsurancePayment(subBlob).isInsurance ||
+      (isShoppingText(subBlob) && !isMembershipCharge(subBlob))
+    ) {
+      // fall through — never treat these as subscriptions
+    } else {
+      const confirmed =
+        sub.flags.confirmed &&
+        hasRecurrenceEvidence(chargeCount) &&
+        canPresentMonthlyCadence({ frequency: sub.frequency, chargeCount });
+      const possible =
+        !confirmed &&
+        chargeCount >= 1 &&
+        !isShoppingText(blob) &&
+        !isMembershipCharge(blob);
+      if (confirmed || possible) return "subscriptions";
+    }
   }
 
   if (
     isRideshareOrDeliveryMerchant(blob) ||
-    spendCat === "restaurants" ||
-    spendCat === "cafes" ||
     spendCat === "convenience" ||
     spendCat === "groceries"
   ) {
+    if (spendCat === "groceries") return "shopping";
+    if (spendCat === "convenience") return "shopping";
     return "food_delivery_rideshare";
   }
 
@@ -232,11 +350,14 @@ export function buildStatementActivitySummary(input: {
   subscriptions: SubscriptionInsight[];
   statementPeriod: StatementPeriod | null;
   merchantNormByClusterId?: Map<string, MerchantNormalizationResult>;
+  statementSummary?: {
+    depositsTotal: number | null;
+    withdrawalsTotal: number | null;
+  } | null;
 }): StatementActivitySummary {
   const debits = input.transactions.filter((t) => t.type === "debit");
   const credits = input.transactions.filter((t) => t.type === "credit");
-  const currency =
-    debits[0]?.currency ?? credits[0]?.currency ?? "USD";
+  const currency = debits[0]?.currency ?? credits[0]?.currency ?? "USD";
 
   const clusterByKey = new Map(input.clusters.map((c) => [c.key, c]));
 
@@ -297,47 +418,61 @@ export function buildStatementActivitySummary(input: {
   const moneyOut = roundMoney(classified.reduce((s, t) => s + t.amount, 0));
   const moneyIn = roundMoney(credits.reduce((s, t) => s + t.amount, 0));
 
-  const categoryMap = new Map<StatementDebitCategoryId, StatementActivityTransaction[]>();
-  for (const id of Object.keys(CATEGORY_LABELS) as StatementDebitCategoryId[]) {
+  const ledgerInfo = classifyLedgerReconciliation({
+    reportedDeposits: input.statementSummary?.depositsTotal ?? null,
+    reportedWithdrawals: input.statementSummary?.withdrawalsTotal ?? null,
+    parsedCredits: moneyIn,
+    parsedDebits: moneyOut,
+  });
+
+  const categoryMap = new Map<
+    StatementDebitCategoryId,
+    StatementActivityTransaction[]
+  >();
+  for (const id of STATEMENT_CATEGORY_ORDER) {
     categoryMap.set(id, []);
   }
   for (const row of classified) {
     categoryMap.get(row.categoryId)!.push(row);
   }
 
-  const categories: StatementActivityCategory[] = (
-    Object.keys(CATEGORY_LABELS) as StatementDebitCategoryId[]
-  ).map((id) => {
-    const rows = categoryMap.get(id)!;
-    const total = roundMoney(rows.reduce((s, r) => s + r.amount, 0));
-    const merchantTotals = new Map<string, { total: number; count: number }>();
-    for (const row of rows) {
-      const name = row.normalizedName || row.merchant;
-      const prev = merchantTotals.get(name) ?? { total: 0, count: 0 };
-      merchantTotals.set(name, {
-        total: prev.total + row.amount,
-        count: prev.count + 1,
-      });
-    }
-    const topMerchants = [...merchantTotals.entries()]
-      .map(([name, v]) => ({ name, ...v, total: roundMoney(v.total) }))
-      .sort((a, b) => b.total - a.total)
-      .slice(0, 5);
+  const categories: StatementActivityCategory[] = STATEMENT_CATEGORY_ORDER.map(
+    (id) => {
+      const rows = categoryMap.get(id)!;
+      const total = roundMoney(rows.reduce((s, r) => s + r.amount, 0));
+      const merchantTotals = new Map<string, { total: number; count: number }>();
+      for (const row of rows) {
+        const name = row.normalizedName || row.merchant;
+        const prev = merchantTotals.get(name) ?? { total: 0, count: 0 };
+        merchantTotals.set(name, {
+          total: prev.total + row.amount,
+          count: prev.count + 1,
+        });
+      }
+      const topMerchants = [...merchantTotals.entries()]
+        .map(([name, v]) => ({ name, ...v, total: roundMoney(v.total) }))
+        .sort((a, b) => b.total - a.total)
+        .slice(0, 5);
 
-    return {
-      id,
-      label: CATEGORY_LABELS[id],
-      total,
-      transactionCount: rows.length,
-      percentOfDebits: moneyOut > 0 ? roundMoney((total / moneyOut) * 100) : 0,
-      topMerchants,
-      transactions: rows.sort((a, b) => a.date.localeCompare(b.date)),
-    };
-  });
+      return {
+        id,
+        label: CATEGORY_LABELS[id],
+        total,
+        transactionCount: rows.length,
+        percentOfDebits: moneyOut > 0 ? roundMoney((total / moneyOut) * 100) : 0,
+        topMerchants,
+        transactions: rows.sort((a, b) => a.date.localeCompare(b.date)),
+      };
+    }
+  );
 
   const billCards: StatementBillCard[] = [];
   const billClusterIds = new Set<string>();
-  for (const row of [...categoryMap.get("bills")!, ...categoryMap.get("insurance")!]) {
+  for (const row of [
+    ...categoryMap.get("housing")!,
+    ...categoryMap.get("bills")!,
+    ...categoryMap.get("insurance")!,
+  ]) {
     if (billClusterIds.has(row.clusterId)) continue;
     billClusterIds.add(row.clusterId);
     const cluster = input.clusters.find((c) => c.id === row.clusterId);
@@ -348,15 +483,24 @@ export function buildStatementActivitySummary(input: {
     const insurance = classifyInsurancePayment(
       `${row.normalizedName} ${row.merchant} ${cluster.key}`
     );
-    const kind = billKindFromText(`${row.normalizedName} ${cluster.key}`);
+    const kind =
+      row.categoryId === "housing"
+        ? "housing"
+        : billKindFromText(`${row.normalizedName} ${cluster.key}`);
     const sub = subscriptionByCluster.get(row.clusterId);
+    const observedAmount = roundMoney(
+      clusterDebits.reduce((s, c) => s + c.amount, 0)
+    );
+    let observationNote: string | null = null;
+    if (kind === "insurance" && chargeCount === 1 && observedAmount < 50) {
+      observationNote =
+        "Single low-value insurance-related charge — not treated as a full premium.";
+    }
     billCards.push({
       id: `bill:${row.clusterId}`,
       merchant: row.merchant,
       normalizedName: row.normalizedName,
-      observedAmount: roundMoney(
-        clusterDebits.reduce((s, c) => s + c.amount, 0)
-      ),
+      observedAmount,
       chargeCount,
       currency: row.currency,
       dateRange:
@@ -381,14 +525,23 @@ export function buildStatementActivitySummary(input: {
           ? "Insurance — type not confirmed"
           : insurance.type
         : null,
+      observationNote,
     });
   }
+
+  const billNameKeys = new Set(
+    billCards.map((b) => b.normalizedName.trim().toUpperCase())
+  );
 
   const subscriptionCards: StatementSubscriptionCard[] = input.subscriptions
     .filter((sub) => {
       const blob = `${sub.normalizedName} ${sub.merchant} ${sub.category}`;
       if (isShoppingText(blob) && !isMembershipCharge(blob)) return false;
       if (classifyInsurancePayment(blob).isInsurance) return false;
+      if (isUtilityLikeMerchantText(blob) || isPhoneBillText(blob)) return false;
+      if (isDebtFinancingText(blob) || isHousingPaymentText(blob)) return false;
+      if (billNameKeys.has(sub.normalizedName.trim().toUpperCase())) return false;
+      if (isTransferText(blob)) return false;
       return true;
     })
     .map((sub) => {
@@ -446,16 +599,17 @@ export function buildStatementActivitySummary(input: {
     });
   }
 
-  const categorySum = roundMoney(
-    categories.reduce((s, c) => s + c.total, 0)
-  );
+  const categorySum = roundMoney(categories.reduce((s, c) => s + c.total, 0));
   const uncategorized = categoryMap.get("other")!;
 
   return {
     currency,
     moneyIn,
     moneyOut,
-    netCashFlow: roundMoney(moneyIn - moneyOut),
+    netCashFlow: ledgerInfo.cashFlowReliable
+      ? roundMoney(moneyIn - moneyOut)
+      : null,
+    cashFlowReliable: ledgerInfo.cashFlowReliable,
     transactionCount: input.transactions.length,
     debitCount: debits.length,
     creditCount: credits.length,
@@ -470,6 +624,16 @@ export function buildStatementActivitySummary(input: {
       acceptedDebitTotal: moneyOut,
       delta: roundMoney(categorySum - moneyOut),
       duplicateDebitKeys,
+    },
+    ledger: {
+      status: ledgerInfo.status,
+      depositsStatus: ledgerInfo.depositsStatus,
+      withdrawalsStatus: ledgerInfo.withdrawalsStatus,
+      reportedDeposits: input.statementSummary?.depositsTotal ?? null,
+      reportedWithdrawals: input.statementSummary?.withdrawalsTotal ?? null,
+      depositsDelta: ledgerInfo.depositsDelta,
+      withdrawalsDelta: ledgerInfo.withdrawalsDelta,
+      cashFlowReliable: ledgerInfo.cashFlowReliable,
     },
   };
 }

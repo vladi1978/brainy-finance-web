@@ -70,6 +70,10 @@ export function buildStatementIntelligence(
       string,
       import("../merchantNormalization").MerchantNormalizationResult
     >;
+    statementSummary?: {
+      depositsTotal: number | null;
+      withdrawalsTotal: number | null;
+    } | null;
   }
 ): StatementIntelligence {
   const clusterById = new Map(result.clusters.map((c) => [c.id, c]));
@@ -113,7 +117,18 @@ export function buildStatementIntelligence(
   const savings = buildSavingsOpportunities(input);
   const financialSummary = buildFinancialSummary(savings, recommendations);
   const copilot = buildCopilotTimeline(input, { financialSummary });
-  const healthScore = buildHealthScore(input);
+  const statementActivity = buildStatementActivitySummary({
+    transactions: result.transactions,
+    clusters: result.clusters,
+    subscriptions: result.subscriptions,
+    statementPeriod: result.statementPeriod,
+    merchantNormByClusterId: result.merchantNormByClusterId,
+    statementSummary: result.statementSummary ?? null,
+  });
+
+  const healthScore = buildHealthScore(input, {
+    ledgerStatus: statementActivity.ledger.status,
+  });
   const copilotAssistant = buildCopilotAssistantContext(input, {
     copilot,
     healthScore,
@@ -125,14 +140,6 @@ export function buildStatementIntelligence(
     visibleRecurring,
     visibleInsights,
     clusters: result.clusters,
-  });
-
-  const statementActivity = buildStatementActivitySummary({
-    transactions: result.transactions,
-    clusters: result.clusters,
-    subscriptions: result.subscriptions,
-    statementPeriod: result.statementPeriod,
-    merchantNormByClusterId: result.merchantNormByClusterId,
   });
 
   return {

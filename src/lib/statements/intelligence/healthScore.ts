@@ -1,4 +1,9 @@
-import type { HealthScoreLabel, HealthScoreResult, IntelligenceInput } from "./types";
+import type {
+  HealthScoreLabel,
+  HealthScoreResult,
+  IntelligenceInput,
+} from "./types";
+import type { LedgerReconciliationStatus } from "../pipeline/statementSummary";
 import { buildSavingsOpportunities } from "./savings";
 import { buildGuardedSubscriptionTotals } from "../evidenceGuarded";
 import { collectDedupedFees } from "../feeDedupe";
@@ -42,7 +47,12 @@ function consistencyBonus(
   return 0;
 }
 
-export function buildHealthScore(input: IntelligenceInput): HealthScoreResult {
+export function buildHealthScore(
+  input: IntelligenceInput,
+  opts?: {
+    ledgerStatus?: LedgerReconciliationStatus;
+  }
+): HealthScoreResult {
   let score = 100;
   const factors: HealthScoreResult["factors"] = [];
   const byCluster = new Map(input.clusters.map((c) => [c.id, c]));
@@ -57,7 +67,6 @@ export function buildHealthScore(input: IntelligenceInput): HealthScoreResult {
     clusters: input.clusters,
   });
   if (feeSet.observedPeriodTotal > 0) {
-    // One consolidated fee penalty — do not stack bank-fee + overdraft for the same events.
     const impact = Math.min(
       25,
       8 + feeSet.observedPeriodTotal / 15 + (feeSet.hasOverdraft ? 4 : 0)
@@ -121,6 +130,9 @@ export function buildHealthScore(input: IntelligenceInput): HealthScoreResult {
     .filter((s) => s.category === "confirmed" || s.category === "avoidable_fees")
     .reduce((n, s) => n + s.yearlySavings, 0);
 
+  const ledgerStatus = opts?.ledgerStatus ?? "reconciled";
+  const ledgerComplete = ledgerStatus === "reconciled";
+
   if (savings.length >= 3 && actionableYearly > 0) {
     score -= Math.min(10, savings.length * 2);
     factors.push({
@@ -128,7 +140,12 @@ export function buildHealthScore(input: IntelligenceInput): HealthScoreResult {
       label: "Several evidence-backed savings opportunities",
       impact: -Math.min(10, savings.length * 2),
     });
-  } else if (actionableYearly === 0 && feeSet.observedPeriodTotal === 0) {
+  } else if (
+    ledgerComplete &&
+    actionableYearly === 0 &&
+    feeSet.observedPeriodTotal === 0
+  ) {
+    // Do not treat incomplete money-in as positive health.
     score += 4;
     factors.push({
       id: "clean-ledger",
@@ -148,9 +165,39 @@ export function buildHealthScore(input: IntelligenceInput): HealthScoreResult {
 
   score = Math.max(0, Math.min(100, Math.round(score)));
 
+  if (!ledgerComplete) {
+    factors.push({
+      id: "ledger-incomplete",
+      label:
+        ledgerStatus === "partially_reconciled"
+          ? "Statement totals only partially match parsed activity"
+          : "Statement money-in/out not yet reconciled to the PDF summary",
+      impact: 0,
+    });
+    // Keep the numeric factors honest, but do not present a perfect score
+    // when reconciliation is incomplete. Do not punish for missing deposits.
+    const provisionalScore = Math.min(score, 79);
+    const factorSum = factors.reduce((s, f) => s + f.impact, 0);
+    // Factors remain as computed; display score is capped/provisional.
+    void factorSum;
+    return {
+      score: provisionalScore,
+      label: labelForScore(provisionalScore),
+      factors,
+      provisional: true,
+      displayMode: "provisional",
+      analysisConfidence: ledgerStatus === "partially_reconciled" ? "medium" : "low",
+      statusNote:
+        "Health Score is provisional until money-in and money-out reconcile with the statement summary.",
+    };
+  }
+
   return {
     score,
     label: labelForScore(score),
     factors,
+    provisional: false,
+    displayMode: "numeric",
+    analysisConfidence: "high",
   };
 }
