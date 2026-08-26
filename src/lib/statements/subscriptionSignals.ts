@@ -91,7 +91,32 @@ export function unmistakableSubscriptionBillingMerchant(
 
   if (classifyInsurancePayment(blob).isInsurance) return true;
 
-  return /\b(NETFLIX|PEACOCK|SPOTIFY|HULU|DISNEY\+?|\bHBO\b|APPLE\.COM\/BILL|\bICLOUD\b|\bITUNES\b|GOOGLE\s*ONE|YOUTUBE\s+(PREMIUM|MUSIC)|\bADOBE\b|MICROSOFT\s+365|OFFICE\s+365|MICRO\s*365|AMAZON\s+(PRIME|VIDEO|DIGITAL|MUSIC)|PRIME\s+VIDEO|OPEN\s*AI|OPENAI|CHATGPT|CHAT\s*GPT)\b/ui.test(
+  return isEvidenceGatedSubscriptionMerchantText(blob);
+}
+
+/**
+ * Merchants that may appear as possible subscriptions from a single charge.
+ * Developer tools / one-off API usage (SerpAPI, Netlify, Deepgram, etc.) are excluded.
+ */
+export function isEvidenceGatedSubscriptionMerchantText(text: string): boolean {
+  const blob = text.toUpperCase();
+  // Never treat telecom bills or insurance as cancelable subscription candidates here.
+  if (classifyInsurancePayment(blob).isInsurance) return false;
+  if (
+    /\b(AT\s*&\s*T|\bATT\b|ATT\*|VERIZON|T[-\s]*MOBILE|COMCAST|XFINITY|SPECTRUM|REPUBLIC|RSIBILLPAY)\b/u.test(
+      blob
+    )
+  ) {
+    return false;
+  }
+  if (
+    /\b(SERPAPI|SERPER|NETLIFY|VERCEL|DEEPGRAM|ELEVENLABS|ELEVEN\s*LABS|CURSOR\b|HEROKU|DIGITALOCEAN|\bAWS\b)\b/u.test(
+      blob
+    )
+  ) {
+    return false;
+  }
+  return /\b(NETFLIX|PEACOCK|SPOTIFY|HULU|DISNEY\+?|\bHBO\b|APPLE\.COM\/BILL|\bICLOUD\b|\bITUNES\b|GOOGLE\s*ONE|YOUTUBE\s+(PREMIUM|MUSIC)|\bADOBE\b|MICROSOFT\s+365|OFFICE\s+365|MICRO\s*365|AMAZON\s+(PRIME|VIDEO|DIGITAL|MUSIC)|PRIME\s+VIDEO|OPEN\s*AI|OPENAI|CHATGPT|CHAT\s*GPT)\b/u.test(
     blob
   );
 }

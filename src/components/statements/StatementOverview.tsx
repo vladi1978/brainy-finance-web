@@ -10,6 +10,11 @@ import type {
   StatementActivitySummary,
   StatementDebitCategoryId,
 } from "@/lib/statements/intelligence/statementActivity";
+import {
+  buildMonthlyExplanation,
+  buildSpendingScenario,
+} from "@/lib/statements/intelligence/monthlyExplanation";
+import { presentationMerchantDisplayName } from "@/lib/statements/presentationMerchantDisplay";
 
 type OverviewGroups = {
   expectedRecurringBills: unknown[];
@@ -111,6 +116,7 @@ type AttentionFinding = {
 };
 
 type AskChoiceId =
+  | "understand"
   | "save"
   | "subscriptions"
   | "bills"
@@ -119,6 +125,7 @@ type AskChoiceId =
   | "buy";
 
 const ASK_CHOICES: Array<{ id: AskChoiceId; label: string }> = [
+  { id: "understand", label: "Help me understand my spending" },
   { id: "save", label: "Find ways to save" },
   { id: "subscriptions", label: "Review my subscriptions" },
   { id: "bills", label: "Explain my bills" },
@@ -186,10 +193,23 @@ function buildHouseholdRows(
     }
     const topMerchants = [...merchantMap.values()]
       .sort((a, b) => b.total - a.total)
-      .slice(0, 3);
+      .slice(0, 3)
+      .map((m) => ({
+        ...m,
+        name: presentationMerchantDisplayName(m.name),
+      }));
     const transactions = cats
       .flatMap((c) => c.transactions)
-      .sort((a, b) => a.date.localeCompare(b.date));
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map((t) => ({
+        ...t,
+        // Keep raw merchant on the object for diagnostics; display uses helper.
+        normalizedName: presentationMerchantDisplayName(
+          t.normalizedName,
+          t.merchant
+        ),
+        merchant: t.merchant,
+      }));
 
     return {
       id: bucket.id,
@@ -206,103 +226,59 @@ function buildHouseholdRows(
 
 function buildAttentionFindings(
   activity: StatementActivitySummary,
-  formatMoney: (amount: number, currency: string) => string
+  _formatMoney: (amount: number, currency: string) => string
 ): AttentionFinding[] {
-  const { currency } = activity;
-  const findings: AttentionFinding[] = [];
-
-  for (const item of activity.attentionItems) {
-    if (item.tone === "fee") {
-      findings.push({
+  void _formatMoney;
+  return activity.attentionItems.slice(0, 5).map((item) => {
+    if (item.id === "cashflow-negative") {
+      return {
         id: item.id,
-        title: "Bank fee on this statement",
+        title: item.title,
+        observed: item.detail,
+        why: "Cash flow compares money received with money spent—separate from Statement Health.",
+        evidence: "Taken from reconciled money in and money out on this PDF.",
+        nextAction:
+          "Review essential commitments, debt payments, and flexible spending below.",
+        tone: item.tone,
+      };
+    }
+    if (item.tone === "fee") {
+      return {
+        id: item.id,
+        title: item.title,
         observed: item.detail,
         why: "Fees reduce money available for everyday spending.",
         evidence: "Found in the fee lines Brainy read from this PDF.",
         nextAction:
           "Review whether your bank offers alerts or a lower-fee option.",
         tone: "fee",
-      });
-      continue;
+      };
     }
     if (item.tone === "subscription") {
-      findings.push({
+      return {
         id: item.id,
-        title: item.title.replace(/^Possible subscription:\s*/i, "Possible subscription · "),
+        title: item.title.replace(
+          /^Possible subscription:\s*/i,
+          "Possible subscription · "
+        ),
         observed: item.detail,
-        why: "Recurring services can add up quietly if they are no longer useful.",
+        why: "Recurring services can add up if they are no longer useful.",
         evidence:
           "One or more charges were found; monthly recurrence is not confirmed.",
-        nextAction:
-          "You decide whether this expense still provides value.",
+        nextAction: "You decide whether this expense still provides value.",
         tone: "subscription",
-      });
-      continue;
+      };
     }
-    if (item.id.startsWith("debt:")) {
-      findings.push({
-        id: item.id,
-        title: item.title,
-        observed: item.detail,
-        why: "Financing payments are part of your obligations — not cancelable subscriptions.",
-        evidence: "Matched from the statement payment description.",
-        nextAction:
-          "Review account terms if useful; Brainy will not treat this as a cancelable subscription.",
-        tone: "review",
-      });
-      continue;
-    }
-    findings.push({
+    return {
       id: item.id,
       title: item.title,
       observed: item.detail,
       why: "This charge may be hard to recognize at a glance.",
-      evidence: "Shown as other / unclassified activity on this statement.",
+      evidence: "Shown from the activity Brainy read on this statement.",
       nextAction: "Open the details below if you want to review the charge.",
       tone: item.tone,
-    });
-  }
-
-  // Surface a large essential bill as worth reviewing (not as waste).
-  const largeBill = activity.billCards
-    .filter((b) => b.serviceKind !== "housing")
-    .sort((a, b) => b.observedAmount - a.observedAmount)[0];
-  if (
-    largeBill &&
-    largeBill.observedAmount >= 70 &&
-    !findings.some((f) => f.id.includes(largeBill.id))
-  ) {
-    findings.push({
-      id: `bill-review:${largeBill.id}`,
-      title: `${largeBill.serviceLabel} worth a quick look`,
-      observed: `Brainy found ${formatMoney(largeBill.observedAmount, currency)} on this statement.`,
-      why: "Larger household bills are often worth confirming still match what you expect.",
-      evidence: "Single observation on this statement — recurrence not confirmed.",
-      nextAction:
-        "Brainy can help you compare alternatives when you are ready — you decide.",
-      tone: "bill",
-    });
-  }
-
-  // Repeated discretionary shopping/dining if present and room remains.
-  const shopping = activity.categories.find((c) => c.id === "shopping");
-  if (
-    shopping &&
-    shopping.transactionCount >= 8 &&
-    findings.length < 5
-  ) {
-    findings.push({
-      id: "discretionary-shopping",
-      title: "Repeated shopping activity",
-      observed: `${shopping.transactionCount} shopping charges totaling ${formatMoney(shopping.total, currency)}.`,
-      why: "Seeing the pattern can help you decide what still fits your lifestyle.",
-      evidence: `About ${shopping.percentOfDebits}% of parsed spending in this window.`,
-      nextAction: "Keep your lifestyle. Spend smarter — review only what feels useful.",
-      tone: "review",
-    });
-  }
-
-  return findings.slice(0, 5);
+    };
+  });
 }
 
 export function StatementOverview({
@@ -520,7 +496,7 @@ export function StatementOverview({
                         prev === row.id ? null : row.id
                       )
                     }
-                    className="shrink-0 rounded-full border border-white/15 px-3 py-1.5 text-xs text-white/70 transition hover:border-white/30 hover:text-white"
+                    className="shrink-0 rounded-full border border-white/15 px-3 py-1.5 text-xs text-white/70 transition hover:border-white/30 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
                     aria-expanded={open}
                   >
                     {open ? "Hide details" : "View details"}
@@ -544,7 +520,20 @@ export function StatementOverview({
                         key={txn.id}
                         className="flex justify-between gap-2"
                       >
-                        <span className="truncate">{txn.normalizedName}</span>
+                        <span className="min-w-0">
+                          <span className="block truncate text-white/80">
+                            {txn.normalizedName}
+                          </span>
+                          {txn.merchant &&
+                          txn.merchant.trim() !== txn.normalizedName.trim() ? (
+                            <span
+                              className="mt-0.5 block truncate text-[10px] text-white/35"
+                              title={txn.merchant}
+                            >
+                              Bank text: {txn.merchant}
+                            </span>
+                          ) : null}
+                        </span>
                         <span className="shrink-0 tabular-nums">
                           {formatMoney(txn.amount, txn.currency)}
                         </span>
@@ -575,7 +564,7 @@ export function StatementOverview({
                 type="button"
                 onClick={() => setAskChoice(choice.id)}
                 className={[
-                  "rounded-full border px-4 py-2 text-sm transition",
+                  "rounded-full border px-4 py-2 text-sm transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300",
                   selected
                     ? "border-emerald-400/50 bg-emerald-500/20 text-emerald-50"
                     : "border-white/15 bg-black/20 text-white/75 hover:border-white/30 hover:text-white",
@@ -698,36 +687,52 @@ function buildAskResponse(args: {
   const { currency } = activity;
 
   switch (args.choice) {
-    case "save": {
-      const fees = activity.categories.find((c) => c.id === "fees");
-      const feeNote =
-        fees && fees.total > 0
-          ? ` Brainy also noticed ${formatMoney(fees.total, currency)} in bank fees on this statement.`
-          : "";
-      if (args.possibleCount + args.confirmedCount === 0 && !fees?.total) {
-        return {
-          body: (
-            <>
-              Brainy did not find confirmed cancelable savings on this statement
-              alone. Open the detailed analysis to review shopping and dining
-              patterns at your own pace—no invented monthly savings.
-            </>
-          ),
-          openDetails: true,
-        };
-      }
+    case "understand": {
+      const expl = buildMonthlyExplanation({
+        activity,
+        healthScore: null,
+        formatMoney,
+      });
+      const flexible = expl.commitmentGroups.find((g) => g.id === "flexible");
+      const essential = expl.commitmentGroups.find((g) => g.id === "essential");
+      const financial = expl.commitmentGroups.find((g) => g.id === "financial");
       return {
         body: (
           <>
-            Brainy found {args.confirmedCount} confirmed subscription
-            {args.confirmedCount === 1 ? "" : "s"} and {args.possibleCount}{" "}
-            possible service
-            {args.possibleCount === 1 ? "" : "s"} worth reviewing.
-            {feeNote} You decide what still provides value—Brainy will not
-            invent yearly savings from a single charge.
+            {expl.headline} Essential commitments:{" "}
+            {formatMoney(essential?.total ?? 0, currency)}. Debt and financing:{" "}
+            {formatMoney(financial?.total ?? 0, currency)}. Flexible spending:{" "}
+            {formatMoney(flexible?.total ?? 0, currency)}.
+            {expl.topFactors.length
+              ? ` Largest areas: ${expl.topFactors
+                  .map(
+                    (f) =>
+                      `${f.label} (${formatMoney(f.total, currency)})`
+                  )
+                  .join("; ")}.`
+              : ""}
           </>
         ),
-        openDetails: true,
+      };
+    }
+    case "save": {
+      const scenario10 = buildSpendingScenario({
+        activity,
+        percent: 10,
+        formatMoney,
+      });
+      const flexibleBase = scenario10.flexibleBase;
+      return {
+        body: (
+          <>
+            Brainy can only illustrate changes to flexible spending (currently{" "}
+            {formatMoney(flexibleBase, currency)}). Try the 5%, 10%, or 15%
+            scenarios above—those are examples, not promised savings. Possible
+            subscriptions to recognize separately: {args.possibleCount}{" "}
+            (confirmed: {args.confirmedCount}). Housing, utilities, insurance,
+            and debt payments are not treated as cancelable savings.
+          </>
+        ),
       };
     }
     case "subscriptions":
@@ -736,6 +741,8 @@ function buildAskResponse(args: {
           <>
             Confirmed subscriptions: {args.confirmedCount}. Possible
             subscriptions (recurrence not confirmed): {args.possibleCount}.
+            This count is not the same as every digital purchase—services like
+            one-off developer tools stay as digital charges, not subscriptions.
             Debt and financing payments are kept out of this list.
           </>
         ),
@@ -763,7 +770,9 @@ function buildAskResponse(args: {
               .slice(0, 3)
               .map(
                 (g) =>
-                  ` · ${g.providerName} ${formatMoney(g.totalObserved, g.currency)}`
+                  ` · ${g.providerName} ${formatMoney(g.totalObserved, g.currency)}${
+                    g.serviceCount > 1 ? ` (${g.serviceCount} charges)` : ""
+                  }`
               )
               .join("")}
             . These are household costs to review—not framed as waste.
@@ -776,9 +785,10 @@ function buildAskResponse(args: {
       return {
         body: (
           <>
-            To explain what changed, Brainy needs a second statement from
-            another month. Upload your previous PDF next, and Brainy can compare
-            periods without guessing.
+            To see what changed, upload the previous statement from the same
+            account. Brainy has not calculated a comparison yet—two-statement
+            comparison is being prepared. Use “Compare with another statement”
+            when you are ready to upload the earlier PDF.
           </>
         ),
       };
@@ -943,6 +953,9 @@ function DetailedBills({
                   {formatMoney(group.totalObserved, group.currency)} total
                   observed
                 </p>
+                <p className="mt-2 text-xs leading-relaxed text-white/45">
+                  {group.observationNote}
+                </p>
                 <ul className="mt-3 space-y-2 border-t border-white/10 pt-3">
                   {group.services.map((svc) => (
                     <li key={svc.id} className="text-sm">
@@ -950,10 +963,14 @@ function DetailedBills({
                       <p className="tabular-nums text-white/60">
                         {formatMoney(svc.observedAmount, svc.currency)}
                       </p>
-                      <p className="text-xs text-white/40">
-                        One charge was found; monthly recurrence is not
-                        confirmed.
-                      </p>
+                      {svc.merchant ? (
+                        <p
+                          className="mt-0.5 truncate text-[10px] text-white/35"
+                          title={svc.merchant}
+                        >
+                          Bank text: {svc.merchant}
+                        </p>
+                      ) : null}
                     </li>
                   ))}
                 </ul>

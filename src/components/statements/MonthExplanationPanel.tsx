@@ -92,6 +92,23 @@ export function MonthExplanationPanel({
           </p>
         ) : null}
 
+        {explanation.whyNegative ? (
+          <div className="mt-5 rounded-2xl border border-sky-400/20 bg-sky-500/[0.06] p-4">
+            <h3 className="text-base font-semibold text-white">
+              {explanation.whyNegative.title}
+            </h3>
+            <ul className="mt-2 space-y-2 text-sm leading-relaxed text-white/70">
+              {explanation.whyNegative.paragraphs.map((p) => (
+                <li key={p}>{p}</li>
+              ))}
+            </ul>
+            <p className="mt-3 text-xs leading-relaxed text-white/45">
+              Statement Health measures detected fees and patterns. Cash flow
+              compares money received with money spent.
+            </p>
+          </div>
+        ) : null}
+
         {explanation.topFactors.length ? (
           <div className="mt-4">
             <p className="text-sm text-white/55">
@@ -118,6 +135,14 @@ export function MonthExplanationPanel({
               {line}
             </p>
           ))}
+
+        {explanation.subscriptionSummary.possibleCount > 0 ||
+        explanation.subscriptionSummary.otherDigitalChargeCount > 0 ||
+        explanation.subscriptionSummary.confirmedCount > 0 ? (
+          <p className="mt-3 text-sm leading-relaxed text-white/55">
+            {explanation.subscriptionSummary.summaryLine}
+          </p>
+        ) : null}
 
         <div className="mt-5">
           <button
@@ -168,7 +193,7 @@ export function MonthExplanationPanel({
               </p>
               {group.lines.length ? (
                 <ul className="mt-3 space-y-1 border-t border-white/10 pt-3 text-xs text-white/55">
-                  {group.lines.slice(0, 4).map((line) => (
+                  {group.lines.map((line) => (
                     <li key={line.label} className="flex justify-between gap-2">
                       <span className="truncate">{line.label}</span>
                       <span className="shrink-0 tabular-nums">
@@ -224,14 +249,32 @@ export function MonthExplanationPanel({
           {scenario ? (
             <div className="mt-4 space-y-2 text-sm leading-relaxed text-white/70">
               {scenario.eligible ? (
-                <p>
-                  A {scenario.percent}% change in the flexible spending observed
-                  in this statement would equal about{" "}
-                  <span className="font-semibold tabular-nums text-white">
-                    {formatMoney(scenario.illustrativeAmount, currency)}
-                  </span>{" "}
-                  for this period.
-                </p>
+                <>
+                  <p>
+                    A {scenario.percent}% change in the flexible spending
+                    observed in this statement would equal about{" "}
+                    <span className="font-semibold tabular-nums text-white">
+                      {formatMoney(scenario.illustrativeAmount, currency)}
+                    </span>{" "}
+                    for this period.
+                  </p>
+                  {scenario.arithmeticLines.length ? (
+                    <ul className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 font-mono text-xs text-white/60">
+                      {scenario.arithmeticLines.map((line) => (
+                        <li key={line}>{line}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  {scenario.remainingNet != null &&
+                  scenario.originalNet != null &&
+                  scenario.originalNet < 0 ? (
+                    <p className="text-sm text-white/60">
+                      {scenario.closesDeficit
+                        ? "In this illustration, that adjustment would cover the period difference."
+                        : "In this illustration, the period would still end negative—just by a smaller amount."}
+                    </p>
+                  ) : null}
+                </>
               ) : (
                 <p>{scenario.periodScopeNote}</p>
               )}

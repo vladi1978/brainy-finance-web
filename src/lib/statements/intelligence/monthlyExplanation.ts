@@ -68,6 +68,17 @@ export type MonthlyExplanation = {
   topFactors: SpendingFactor[];
   periodNote: string | null;
   healthCashFlowClarification: string | null;
+  /** Extra block for reliable negative months. */
+  whyNegative: {
+    title: string;
+    paragraphs: string[];
+  } | null;
+  subscriptionSummary: {
+    confirmedCount: number;
+    possibleCount: number;
+    otherDigitalChargeCount: number;
+    summaryLine: string;
+  };
   commitmentGroups: CommitmentGroup[];
   compareLastMonth: {
     ctaLabel: string;
@@ -82,6 +93,10 @@ export type SpendingScenario = {
   percent: SpendingScenarioPercent;
   flexibleBase: number;
   illustrativeAmount: number;
+  originalNet: number | null;
+  remainingNet: number | null;
+  arithmeticLines: string[];
+  closesDeficit: boolean;
   eligible: boolean;
   disclaimer: string;
   exclusionNote: string;
@@ -230,7 +245,7 @@ export function buildMonthlyExplanation(input: {
 
   const commitmentGroups = buildCommitmentGroups(activity);
   const compareLastMonth = {
-    ctaLabel: "Compare with last month",
+    ctaLabel: "Compare with another statement",
     message:
       "Upload the previous statement from the same account. Brainy will compare money in, money out, bills, subscriptions, debt payments and flexible spending. Two-statement comparison is being prepared — no comparison has been calculated yet.",
     comparisonCalculated: false as const,
@@ -282,18 +297,6 @@ export function buildMonthlyExplanation(input: {
     if (topFactors.length) {
       supportingLines.push("Your largest spending areas were:");
     }
-
-    const confirmed = activity.subscriptionCards.filter(
-      (s) => s.status === "confirmed"
-    ).length;
-    const possible = activity.subscriptionCards.filter(
-      (s) => s.status === "possible"
-    ).length;
-    if (confirmed + possible > 0) {
-      supportingLines.push(
-        `Subscriptions and services: ${confirmed} confirmed · ${possible} possible (recurrence not confirmed for possible items).`
-      );
-    }
   }
 
   if (periodNote) supportingLines.push(periodNote);
@@ -305,7 +308,32 @@ export function buildMonthlyExplanation(input: {
     activity.netCashFlow < 0 &&
     health != null &&
     health >= 85
-      ? "Statement Health reflects the signals Brainy can verify in this document. It does not mean the month had a positive cash flow."
+      ? "Statement Health measures detected fees and patterns. Cash flow compares money received with money spent. A high Statement Health score does not mean the month had a positive cash flow."
+      : null;
+
+  const confirmedCount = activity.subscriptionCards.filter(
+    (s) => s.status === "confirmed"
+  ).length;
+  const possibleCount = activity.subscriptionCards.filter(
+    (s) => s.status === "possible"
+  ).length;
+  const otherDigitalChargeCount = countOtherDigitalCharges(activity);
+
+  const whyNegative =
+    reliable && outcome === "negative" && activity.netCashFlow != null
+      ? buildWhyNegative({
+          activity,
+          money,
+          currency,
+          essentialTotal: essential.total,
+          debtTotal: debt.total,
+          flexibleTotal: sumIds(activity, FLEXIBLE_SCENARIO_IDS).total,
+          absDiff: Math.abs(activity.netCashFlow),
+          shopping,
+          food,
+          fuel,
+          digital,
+        })
       : null;
 
   return {
@@ -315,8 +343,95 @@ export function buildMonthlyExplanation(input: {
     topFactors: reliable ? topFactors : [],
     periodNote,
     healthCashFlowClarification,
+    whyNegative,
+    subscriptionSummary: {
+      confirmedCount,
+      possibleCount,
+      otherDigitalChargeCount,
+      summaryLine: formatSubscriptionSummaryLine(
+        confirmedCount,
+        possibleCount,
+        otherDigitalChargeCount
+      ),
+    },
     commitmentGroups,
     compareLastMonth,
+  };
+}
+
+function formatSubscriptionSummaryLine(
+  confirmed: number,
+  possible: number,
+  otherDigital: number
+): string {
+  if (otherDigital > 0) {
+    return `${confirmed} confirmed subscription${confirmed === 1 ? "" : "s"} · ${possible} possible · ${otherDigital} other digital/service charge${otherDigital === 1 ? "" : "s"} (recurrence not confirmed for possible items).`;
+  }
+  return `${confirmed} confirmed subscription${confirmed === 1 ? "" : "s"} · ${possible} possible (recurrence not confirmed for possible items).`;
+}
+
+function countOtherDigitalCharges(activity: StatementActivitySummary): number {
+  const software = activity.categories.find((c) => c.id === "software_services");
+  if (!software) return 0;
+  const possibleNames = new Set(
+    activity.subscriptionCards
+      .filter((s) => s.status === "possible" || s.status === "confirmed")
+      .map((s) => s.normalizedName.trim().toUpperCase())
+  );
+  return software.transactions.filter(
+    (t) => !possibleNames.has(t.normalizedName.trim().toUpperCase())
+  ).length;
+}
+
+function buildWhyNegative(args: {
+  activity: StatementActivitySummary;
+  money: (n: number, c: string) => string;
+  currency: string;
+  essentialTotal: number;
+  debtTotal: number;
+  flexibleTotal: number;
+  absDiff: number;
+  shopping: number;
+  food: number;
+  fuel: number;
+  digital: number;
+}): { title: string; paragraphs: string[] } {
+  const {
+    money,
+    currency,
+    essentialTotal,
+    debtTotal,
+    flexibleTotal,
+    absDiff,
+    shopping,
+    food,
+    fuel,
+    digital,
+  } = args;
+  const flexibleParts = [
+    { label: "shopping", total: shopping },
+    { label: "food and dining", total: food },
+    { label: "fuel", total: fuel },
+    { label: "digital services", total: digital },
+  ]
+    .filter((p) => p.total > 0)
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 3);
+
+  const flexList = flexibleParts
+    .map((p) => `${p.label} (${money(p.total, currency)})`)
+    .join(", ");
+
+  return {
+    title: "Why this period ended negative",
+    paragraphs: [
+      `You spent ${money(absDiff, currency)} more than was received.`,
+      `Essential commitments were ${money(essentialTotal, currency)} and debt/financing payments were ${money(debtTotal, currency)}—together a large share of money received.`,
+      flexibleParts.length
+        ? `The largest flexible areas observed were ${flexList}, totaling ${money(flexibleTotal, currency)} in flexible spending.`
+        : `Flexible spending totaled ${money(flexibleTotal, currency)}.`,
+      "This explains the cash-flow difference. It does not mean you are financially unhealthy.",
+    ],
   };
 }
 
@@ -350,8 +465,6 @@ export function buildCommitmentGroups(
     { id: "dining" as const, label: "Dining" },
     { id: "food_delivery_rideshare" as const, label: "Delivery / rideshare" },
     { id: "fuel" as const, label: "Fuel" },
-    { id: "software_services" as const, label: "Optional digital services" },
-    { id: "subscriptions" as const, label: "Optional subscriptions" },
   ]
     .map((row) => ({
       label: row.label,
@@ -359,6 +472,20 @@ export function buildCommitmentGroups(
       count: catCount(activity, row.id),
     }))
     .filter((r) => r.count > 0);
+
+  const digitalTotal = roundMoney(
+    catTotal(activity, "software_services") + catTotal(activity, "subscriptions")
+  );
+  const digitalCount =
+    catCount(activity, "software_services") +
+    catCount(activity, "subscriptions");
+  if (digitalCount > 0) {
+    flexibleLines.push({
+      label: "Digital services & subscriptions",
+      total: digitalTotal,
+      count: digitalCount,
+    });
+  }
 
   const flexibleSum = sumIds(activity, FLEXIBLE_SCENARIO_IDS);
 
@@ -419,6 +546,10 @@ export function buildSpendingScenario(input: {
       percent,
       flexibleBase: 0,
       illustrativeAmount: 0,
+      originalNet: null,
+      remainingNet: null,
+      arithmeticLines: [],
+      closesDeficit: false,
       eligible: false,
       disclaimer,
       exclusionNote,
@@ -431,15 +562,71 @@ export function buildSpendingScenario(input: {
   const ids = FLEXIBLE_SCENARIO_IDS.filter((id) => !NEVER_FLEXIBLE.has(id));
   const { total: flexibleBase } = sumIds(activity, ids);
   const illustrativeAmount = roundMoney(flexibleBase * (percent / 100));
+  const originalNet =
+    activity.netCashFlow != null ? roundMoney(activity.netCashFlow) : null;
+  const remainingNet =
+    originalNet != null
+      ? roundMoney(originalNet + illustrativeAmount)
+      : null;
+  const closesDeficit =
+    originalNet != null &&
+    originalNet < 0 &&
+    remainingNet != null &&
+    remainingNet >= 0;
+
+  const arithmeticLines =
+    flexibleBase > 0
+      ? [
+          `${percent}% of ${flexibleBase.toFixed(2)} = ${illustrativeAmount.toFixed(2)}`,
+          originalNet != null
+            ? `Original difference: ${originalNet.toFixed(2)}`
+            : "",
+          remainingNet != null
+            ? `Illustrative difference after reduction: ${remainingNet.toFixed(2)}`
+            : "",
+        ].filter(Boolean)
+      : [];
 
   return {
     percent,
     flexibleBase,
     illustrativeAmount,
+    originalNet,
+    remainingNet,
+    arithmeticLines,
+    closesDeficit,
     eligible: flexibleBase > 0,
     disclaimer,
     exclusionNote,
     periodScopeNote,
+  };
+}
+
+/** Child flexible lines must sum to the group total (no silent omissions). */
+export function flexibleChildTotalsMatchGroup(
+  group: CommitmentGroup
+): boolean {
+  if (group.id !== "flexible") return true;
+  const sum = roundMoney(group.lines.reduce((s, l) => s + l.total, 0));
+  return Math.abs(sum - group.total) < 0.01;
+}
+
+export function summarizeAttProvider(activity: StatementActivitySummary): {
+  total: number;
+  chargeCount: number;
+  amounts: number[];
+  note: string;
+} | null {
+  const group = activity.billProviderGroups.find((g) => g.providerKey === "att");
+  if (!group) return null;
+  return {
+    total: group.totalObserved,
+    chargeCount: group.serviceCount,
+    amounts: group.services.map((s) => s.observedAmount),
+    note:
+      group.serviceCount > 1
+        ? "Two AT&T service charges were detected. Service type not fully confirmed."
+        : "AT&T charge observed on this statement.",
   };
 }
 

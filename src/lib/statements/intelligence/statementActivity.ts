@@ -26,6 +26,7 @@ import {
 } from "../recurrenceEvidence";
 import { inferSpendingInsightCategory } from "../spendingSignals";
 import { isRideshareOrDeliveryMerchant } from "./presentationGroups";
+import { isEvidenceGatedSubscriptionMerchantText } from "../subscriptionSignals";
 import {
   classifyLedgerReconciliation,
   type LedgerReconciliationStatus,
@@ -740,9 +741,11 @@ export function buildStatementActivitySummary(input: {
         serviceCount: sorted.length,
         services: sorted,
         observationNote:
-          sorted.length > 1
-            ? `${sorted[0]!.providerName} total observed in this statement: ${totalObserved.toFixed(2)} ${sorted[0]!.currency} across ${sorted.length} services. Recurrence not confirmed from this window.`
-            : "Observed on this statement — recurrence not confirmed.",
+          sorted.length > 1 && sorted[0]!.providerKey === "att"
+            ? `Two AT&T service charges were detected · total ${totalObserved.toFixed(2)} ${sorted[0]!.currency}. Service type not fully confirmed for every charge.`
+            : sorted.length > 1
+              ? `${sorted[0]!.providerName} total observed in this statement: ${totalObserved.toFixed(2)} ${sorted[0]!.currency} across ${sorted.length} services. Recurrence not confirmed from this window.`
+              : "Observed on this statement — recurrence not confirmed.",
       };
     })
     .sort((a, b) => b.totalObserved - a.totalObserved);
@@ -766,6 +769,14 @@ export function buildStatementActivitySummary(input: {
       if (isDebtFinancingText(blob) || isHousingPaymentText(blob)) return false;
       if (billNameKeys.has(sub.normalizedName.trim().toUpperCase())) return false;
       if (isTransferText(blob)) return false;
+      // Developer tools / one-off digital services stay in software totals,
+      // not as possible subscriptions.
+      if (
+        isSoftwareServiceText(blob) &&
+        !isEvidenceGatedSubscriptionMerchantText(blob)
+      ) {
+        return false;
+      }
       return true;
     })
     .map((sub) => {
@@ -797,15 +808,26 @@ export function buildStatementActivitySummary(input: {
       };
     });
 
-  // Known software merchants with insufficient recurrence → possible only
+  // Evidence-gated subscription-like software only (e.g. Netflix, Peacock,
+  // OpenAI). SerpAPI / Netlify / Deepgram stay as digital charges, not subs.
   const softwareByCluster = new Map<string, StatementActivityTransaction[]>();
-  for (const row of categoryMap.get("software_services")!) {
+  for (const row of [
+    ...categoryMap.get("software_services")!,
+    ...categoryMap.get("subscriptions")!,
+    ...categoryMap.get("other")!,
+  ]) {
+    const blob = `${row.normalizedName} ${row.merchant}`;
+    if (!isEvidenceGatedSubscriptionMerchantText(blob)) continue;
     const list = softwareByCluster.get(row.clusterId) ?? [];
     list.push(row);
     softwareByCluster.set(row.clusterId, list);
   }
   const existingSubClusterIds = new Set(
-    subscriptionCards.map((s) => s.id.replace(/^sub:/, ""))
+    subscriptionCards.map((s) => {
+      if (s.id.startsWith("sub-soft:")) return s.id.slice("sub-soft:".length);
+      if (s.id.startsWith("sub:")) return s.id.slice("sub:".length);
+      return s.id;
+    })
   );
   for (const [clusterId, rows] of softwareByCluster) {
     if (existingSubClusterIds.has(clusterId)) continue;
@@ -829,40 +851,19 @@ export function buildStatementActivitySummary(input: {
     });
   }
 
-  const attentionItems: StatementAttentionItem[] = [];
-  for (const cat of categories.filter((c) => c.id === "fees" && c.total > 0)) {
-    attentionItems.push({
-      id: "fees",
-      title: "Observed bank fees",
-      detail: `${cat.transactionCount} fee line${cat.transactionCount === 1 ? "" : "s"} totaling ${cat.total.toFixed(2)} ${currency} on this statement.`,
-      tone: "fee",
-    });
-  }
-  for (const debt of categoryMap.get("debt_financing")!.slice(0, 2)) {
-    attentionItems.push({
-      id: `debt:${debt.id}`,
-      title: `Financing payment: ${debt.normalizedName}`,
-      detail:
-        "Repeated financing payment detected; review account terms if useful.",
-      tone: "review",
-    });
-  }
-  for (const sub of subscriptionCards.filter((s) => s.status === "possible")) {
-    attentionItems.push({
-      id: `possible-sub:${sub.id}`,
-      title: `Possible subscription: ${sub.normalizedName}`,
-      detail: `${sub.chargeCount} charge${sub.chargeCount === 1 ? "" : "s"} detected · recurrence not confirmed.`,
-      tone: "subscription",
-    });
-  }
-  for (const row of categoryMap.get("other")!.slice(0, 2)) {
-    attentionItems.push({
-      id: `other:${row.id}`,
-      title: `Review: ${row.normalizedName}`,
-      detail: `Observed ${row.amount.toFixed(2)} ${row.currency} — categorized as other activity.`,
-      tone: "review",
-    });
-  }
+  const attentionItems = buildPrioritizedAttentionItems({
+    categories,
+    categoryMap,
+    subscriptionCards,
+    currency,
+    moneyIn,
+    moneyOut,
+    netCashFlow: ledgerInfo.cashFlowReliable
+      ? roundMoney(moneyIn - moneyOut)
+      : null,
+    cashFlowReliable: ledgerInfo.cashFlowReliable,
+    ledgerStatus: ledgerInfo.status,
+  });
 
   const categorySum = roundMoney(categories.reduce((s, c) => s + c.total, 0));
   const uncategorized = categoryMap.get("other")!;
@@ -965,7 +966,7 @@ export function buildStatementActivitySummary(input: {
     billCards,
     billProviderGroups,
     subscriptionCards,
-    attentionItems: attentionItems.slice(0, 6),
+    attentionItems: attentionItems.slice(0, 5),
     uncategorized,
     reconciliation: {
       ok: Math.abs(categorySum - moneyOut) < 0.01,
@@ -987,6 +988,92 @@ export function buildStatementActivitySummary(input: {
       diagnostics,
     },
   };
+}
+
+function buildPrioritizedAttentionItems(args: {
+  categories: StatementActivityCategory[];
+  categoryMap: Map<StatementDebitCategoryId, StatementActivityTransaction[]>;
+  subscriptionCards: StatementSubscriptionCard[];
+  currency: string;
+  moneyIn: number;
+  moneyOut: number;
+  netCashFlow: number | null;
+  cashFlowReliable: boolean;
+  ledgerStatus: LedgerReconciliationStatus;
+}): StatementAttentionItem[] {
+  const items: StatementAttentionItem[] = [];
+  const seenMerchants = new Set<string>();
+
+  // 1. Reliable negative cash flow
+  if (
+    args.cashFlowReliable &&
+    args.ledgerStatus === "reconciled" &&
+    args.netCashFlow != null &&
+    args.netCashFlow < 0
+  ) {
+    const abs = roundMoney(Math.abs(args.netCashFlow));
+    const essential =
+      (args.categories.find((c) => c.id === "housing")?.total ?? 0) +
+      (args.categories.find((c) => c.id === "bills")?.total ?? 0) +
+      (args.categories.find((c) => c.id === "insurance")?.total ?? 0);
+    const flexible =
+      (args.categories.find((c) => c.id === "shopping")?.total ?? 0) +
+      (args.categories.find((c) => c.id === "dining")?.total ?? 0) +
+      (args.categories.find((c) => c.id === "food_delivery_rideshare")?.total ??
+        0) +
+      (args.categories.find((c) => c.id === "fuel")?.total ?? 0) +
+      (args.categories.find((c) => c.id === "software_services")?.total ?? 0) +
+      (args.categories.find((c) => c.id === "subscriptions")?.total ?? 0);
+    items.push({
+      id: "cashflow-negative",
+      title: "Spending exceeded money received",
+      detail: `This period spent ${abs.toFixed(2)} ${args.currency} more than was received. Essential commitments were about ${roundMoney(essential).toFixed(2)} ${args.currency}; flexible spending was about ${roundMoney(flexible).toFixed(2)} ${args.currency}. Statement Health is separate from cash flow.`,
+      tone: "review",
+    });
+  }
+
+  // 2. Possible subscriptions (evidence-gated cards only)
+  for (const sub of args.subscriptionCards.filter((s) => s.status === "possible")) {
+    if (items.length >= 5) break;
+    const key = sub.normalizedName.trim().toUpperCase();
+    if (seenMerchants.has(key)) continue;
+    seenMerchants.add(key);
+    items.push({
+      id: `possible-sub:${sub.id}`,
+      title: `Possible subscription: ${sub.normalizedName}`,
+      detail: `${sub.chargeCount} charge${sub.chargeCount === 1 ? "" : "s"} detected · recurrence not confirmed.`,
+      tone: "subscription",
+    });
+  }
+
+  // 3. Fees
+  for (const cat of args.categories.filter((c) => c.id === "fees" && c.total > 0)) {
+    if (items.length >= 5) break;
+    items.push({
+      id: "fees",
+      title: "Bank fees on this statement",
+      detail: `${cat.transactionCount} fee line${cat.transactionCount === 1 ? "" : "s"} totaling ${cat.total.toFixed(2)} ${args.currency}.`,
+      tone: "fee",
+    });
+  }
+
+  // 4. Material unclassified charges (skip tiny ones)
+  for (const row of args.categoryMap.get("other") ?? []) {
+    if (items.length >= 5) break;
+    if (row.amount < 40) continue;
+    const key = row.normalizedName.trim().toUpperCase();
+    if (seenMerchants.has(key)) continue;
+    seenMerchants.add(key);
+    items.push({
+      id: `other:${row.id}`,
+      title: `Unrecognized charge: ${row.normalizedName}`,
+      detail: `Observed ${row.amount.toFixed(2)} ${row.currency} — not matched to a clear category.`,
+      tone: "review",
+    });
+  }
+
+  // Debt payments are explained in the dedicated debt section — do not crowd attention.
+  return items.slice(0, 5);
 }
 
 function buildCrossSurfaceReconciliation(args: {
