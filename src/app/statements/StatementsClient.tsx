@@ -14,7 +14,6 @@ import { RecommendationActionCard } from "@/components/statements/actions/Recomm
 import { SavingsAcceptedSummary } from "@/components/statements/actions/SavingsAcceptedSummary";
 import { useRecommendationActions } from "@/components/statements/actions/useRecommendationActions";
 import { findRecommendationReviewTarget } from "@/lib/statements/actions/recommendationNavigation";
-import { SUBSCRIPTION_CONFIDENCE_MIN, TRUE_SUBSCRIPTION_SCORE_MIN } from "@/lib/statements/heuristics";
 import type { RecommendationActionType } from "@/lib/statements/recommendations/types";
 import {
   buildActivityPresentationGroups,
@@ -122,6 +121,10 @@ type StatementIntelligencePayload = {
     score: number;
     label: string;
     factors: Array<{ id: string; label: string; impact: number }>;
+    provisional?: boolean;
+    displayMode?: "numeric" | "provisional" | "suppressed";
+    analysisConfidence?: "high" | "medium" | "low";
+    statusNote?: string;
   };
   savings: Array<{
     id: string;
@@ -649,62 +652,7 @@ export default function StatementsClient() {
         ) : null}
 
         {data ? (
-          <div className="mt-10 space-y-12">
-            <div className="space-y-2">
-              <p className="text-sm font-medium uppercase tracking-widest text-emerald-400/80">
-                Financial intelligence
-              </p>
-              <p className="max-w-3xl text-sm text-white/55">
-                Subscriptions are separated from everyday spend using scoring: only
-                high-confidence recurring bills and services count toward subscription
-                totals. Transfers, dining, fuel, retail patterns, and fees are routed
-                to the sections below.
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-3 text-xs text-white/50">
-              {periodLabel ? (
-                <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
-                  Detected window: {periodLabel}
-                </span>
-              ) : null}
-              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
-                Pages: {data.meta.pageCount}
-              </span>
-              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
-                Parsed transactions: {data.meta.transactionCount}
-              </span>
-              {data.meta.transactionCount === 0 ? (
-                <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-3 py-1 text-amber-100">
-                  No ledger rows parsed — choose a text-based PDF export
-                </span>
-              ) : null}
-              {data.meta.parseDebug ? (
-                <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
-                  Ambiguous AI assist:{" "}
-                  {data.meta.parseDebug.aiDisambiguatedCount}
-                  {data.meta.parseDebug.fullTextAiFallbackUsed
-                    ? " · full-text rescue"
-                    : ""}
-                </span>
-              ) : null}
-              {data.meta.fallbackUsed ? (
-                <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-3 py-1 text-amber-100">
-                  Heuristic-only clustering (AI silent or unreachable)
-                </span>
-              ) : null}
-              {data.meta.openAiUsed ? (
-                <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-3 py-1 text-emerald-100">
-                  OpenAI analysis applied to clusters
-                </span>
-              ) : null}
-              {data.meta.openAiError ? (
-                <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-white/60">
-                  OpenAI: {data.meta.openAiError}
-                </span>
-              ) : null}
-            </div>
-
+          <div className="mt-10">
             <StatementOverview
               periodLabel={periodLabel}
               pageCount={data.meta.pageCount}
@@ -712,784 +660,470 @@ export default function StatementsClient() {
               healthScore={intelligence?.healthScore}
               groups={presentationGroups}
               formatMoney={formatMoney}
-            />
-
-            <details className="group rounded-3xl border border-white/10 bg-white/[0.025]">
-              <summary className="cursor-pointer list-none px-5 py-5 sm:px-7 [&::-webkit-details-marker]:hidden">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <p className="text-sm font-semibold text-white">
-                      Explore the detailed financial analysis
-                    </p>
-                    <p className="mt-1 text-xs leading-relaxed text-white/45">
-                      Health factors, financial insights, Copilot notes, savings
-                      methodology, and recommendation details.
-                    </p>
-                  </div>
-                  <span className="rounded-full border border-white/10 px-3 py-1 text-xs text-white/55 transition group-open:rotate-180">
-                    ↓
-                  </span>
-                </div>
-              </summary>
-              <div className="space-y-12 border-t border-white/10 px-5 py-7 sm:px-7">
-              {intelligence ? (
+              detailedAnalysis={
                 <>
-                <section className="grid gap-6 lg:grid-cols-[minmax(0,280px)_1fr]">
-                  <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.06] to-white/[0.02] p-6">
-                    <p className="text-xs font-medium uppercase tracking-widest text-white/45">
-                      Financial health
-                    </p>
-                    <p
-                      className={[
-                        "mt-3 text-5xl font-bold tabular-nums",
-                        healthScoreTone(intelligence.healthScore.score),
-                      ].join(" ")}
-                    >
-                      {intelligence.healthScore.score}
-                    </p>
-                    <p className="mt-1 text-lg font-semibold text-white">
-                      {intelligence.healthScore.label}
-                    </p>
-                    <ul className="mt-4 space-y-1.5 border-t border-white/10 pt-4 text-xs text-white/50">
-                      {intelligence.healthScore.factors.slice(0, 5).map((f) => (
-                        <li key={f.id} className="flex justify-between gap-2">
-                          <span>{f.label}</span>
-                          <span
-                            className={
-                              f.impact >= 0 ? "text-emerald-300/90" : "text-amber-300/90"
-                            }
+                  {intelligence ? (
+                    <>
+                      <section className="grid gap-6 lg:grid-cols-[minmax(0,280px)_1fr]">
+                        <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.06] to-white/[0.02] p-6">
+                          <p className="text-xs font-medium uppercase tracking-widest text-white/45">
+                            Statement Health factors
+                          </p>
+                          <p
+                            className={[
+                              "mt-3 text-5xl font-bold tabular-nums",
+                              healthScoreTone(intelligence.healthScore.score),
+                            ].join(" ")}
                           >
-                            {f.impact >= 0 ? "+" : ""}
-                            {f.impact}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
+                            {intelligence.healthScore.score}
+                          </p>
+                          <p className="mt-1 text-lg font-semibold text-white">
+                            {intelligence.healthScore.label}
+                          </p>
+                          <ul className="mt-4 space-y-1.5 border-t border-white/10 pt-4 text-xs text-white/50">
+                            {intelligence.healthScore.factors.slice(0, 5).map((f) => (
+                              <li key={f.id} className="flex justify-between gap-2">
+                                <span>{f.label}</span>
+                                <span
+                                  className={
+                                    f.impact >= 0
+                                      ? "text-emerald-300/90"
+                                      : "text-amber-300/90"
+                                  }
+                                >
+                                  {f.impact >= 0 ? "+" : ""}
+                                  {f.impact}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
 
-                  <section className="space-y-4">
+                        <section className="space-y-4">
+                          <SectionIntro
+                            title="Financial insights"
+                            description="Patterns Brainy noticed on this statement — subscriptions, fees, dining, and spending trends."
+                          />
+                          {intelligence.insights.length === 0 ? (
+                            <div className="rounded-2xl border border-dashed border-white/15 bg-white/[0.02] px-5 py-6 text-sm text-white/50">
+                              No notable patterns crossed the insight threshold for this
+                              upload.
+                            </div>
+                          ) : (
+                            <ul className="grid gap-3 sm:grid-cols-2">
+                              {intelligence.insights.map((card) => {
+                                const tone = severityStyles[card.severity];
+                                return (
+                                  <li
+                                    key={card.id}
+                                    className={[
+                                      "rounded-2xl border bg-gradient-to-br to-white/[0.02] p-4",
+                                      tone.border,
+                                      tone.bg,
+                                    ].join(" ")}
+                                  >
+                                    <p className={["text-sm font-semibold", tone.text].join(" ")}>
+                                      {card.title}
+                                    </p>
+                                    <p className="mt-1.5 text-xs leading-relaxed text-white/55">
+                                      {card.explanation}
+                                    </p>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          )}
+                        </section>
+                      </section>
+
+                      {intelligence.financialSummary ? (
+                        <FinancialIntelligenceSummaryPanel
+                          summary={intelligence.financialSummary}
+                          formatMoney={formatMoney}
+                        />
+                      ) : null}
+
+                      {intelligence.copilot && intelligence.copilot.feed.length > 0 ? (
+                        <CopilotFeedSection
+                          copilot={intelligence.copilot as CopilotTimelineResult}
+                          assistant={intelligence.copilotAssistant}
+                          formatMoney={formatMoney}
+                        />
+                      ) : null}
+
+                      {intelligence.savings.length > 0 ? (
+                        <section className="space-y-4 border-t border-white/10 pt-10">
+                          <SectionIntro
+                            title="Savings opportunities"
+                            description="Only evidence-backed items. Optimization ideas are not guaranteed savings."
+                          />
+                          <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                            {intelligence.savings.map((opp) => (
+                              <li
+                                key={opp.id}
+                                className="rounded-2xl border border-emerald-400/15 bg-gradient-to-br from-emerald-500/[0.06] to-white/[0.02] p-4"
+                              >
+                                <p className="text-sm font-semibold text-emerald-100">
+                                  {opp.title}
+                                </p>
+                                <p className="mt-1.5 text-xs leading-relaxed text-white/55">
+                                  {opp.explanation}
+                                </p>
+                              </li>
+                            ))}
+                          </ul>
+                        </section>
+                      ) : null}
+
+                      {intelligence.recommendations?.items.length ? (
+                        <section className="space-y-4 border-t border-white/10 pt-10">
+                          <SectionIntro
+                            title="Recommended actions"
+                            description="Suggestions from this statement. Savings shown are conservative estimates, not quotes."
+                          />
+                          <SavingsAcceptedSummary
+                            summary={acceptedSummary}
+                            formatMoney={formatMoney}
+                          />
+                          <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                            {visibleRecommendations.map((rec) => (
+                              <RecommendationActionCard
+                                key={rec.id}
+                                rec={rec}
+                                severityStyles={recommendationSeverityStyles}
+                                severityLabel={recommendationSeverityLabel}
+                                formatMoney={formatMoney}
+                                lastActionId={getLastActionId(rec.id)}
+                                onAction={(actionId) => {
+                                  if (
+                                    rec.actionType === "review_subscription" &&
+                                    actionId === "review_merchant" &&
+                                    openRecommendationReview(rec.merchantReference)
+                                  ) {
+                                    return;
+                                  }
+                                  dispatchAction(rec.id, actionId);
+                                }}
+                              />
+                            ))}
+                          </ul>
+                          <ProviderComparisonModal
+                            open={modalOpen}
+                            rec={modalRec}
+                            modalKind={modalKind}
+                            onClose={closeModal}
+                          />
+                        </section>
+                      ) : null}
+                    </>
+                  ) : null}
+
+                  <section
+                    id="expected-bills"
+                    className="scroll-mt-6 space-y-4 border-t border-white/10 pt-10"
+                  >
                     <SectionIntro
-                      title="AI Financial Insights"
-                      description="Pattern-based signals from your parsed statement — subscriptions, fees, dining, convenience, and spending trends."
+                      title={PRESENTATION_GROUP_COPY.expected_recurring_bills.title}
+                      description={
+                        PRESENTATION_GROUP_COPY.expected_recurring_bills.description
+                      }
                     />
-                    {intelligence.insights.length === 0 ? (
-                      <div className="rounded-2xl border border-dashed border-white/15 bg-white/[0.02] px-5 py-6 text-sm text-white/50">
-                        No notable patterns crossed the insight threshold for this upload.
-                      </div>
+                    {(presentationGroups?.expectedRecurringBills.length ?? 0) === 0 ? (
+                      <EmptyGroup note="No expected utility, phone, internet, or insurance-style bills were separated for this upload." />
                     ) : (
-                      <ul className="grid gap-3 sm:grid-cols-2">
-                        {intelligence.insights.map((card) => {
-                          const tone = severityStyles[card.severity];
-                          return (
-                            <li
-                              key={card.id}
-                              className={[
-                                "rounded-2xl border bg-gradient-to-br to-white/[0.02] p-4",
-                                tone.border,
-                                tone.bg,
-                              ].join(" ")}
-                            >
-                              <p className={["text-sm font-semibold", tone.text].join(" ")}>
-                                {card.title}
-                              </p>
-                              <p className="mt-1.5 text-xs leading-relaxed text-white/55">
-                                {card.explanation}
-                              </p>
-                              {card.annualImpact != null && card.annualImpact > 0 ? (
-                                <p className="mt-2 text-xs text-white/40">
-                                  Est. annual impact{" "}
-                                  <span className="font-medium text-white/75">
-                                    {formatMoney(card.annualImpact, summaryCurrency)}
-                                  </span>
-                                </p>
-                              ) : /Annual estimate unavailable/i.test(
-                                  card.explanation
-                                ) ? (
-                                <p className="mt-2 text-xs text-white/35">
-                                  Annual estimate unavailable
-                                </p>
-                              ) : null}
-                            </li>
-                          );
-                        })}
+                      <ul className="space-y-4">
+                        {presentationGroups!.expectedRecurringBills.map((card) => (
+                          <li key={card.id}>
+                            <ActivityPresentationCardView
+                              card={card}
+                              action={actions[card.clusterId]}
+                              onAction={(key) =>
+                                setActions((prev) => ({
+                                  ...prev,
+                                  [card.clusterId]: key,
+                                }))
+                              }
+                            />
+                          </li>
+                        ))}
                       </ul>
                     )}
                   </section>
-                </section>
 
-                {intelligence.financialSummary ? (
-                  <FinancialIntelligenceSummaryPanel
-                    summary={intelligence.financialSummary}
-                    formatMoney={formatMoney}
-                  />
-                ) : null}
-
-                {intelligence.copilot && intelligence.copilot.feed.length > 0 ? (
-                  <CopilotFeedSection
-                    copilot={intelligence.copilot as CopilotTimelineResult}
-                    assistant={intelligence.copilotAssistant}
-                    formatMoney={formatMoney}
-                  />
-                ) : null}
-
-                {intelligence.savings.length > 0 ? (
-                  <section className="space-y-4 border-t border-white/10 pt-10">
+                  <section id="subscriptions-review" className="scroll-mt-6 space-y-4">
                     <SectionIntro
-                      title="Savings opportunities"
-                      description="Grouped by category — optimization items show conservative ranges and are not counted as guaranteed savings."
+                      title={PRESENTATION_GROUP_COPY.subscriptions.title}
+                      description={PRESENTATION_GROUP_COPY.subscriptions.description}
                     />
-                    <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                      {intelligence.savings.map((opp) => (
-                        <li
-                          key={opp.id}
-                          className="rounded-2xl border border-emerald-400/15 bg-gradient-to-br from-emerald-500/[0.06] to-white/[0.02] p-4"
-                        >
-                          <p className="text-sm font-semibold text-emerald-100">
-                            {opp.title}
-                          </p>
-                          <p className="mt-1.5 text-xs leading-relaxed text-white/55">
-                            {opp.explanation}
-                          </p>
-                          <p className="mt-2 text-[10px] uppercase tracking-widest text-white/35">
-                            {opp.category === "confirmed"
-                              ? "Confirmed savings"
-                              : opp.category === "avoidable_fees"
-                                ? "Avoidable fees"
-                                : "Optimization"}
-                          </p>
-                          <p className="mt-2 text-xs text-white/45">
-                            {opp.category === "optimization" &&
-                            opp.monthlySavings > 0 ? (
-                              <>
-                                Range ≈{" "}
-                                <span className="font-medium text-violet-200/90">
-                                  {formatMoney(
-                                    Math.round(opp.monthlySavings * 0.25 * 100) / 100,
-                                    opp.currency
-                                  )}
-                                </span>
-                                –{" "}
-                                <span className="font-medium text-violet-200/90">
-                                  {formatMoney(
-                                    Math.round(opp.monthlySavings * 0.55 * 100) / 100,
-                                    opp.currency
-                                  )}
-                                </span>
-                                /mo
-                              </>
-                            ) : opp.monthlySavings > 0 ? (
-                              <>
-                                ≈{" "}
-                                <span className="font-medium text-white/80">
-                                  {formatMoney(opp.monthlySavings, opp.currency)}
-                                </span>
-                                /mo ·{" "}
-                                <span className="font-medium text-emerald-200/90">
-                                  {formatMoney(opp.yearlySavings, opp.currency)}
-                                </span>
-                                /yr
-                              </>
-                            ) : (opp.observedPeriodAmount ?? 0) > 0 ? (
-                              <>
-                                <span className="font-medium text-white/80">
-                                  {formatMoney(
-                                    opp.observedPeriodAmount!,
-                                    opp.currency
-                                  )}
-                                </span>{" "}
-                                observed in this statement · Annual estimate
-                                unavailable
-                              </>
-                            ) : (
-                              <>Annual estimate unavailable</>
-                            )}
-                          </p>
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                ) : null}
-
-                {intelligence.recommendations?.items.length ? (
-                  <section className="space-y-4 border-t border-white/10 pt-10">
-                    <div className="flex flex-wrap items-end justify-between gap-4">
-                      <SectionIntro
-                        title="Recommended actions"
-                        description="Deterministic recommendations from subscriptions, fees, recurring spend, and merchant patterns — savings are conservative estimates, not quoted prices."
-                      />
-                      {intelligence.recommendations.totalMonthlySavings > 0 ? (
-                        <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/[0.08] px-4 py-2.5 text-sm">
-                          <p className="text-xs uppercase tracking-widest text-emerald-200/70">
-                            Actionable savings
-                          </p>
-                          <p className="mt-0.5 font-semibold tabular-nums text-emerald-100">
-                            {formatMoney(
-                              intelligence.recommendations.totalMonthlySavings,
-                              intelligence.recommendations.currency
-                            )}
-                            <span className="text-xs font-normal text-white/45">
-                              {" "}
-                              /mo ·{" "}
-                              {formatMoney(
-                                intelligence.recommendations.totalYearlySavings,
-                                intelligence.recommendations.currency
-                              )}
-                              /yr
-                            </span>
-                          </p>
-                          {intelligence.recommendations.optimizationRange &&
-                          intelligence.recommendations.optimizationRange.yearlyHigh > 0 ? (
-                            <p className="mt-1 text-[10px] text-violet-200/60">
-                              Optimization range (not included):{" "}
-                              {formatMoney(
-                                intelligence.recommendations.optimizationRange.yearlyLow,
-                                intelligence.recommendations.currency
-                              )}
-                              –
-                              {formatMoney(
-                                intelligence.recommendations.optimizationRange.yearlyHigh,
-                                intelligence.recommendations.currency
-                              )}
-                              /yr
-                            </p>
-                          ) : (
-                            <p className="mt-1 text-[10px] text-white/40">
-                              No annual estimate available
-                            </p>
-                          )}
-                        </div>
-                      ) : null}
-                    </div>
-                    <SavingsAcceptedSummary
-                      summary={acceptedSummary}
-                      formatMoney={formatMoney}
-                    />
-                    <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                      {visibleRecommendations.map((rec) => (
-                        <RecommendationActionCard
-                          key={rec.id}
-                          rec={rec}
-                          severityStyles={recommendationSeverityStyles}
-                          severityLabel={recommendationSeverityLabel}
-                          formatMoney={formatMoney}
-                          lastActionId={getLastActionId(rec.id)}
-                          onAction={(actionId) => {
-                            if (
-                              rec.actionType === "review_subscription" &&
-                              actionId === "review_merchant" &&
-                              openRecommendationReview(rec.merchantReference)
-                            ) {
-                              return;
-                            }
-                            dispatchAction(rec.id, actionId);
-                          }}
-                        />
-                      ))}
-                    </ul>
-                    <ProviderComparisonModal
-                      open={modalOpen}
-                      rec={modalRec}
-                      modalKind={modalKind}
-                      onClose={closeModal}
-                    />
-                  </section>
-                ) : null}
-
-                {intelligence.merchantGroups.length > 0 ? (
-                  <section className="space-y-3 border-t border-white/10 pt-10">
-                    <SectionIntro
-                      title="Grouped merchants"
-                      description="Normalized merchant names — terminal codes and location suffixes collapsed."
-                    />
-                    <ul className="flex flex-wrap gap-2">
-                      {intelligence.merchantGroups.slice(0, 12).map((g) => (
-                        <li
-                          key={g.groupKey}
-                          className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-white/70"
-                        >
-                          <span className="font-medium text-white">{g.displayName}</span>
-                          <span className="text-white/35"> · </span>
-                          {g.transactionCount} txns ·{" "}
-                          {formatMoney(g.totalAmount, g.currency)}
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                ) : null}
-                </>
-              ) : null}
-
-            <section className="grid gap-4 border-t border-white/10 pt-10 sm:grid-cols-2 lg:grid-cols-4">
-              <SummaryCard
-                title="Estimated monthly subscriptions"
-                value={formatMoney(data.summary.monthlySpend, summaryCurrency)}
-                subtitle={
-                  data.summary.subscriptionCount > 0
-                    ? `Confirmed cadence only · ${summaryCurrency}`
-                    : (data.summary.possibleSubscriptionCount ?? 0) > 0
-                      ? `${data.summary.possibleSubscriptionCount} possible · recurrence not confirmed`
-                      : "No qualifying recurring bills in this statement window"
-                }
-              />
-              <SummaryCard
-                title="Estimated annual subscriptions"
-                value={
-                  data.summary.annualSpend > 0
-                    ? formatMoney(data.summary.annualSpend, summaryCurrency)
-                    : "—"
-                }
-                subtitle={
-                  data.summary.annualSpend > 0
-                    ? "Evidence-backed confirmed subscriptions only"
-                    : "Annual estimate unavailable"
-                }
-              />
-              <SummaryCard
-                title="True subscriptions detected"
-                value={String(data.summary.subscriptionCount)}
-                subtitle={
-                  (data.summary.possibleSubscriptionCount ?? 0) > 0
-                    ? `Confirmed only · ${data.summary.possibleSubscriptionCount} possible separately`
-                    : `Confirmed cadence · confidence ≥ ${(SUBSCRIPTION_CONFIDENCE_MIN * 100).toFixed(0)}%`
-                }
-              />
-              <SummaryCard
-                title="Spending insights total"
-                value={formatMoney(
-                  data.summary.spendingInsightsTotal,
-                  summaryCurrency
-                )}
-                subtitle={`${displayInsights.length} notable flows · does not include recurring everyday spend`}
-              />
-              </section>
-              </div>
-            </details>
-
-            <section id="expected-bills" className="scroll-mt-6 space-y-4">
-              <SectionIntro
-                title={PRESENTATION_GROUP_COPY.expected_recurring_bills.title}
-                description={
-                  PRESENTATION_GROUP_COPY.expected_recurring_bills.description
-                }
-              />
-              {(presentationGroups?.expectedRecurringBills.length ?? 0) === 0 ? (
-                <EmptyGroup note="No expected utility, phone, internet, or insurance-style bills were separated for this upload." />
-              ) : (
-                <ul className="space-y-4">
-                  {presentationGroups!.expectedRecurringBills.map((card) => (
-                    <li key={card.id}>
-                      <ActivityPresentationCardView
-                        card={card}
-                        action={actions[card.clusterId]}
-                        onAction={(key) =>
-                          setActions((prev) => ({
-                            ...prev,
-                            [card.clusterId]: key,
-                          }))
-                        }
-                      />
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            <section id="subscriptions-review" className="scroll-mt-6 space-y-4">
-              <SectionIntro
-                title={PRESENTATION_GROUP_COPY.subscriptions.title}
-                description={PRESENTATION_GROUP_COPY.subscriptions.description}
-              />
-              {(presentationGroups?.subscriptions.length ?? 0) === 0 ? (
-                <EmptyGroup note="No streaming, software, or membership-style subscriptions matched this statement." />
-              ) : (
-                <ul className="space-y-4">
-                  {presentationGroups!.subscriptions.map((card) => (
-                    <li key={card.id}>
-                      <ActivityPresentationCardView
-                        card={card}
-                        highlighted={highlightedClusterId === card.clusterId}
-                        cardRef={(element) => {
-                          if (element) {
-                            activityCardRefs.current.set(card.clusterId, element);
-                          } else {
-                            activityCardRefs.current.delete(card.clusterId);
-                          }
-                        }}
-                        action={actions[card.clusterId]}
-                        onAction={(key) =>
-                          setActions((prev) => ({
-                            ...prev,
-                            [card.clusterId]: key,
-                          }))
-                        }
-                      />
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            <section id="flexible-spending" className="scroll-mt-6 space-y-4">
-              <SectionIntro
-                title={PRESENTATION_GROUP_COPY.repeated_discretionary.title}
-                description={
-                  PRESENTATION_GROUP_COPY.repeated_discretionary.description
-                }
-              />
-              {(presentationGroups?.repeatedDiscretionary.length ?? 0) === 0 ? (
-                <EmptyGroup note="No repeated rideshare, dining, or convenience patterns crossed the reporting threshold." />
-              ) : (
-                <ul className="space-y-4">
-                  {presentationGroups!.repeatedDiscretionary.map((card) => (
-                    <li key={card.id}>
-                      <ActivityPresentationCardView
-                        card={card}
-                        action={actions[card.clusterId]}
-                        onAction={(key) =>
-                          setActions((prev) => ({
-                            ...prev,
-                            [card.clusterId]: key,
-                          }))
-                        }
-                      />
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            <section id="activity-review" className="scroll-mt-6 space-y-4">
-              <SectionIntro
-                title={PRESENTATION_GROUP_COPY.unusual_recurring.title}
-                description={PRESENTATION_GROUP_COPY.unusual_recurring.description}
-              />
-              {(presentationGroups?.unusualRecurring.length ?? 0) === 0 ? (
-                <EmptyGroup note="No unusual recurring activity was flagged for review in this window." />
-              ) : (
-                <ul className="space-y-4">
-                  {presentationGroups!.unusualRecurring.map((card) => (
-                    <li key={card.id}>
-                      <ActivityPresentationCardView
-                        card={card}
-                        action={actions[card.clusterId]}
-                        onAction={(key) =>
-                          setActions((prev) => ({
-                            ...prev,
-                            [card.clusterId]: key,
-                          }))
-                        }
-                      />
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            <section className="space-y-4">
-              <SectionIntro
-                title={PRESENTATION_GROUP_COPY.one_time_review.title}
-                description={PRESENTATION_GROUP_COPY.one_time_review.description}
-              />
-              {(presentationGroups?.oneTimeReview?.length ?? 0) === 0 ? (
-                <EmptyGroup note="No one-time review items were separated for this upload." />
-              ) : (
-                <ul className="space-y-4">
-                  {presentationGroups!.oneTimeReview!.map((card) => (
-                    <li key={card.id}>
-                      <ActivityPresentationCardView
-                        card={card}
-                        action={actions[card.clusterId]}
-                        onAction={(key) =>
-                          setActions((prev) => ({
-                            ...prev,
-                            [card.clusterId]: key,
-                          }))
-                        }
-                      />
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            {data.transfers.length > 0 ? (
-              <details className="rounded-2xl border border-amber-400/15 bg-amber-500/[0.04]">
-                <summary className="cursor-pointer select-none px-5 py-4 text-sm font-semibold text-amber-100/90">
-                  Transfers ({data.transfers.length}){" "}
-                  <span className="font-normal text-white/40">
-                    — Zelle and peer payments · excluded from all totals
-                  </span>
-                </summary>
-                <div className="space-y-3 px-5 pb-5">
-                  <p className="text-xs text-white/45">
-                    These transactions are classified as transfers and are not
-                    counted toward subscription totals, recurring expenses, or
-                    spending insights.
-                  </p>
-                  <ul className="space-y-3">
-                    {data.transfers.map((row) => (
-                      <li key={row.clusterId}>
-                        <TransferCard row={row} />
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </details>
-            ) : null}
-
-            <details className="group rounded-2xl border border-white/10 bg-white/[0.02] px-4 py-3 text-sm text-white/55">
-              <summary className="cursor-pointer select-none text-sm font-medium text-white/80">
-                Diagnostics & parsed ledger
-              </summary>
-              <div className="mt-4 space-y-3 border-t border-white/10 pt-4">
-                {intelligence && intelligence.lowConfidenceRows.length > 0 ? (
-                  <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
-                    <summary className="cursor-pointer text-white/70">
-                      Low-confidence spend rows ({intelligence.lowConfidenceRows.length})
-                    </summary>
-                    <ul className="mt-2 max-h-48 space-y-2 overflow-y-auto">
-                      {intelligence.lowConfidenceRows.map((r) => (
-                        <li
-                          key={r.clusterId}
-                          className="rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-[11px] text-white/60"
-                        >
-                          {r.normalizedName} · score{" "}
-                          {((r.rowConfidence ?? 0) * 100).toFixed(0)}% ·{" "}
-                          {formatMoney(r.totalSpentInPeriod, r.currency)}
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
-                ) : null}
-
-                {data.meta.parseDebug?.firstTenTransactions?.length ? (
-                  <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
-                    <summary className="cursor-pointer text-white/70">
-                      Parsed transactions (sample)
-                    </summary>
-                    <ul className="mt-2 max-h-56 space-y-1.5 overflow-y-auto font-mono text-[11px] text-white/60">
-                      {data.meta.parseDebug.firstTenTransactions.map((t, i) => (
-                        <li key={i}>
-                          {t.date} · {t.description.slice(0, 72)}
-                          {t.description.length > 72 ? "…" : ""} · {t.amount} ·{" "}
-                          {t.type}
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
-                ) : null}
-
-                {data.meta.parseDebug ? (
-                  <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
-                    <summary className="cursor-pointer text-white/70">
-                      Transaction extractor metrics
-                    </summary>
-                    <dl className="mt-2 grid gap-2 sm:grid-cols-2">
-                      <div>
-                        <dt className="text-white/40">Extracted characters</dt>
-                        <dd className="text-white/70">{data.meta.parseDebug.totalExtractedChars}</dd>
-                      </div>
-                      <div>
-                        <dt className="text-white/40">Physical vs reconstructed lines</dt>
-                        <dd className="text-white/70">
-                          {data.meta.parseDebug.cleanedLineCount} /{" "}
-                          {data.meta.parseDebug.reconstructedLineCount}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt className="text-white/40">High-confidence parses</dt>
-                        <dd className="text-white/70">{data.meta.parseDebug.highConfidenceParsed}</dd>
-                      </div>
-                      <div>
-                        <dt className="text-white/40">Accepted / rejected</dt>
-                        <dd className="text-white/70">
-                          {data.meta.parseDebug.acceptedCount} /{" "}
-                          {data.meta.parseDebug.rejectedCount}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt className="text-white/40">AI-disambiguated rows</dt>
-                        <dd className="text-white/70">
-                          {data.meta.parseDebug.aiDisambiguatedCount}
-                          {data.meta.parseDebug.fullTextAiFallbackUsed
-                            ? " · full-text fallback"
-                            : ""}
-                        </dd>
-                      </div>
-                    </dl>
-                  </details>
-                ) : null}
-
-                <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
-                  <summary className="cursor-pointer text-white/70">
-                    Merchant normalization (
-                    {data.diagnostics.merchantNormalizations?.length ?? 0})
-                  </summary>
-                  {data.diagnostics.merchantNormalizations?.length ? (
-                    <ul className="mt-2 max-h-52 space-y-2 overflow-y-auto">
-                      {data.diagnostics.merchantNormalizations
-                        .slice(0, 48)
-                        .map((row) => (
-                          <li
-                            key={row.clusterId}
-                            className="rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-[11px]"
-                          >
-                            <span className="text-white/75">{row.normalizedName}</span>
-                            <span className="text-white/35"> · </span>
-                            <span className="text-white/50">
-                              {(row.confidence * 100).toFixed(0)}% · {row.source}
-                            </span>
-                            <p className="mt-1 text-white/45">{row.reason}</p>
-                            <p className="mt-0.5 font-mono text-[10px] text-white/35">
-                              raw: {row.rawMerchant}
-                            </p>
-                            {row.rawExamples.length > 1 ? (
-                              <p className="mt-0.5 text-[10px] text-white/30">
-                                variants: {row.rawExamples.slice(1, 4).join(" · ")}
-                              </p>
-                            ) : null}
+                    {(presentationGroups?.subscriptions.length ?? 0) === 0 ? (
+                      <EmptyGroup note="No streaming, software, or membership-style subscriptions matched this statement." />
+                    ) : (
+                      <ul className="space-y-4">
+                        {presentationGroups!.subscriptions.map((card) => (
+                          <li key={card.id}>
+                            <ActivityPresentationCardView
+                              card={card}
+                              highlighted={highlightedClusterId === card.clusterId}
+                              cardRef={(element) => {
+                                if (element) {
+                                  activityCardRefs.current.set(card.clusterId, element);
+                                } else {
+                                  activityCardRefs.current.delete(card.clusterId);
+                                }
+                              }}
+                              action={actions[card.clusterId]}
+                              onAction={(key) =>
+                                setActions((prev) => ({
+                                  ...prev,
+                                  [card.clusterId]: key,
+                                }))
+                              }
+                            />
                           </li>
                         ))}
-                    </ul>
-                  ) : (
-                    <p className="mt-2 text-white/45">
-                      No merchant clusters were normalized for this run.
-                    </p>
-                  )}
-                </details>
+                      </ul>
+                    )}
+                  </section>
 
-                <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
-                  <summary className="cursor-pointer text-white/70">
-                    AI-assisted subscription clusters (
-                    {data.diagnostics.aiAssistedSubscriptionClusterIds.length})
-                  </summary>
-                  {data.diagnostics.aiAssistedSubscriptionClusterIds.length ? (
-                    <ul className="mt-2 max-h-40 overflow-y-auto text-white/60">
-                      {data.diagnostics.aiAssistedSubscriptionClusterIds.map((id) => (
-                        <li key={id} className="font-mono text-[11px]">
-                          {id}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="mt-2 text-white/45">
-                      No subscription rows were attributed to OpenAI for this run
-                      (heuristic-only or API unavailable).
-                    </p>
-                  )}
-                </details>
+                  <section id="flexible-spending" className="scroll-mt-6 space-y-4">
+                    <SectionIntro
+                      title={PRESENTATION_GROUP_COPY.repeated_discretionary.title}
+                      description={
+                        PRESENTATION_GROUP_COPY.repeated_discretionary.description
+                      }
+                    />
+                    {(presentationGroups?.repeatedDiscretionary.length ?? 0) === 0 ? (
+                      <EmptyGroup note="No repeated rideshare, dining, or convenience patterns crossed the reporting threshold." />
+                    ) : (
+                      <ul className="space-y-4">
+                        {presentationGroups!.repeatedDiscretionary.map((card) => (
+                          <li key={card.id}>
+                            <ActivityPresentationCardView
+                              card={card}
+                              action={actions[card.clusterId]}
+                              onAction={(key) =>
+                                setActions((prev) => ({
+                                  ...prev,
+                                  [card.clusterId]: key,
+                                }))
+                              }
+                            />
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
 
-                <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
-                  <summary className="cursor-pointer text-white/70">
-                    Detected subscriptions ({data.subscriptions.length})
-                  </summary>
-                  <ul className="mt-2 max-h-48 space-y-2 overflow-y-auto">
-                    {data.subscriptions.map((s) => (
-                      <li
-                        key={s.clusterId}
-                        className="rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-[11px]"
-                      >
-                        <span className="text-white/75">{s.normalizedName}</span>
-                        <span className="text-white/35"> · </span>
-                        <span className="text-white/50">{s.clusterId}</span>
-                        <span className="text-white/35"> · </span>
-                        <span className="text-emerald-200/90">
-                          fit {(s.trueSubscriptionScore * 100).toFixed(0)}%
+                  <section id="activity-review" className="scroll-mt-6 space-y-4">
+                    <SectionIntro
+                      title={PRESENTATION_GROUP_COPY.unusual_recurring.title}
+                      description={PRESENTATION_GROUP_COPY.unusual_recurring.description}
+                    />
+                    {(presentationGroups?.unusualRecurring.length ?? 0) === 0 ? (
+                      <EmptyGroup note="No unusual recurring activity was flagged for review in this window." />
+                    ) : (
+                      <ul className="space-y-4">
+                        {presentationGroups!.unusualRecurring.map((card) => (
+                          <li key={card.id}>
+                            <ActivityPresentationCardView
+                              card={card}
+                              action={actions[card.clusterId]}
+                              onAction={(key) =>
+                                setActions((prev) => ({
+                                  ...prev,
+                                  [card.clusterId]: key,
+                                }))
+                              }
+                            />
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+
+                  <section className="space-y-4">
+                    <SectionIntro
+                      title={PRESENTATION_GROUP_COPY.one_time_review.title}
+                      description={PRESENTATION_GROUP_COPY.one_time_review.description}
+                    />
+                    {(presentationGroups?.oneTimeReview?.length ?? 0) === 0 ? (
+                      <EmptyGroup note="No one-time review items were separated for this upload." />
+                    ) : (
+                      <ul className="space-y-4">
+                        {presentationGroups!.oneTimeReview!.map((card) => (
+                          <li key={card.id}>
+                            <ActivityPresentationCardView
+                              card={card}
+                              action={actions[card.clusterId]}
+                              onAction={(key) =>
+                                setActions((prev) => ({
+                                  ...prev,
+                                  [card.clusterId]: key,
+                                }))
+                              }
+                            />
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+
+                  {data.transfers.length > 0 ? (
+                    <details className="rounded-2xl border border-amber-400/15 bg-amber-500/[0.04]">
+                      <summary className="cursor-pointer select-none px-5 py-4 text-sm font-semibold text-amber-100/90">
+                        Transfers ({data.transfers.length}){" "}
+                        <span className="font-normal text-white/40">
+                          — peer payments kept separate from spending totals
                         </span>
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-
-                <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
-                  <summary className="cursor-pointer text-white/70">
-                    Recurring expenses ({data.recurringExpenses.length})
-                  </summary>
-                  <ul className="mt-2 max-h-48 space-y-2 overflow-y-auto">
-                    {data.recurringExpenses.map((r) => (
-                      <li
-                        key={r.clusterId}
-                        className="rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-[11px] text-white/60"
-                      >
-                        {r.normalizedName} · score{" "}
-                        {(r.recurringExpenseScore * 100).toFixed(0)}% ·{" "}
-                        {r.categoryLabel}
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-
-                <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
-                  <summary className="cursor-pointer text-white/70">
-                    Spending insights ({data.spendingInsights.length})
-                  </summary>
-                  <ul className="mt-2 max-h-48 space-y-2 overflow-y-auto">
-                    {data.spendingInsights.map((r) => (
-                      <li
-                        key={r.clusterId}
-                        className="rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-[11px] text-white/60"
-                      >
-                        {r.normalizedName} · insight score{" "}
-                        {(r.spendingInsightScore * 100).toFixed(0)}% ·{" "}
-                        {r.categoryLabel}
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-
-                <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
-                  <summary className="cursor-pointer text-white/70">
-                    Subscription gate exclusions (
-                    {data.diagnostics.excludedFromSubscriptions.length})
-                  </summary>
-                  {data.diagnostics.excludedFromSubscriptions.length ? (
-                    <ul className="mt-2 max-h-52 space-y-2 overflow-y-auto">
-                      {data.diagnostics.excludedFromSubscriptions
-                        .slice(0, 40)
-                        .map((row) => (
-                          <li
-                            key={row.clusterId}
-                            className="rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-[11px]"
-                          >
-                            <span className="font-medium text-white/75">
-                              {row.merchantLabel}
-                            </span>
-                            <span className="text-white/35"> · </span>
-                            <span className="text-white/50">
-                              {row.reasons.join(" · ")}
-                            </span>
-                          </li>
-                        ))}
-                    </ul>
-                  ) : (
-                    <p className="mt-2 text-white/45">
-                      No merged candidates were blocked at the subscription gates.
-                    </p>
-                  )}
-                  {data.diagnostics.excludedFromSubscriptions.length > 40 ? (
-                    <p className="mt-2 text-white/35">
-                      Showing first 40 of{" "}
-                      {data.diagnostics.excludedFromSubscriptions.length}.
-                    </p>
+                      </summary>
+                      <div className="space-y-3 px-5 pb-5">
+                        <ul className="space-y-3">
+                          {data.transfers.map((row) => (
+                            <li key={row.clusterId}>
+                              <TransferCard row={row} />
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </details>
                   ) : null}
-                </details>
 
-                <dl className="grid gap-2 text-xs sm:grid-cols-2">
-                  <div>
-                    <dt className="text-white/40">subscriptionCount</dt>
-                    <dd className="text-white/75">{data.diagnostics.subscriptionCount}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-white/40">spendingInsightCount</dt>
-                    <dd className="text-white/75">{data.diagnostics.spendingInsightCount}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-white/40">recurringExpenseCount</dt>
-                    <dd className="text-white/75">{data.diagnostics.recurringExpenseCount}</dd>
-                  </div>
-                </dl>
-              </div>
-            </details>
+                  <details className="group rounded-2xl border border-white/10 bg-white/[0.02] px-4 py-3 text-sm text-white/55">
+                    <summary className="cursor-pointer select-none text-sm font-medium text-white/80">
+                      Diagnostics & parsed ledger
+                    </summary>
+                    <div className="mt-4 space-y-3 border-t border-white/10 pt-4">
+                      <div className="flex flex-wrap gap-2 text-xs text-white/50">
+                        <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
+                          Parsed transactions: {data.meta.transactionCount}
+                        </span>
+                        {data.meta.parseDebug ? (
+                          <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
+                            Ambiguous AI assist:{" "}
+                            {data.meta.parseDebug.aiDisambiguatedCount}
+                            {data.meta.parseDebug.fullTextAiFallbackUsed
+                              ? " · full-text rescue"
+                              : ""}
+                          </span>
+                        ) : null}
+                        {data.meta.fallbackUsed ? (
+                          <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-3 py-1 text-amber-100">
+                            Clustering without OpenAI
+                          </span>
+                        ) : null}
+                        {data.meta.openAiUsed ? (
+                          <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-3 py-1 text-emerald-100">
+                            OpenAI analysis applied to clusters
+                          </span>
+                        ) : null}
+                        {data.meta.openAiError ? (
+                          <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-white/60">
+                            OpenAI: {data.meta.openAiError}
+                          </span>
+                        ) : null}
+                      </div>
+
+                      {intelligence && intelligence.lowConfidenceRows.length > 0 ? (
+                        <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                          <summary className="cursor-pointer text-white/70">
+                            Low-confidence spend rows (
+                            {intelligence.lowConfidenceRows.length})
+                          </summary>
+                          <ul className="mt-2 max-h-48 space-y-2 overflow-y-auto">
+                            {intelligence.lowConfidenceRows.map((r) => (
+                              <li
+                                key={r.clusterId}
+                                className="rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-[11px] text-white/60"
+                              >
+                                {r.normalizedName} · score{" "}
+                                {((r.rowConfidence ?? 0) * 100).toFixed(0)}% ·{" "}
+                                {formatMoney(r.totalSpentInPeriod, r.currency)}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      ) : null}
+
+                      {data.meta.parseDebug?.firstTenTransactions?.length ? (
+                        <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                          <summary className="cursor-pointer text-white/70">
+                            Parsed transactions (sample)
+                          </summary>
+                          <ul className="mt-2 max-h-56 space-y-1.5 overflow-y-auto font-mono text-[11px] text-white/60">
+                            {data.meta.parseDebug.firstTenTransactions.map((t, i) => (
+                              <li key={i}>
+                                {t.date} · {t.description.slice(0, 72)}
+                                {t.description.length > 72 ? "…" : ""} · {t.amount} ·{" "}
+                                {t.type}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      ) : null}
+
+                      {data.meta.parseDebug ? (
+                        <details className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                          <summary className="cursor-pointer text-white/70">
+                            Transaction extractor metrics
+                          </summary>
+                          <dl className="mt-2 grid gap-2 sm:grid-cols-2">
+                            <div>
+                              <dt className="text-white/40">Extracted characters</dt>
+                              <dd className="text-white/70">
+                                {data.meta.parseDebug.totalExtractedChars}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt className="text-white/40">
+                                Physical vs reconstructed lines
+                              </dt>
+                              <dd className="text-white/70">
+                                {data.meta.parseDebug.cleanedLineCount} /{" "}
+                                {data.meta.parseDebug.reconstructedLineCount}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt className="text-white/40">High-confidence parses</dt>
+                              <dd className="text-white/70">
+                                {data.meta.parseDebug.highConfidenceParsed}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt className="text-white/40">Accepted / rejected</dt>
+                              <dd className="text-white/70">
+                                {data.meta.parseDebug.acceptedCount} /{" "}
+                                {data.meta.parseDebug.rejectedCount}
+                              </dd>
+                            </div>
+                          </dl>
+                        </details>
+                      ) : null}
+
+                      <dl className="grid gap-2 text-xs sm:grid-cols-2">
+                        <div>
+                          <dt className="text-white/40">subscriptionCount</dt>
+                          <dd className="text-white/75">
+                            {data.diagnostics.subscriptionCount}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-white/40">spendingInsightCount</dt>
+                          <dd className="text-white/75">
+                            {data.diagnostics.spendingInsightCount}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-white/40">recurringExpenseCount</dt>
+                          <dd className="text-white/75">
+                            {data.diagnostics.recurringExpenseCount}
+                          </dd>
+                        </div>
+                      </dl>
+                    </div>
+                  </details>
+                </>
+              }
+            />
           </div>
         ) : null}
       </div>
@@ -1509,25 +1143,6 @@ function SectionIntro(props: { title: string; description: string }) {
     </div>
   );
 }
-
-function SummaryCard(props: {
-  title: string;
-  value: string;
-  subtitle?: string;
-}) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-5">
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-white/40">
-        {props.title}
-      </p>
-      <p className="mt-2 text-2xl font-semibold text-white">{props.value}</p>
-      {props.subtitle ? (
-        <p className="mt-1 text-xs text-white/45">{props.subtitle}</p>
-      ) : null}
-    </div>
-  );
-}
-
 
 function EmptyGroup(props: { note: string }) {
   return (
