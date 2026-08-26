@@ -655,6 +655,7 @@ export default function StatementsClient() {
           <div className="mt-10">
             <StatementOverview
               periodLabel={periodLabel}
+              statementPeriod={data.meta.statementPeriod}
               pageCount={data.meta.pageCount}
               activity={intelligence?.statementActivity ?? null}
               healthScore={intelligence?.healthScore}

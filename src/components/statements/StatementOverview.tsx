@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useMemo, useState, type ReactNode } from "react";
 
+import { MonthExplanationPanel } from "@/components/statements/MonthExplanationPanel";
+import type { StatementPeriod } from "@/lib/statements/types";
 import type {
   StatementActivityCategory,
   StatementActivitySummary,
@@ -29,6 +31,7 @@ type HealthScoreProps = {
 
 type Props = {
   periodLabel: string | null;
+  statementPeriod?: StatementPeriod | null;
   pageCount: number;
   activity: StatementActivitySummary | null;
   groups: OverviewGroups;
@@ -304,6 +307,7 @@ function buildAttentionFindings(
 
 export function StatementOverview({
   periodLabel,
+  statementPeriod = null,
   pageCount,
   activity,
   groups,
@@ -380,16 +384,19 @@ export function StatementOverview({
             </p>
           </div>
           {showHealth ? (
-            <div className="min-w-[8.5rem] rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-center">
-              <p className="text-[11px] uppercase tracking-wider text-white/40">
+            <div className="min-w-[8.5rem] rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-center">
+              <p className="text-[10px] uppercase tracking-wider text-white/35">
                 {healthProvisional
                   ? "Statement Health (provisional)"
                   : "Statement Health"}
               </p>
-              <p className="mt-1 text-3xl font-bold tabular-nums text-emerald-200">
+              <p className="mt-1 text-2xl font-semibold tabular-nums text-emerald-200/90">
                 {healthScore!.score}
               </p>
-              <p className="text-xs text-white/55">{healthScore!.label}</p>
+              <p className="text-[11px] text-white/45">{healthScore!.label}</p>
+              <p className="mt-1.5 max-w-[9rem] text-[10px] leading-snug text-white/35">
+                Secondary signal — not overall financial wellbeing
+              </p>
             </div>
           ) : null}
         </div>
@@ -430,6 +437,13 @@ export function StatementOverview({
           this PDF—not overall financial wellbeing.
         </p>
       </section>
+
+      <MonthExplanationPanel
+        activity={activity}
+        statementPeriod={statementPeriod}
+        healthScore={healthScore?.score ?? null}
+        formatMoney={formatMoney}
+      />
 
       {/* 2. Attention */}
       <section>
