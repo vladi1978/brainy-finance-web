@@ -26,6 +26,7 @@ Store price comparison lives at `/compare` (API: `POST /api/compare-product`).
 - **Discovery:** Google Shopping via `SERPER_API_KEY` and/or `SERPAPI_API_KEY` (see `.env.example`)
 - **Demo mode (synthetic only):** `PRODUCT_COMPARE_DEMO_MODE=true` — never for public production
 - **OpenAI enrichment (opt-in):** requires `OPENAI_ENRICHMENT_ENABLED=true` **and** `OPENAI_API_KEY`
+- **OpenAI statement explanation (separate opt-in):** requires `OPENAI_STATEMENT_EXPLANATION_ENABLED=true` **and** `OPENAI_API_KEY` — does not enable enrichment
 - **Deployment checklist:** [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
 - **Verbose compare logs / debug traces (default off):** `DEBUG_COMPARE=true` — leave unset or `false` in production
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useId, useMemo, useState } from "react";
 
 import type { StatementPeriod } from "@/lib/statements/types";
 import type { StatementActivitySummary } from "@/lib/statements/intelligence/statementActivity";
@@ -10,6 +10,9 @@ import {
   buildSpendingScenario,
   type SpendingScenarioPercent,
 } from "@/lib/statements/intelligence/monthlyExplanation";
+import { buildExplanationFactContract } from "@/lib/statements/explanation/factContract";
+import { formatStatementPeriodRange } from "@/lib/statements/intelligence/statementScopePresentation";
+import { ExplainWithAiPanel } from "@/components/statements/ExplainWithAiPanel";
 
 type Props = {
   activity: StatementActivitySummary;
@@ -57,6 +60,20 @@ export function MonthExplanationPanel({
           formatMoney,
         })
       : null;
+
+  const periodLabel =
+    detailPeriodRange?.trim() ||
+    formatStatementPeriodRange(statementPeriod);
+
+  const explainContract = useMemo(
+    () =>
+      buildExplanationFactContract({
+        mode: "single",
+        activity,
+        statementPeriod,
+      }),
+    [activity, statementPeriod]
+  );
 
   const flexibleGroup = explanation.commitmentGroups.find(
     (g) => g.id === "flexible"
@@ -176,6 +193,12 @@ export function MonthExplanationPanel({
             </p>
           ) : null}
         </div>
+
+        <ExplainWithAiPanel
+          variant="single"
+          contract={explainContract}
+          periodLabel={periodLabel}
+        />
       </section>
 
       {/* B. Commitment groups */}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState, type RefObject } from "react";
+import { useId, useMemo, useState, type RefObject } from "react";
 
 import type { StatementPeriod } from "@/lib/statements/types";
 import type { StatementActivitySummary } from "@/lib/statements/intelligence/statementActivity";
@@ -10,7 +10,12 @@ import {
   type StatementComparisonResult,
   type StatementHealthSnapshot,
 } from "@/lib/statements/intelligence/statementComparison";
-import { REMOVE_COMPARISON_STATEMENT_LABEL } from "@/lib/statements/intelligence/statementScopePresentation";
+import {
+  REMOVE_COMPARISON_STATEMENT_LABEL,
+  formatStatementPeriodRange,
+} from "@/lib/statements/intelligence/statementScopePresentation";
+import { buildExplanationFactContract } from "@/lib/statements/explanation/factContract";
+import { ExplainWithAiPanel } from "@/components/statements/ExplainWithAiPanel";
 
 type Props = {
   currentActivity: StatementActivitySummary;
@@ -229,6 +234,11 @@ export function StatementComparisonPanel({
       {comparison ? (
         <ComparisonResults
           comparison={comparison}
+          laterActivity={
+            comparison.uploadMatchedChronology
+              ? currentActivity
+              : previousActivity ?? currentActivity
+          }
           currency={currency}
           formatMoney={formatMoney}
           expandedCategory={expandedCategory}
@@ -244,6 +254,7 @@ export function StatementComparisonPanel({
 
 function ComparisonResults({
   comparison,
+  laterActivity,
   currency,
   formatMoney,
   expandedCategory,
@@ -253,6 +264,7 @@ function ComparisonResults({
   askAnswer,
 }: {
   comparison: StatementComparisonResult;
+  laterActivity: StatementActivitySummary;
   currency: string;
   formatMoney: (n: number, c: string) => string;
   expandedCategory: string | null;
@@ -261,6 +273,22 @@ function ComparisonResults({
   setAskId: (id: (typeof COMPARE_ASK)[number]["id"] | null) => void;
   askAnswer: string | null;
 }) {
+  const comparePeriodLabel = [
+    formatStatementPeriodRange(comparison.previousPeriod),
+    formatStatementPeriodRange(comparison.currentPeriod),
+  ].join(" → ");
+
+  const explainContract = useMemo(
+    () =>
+      buildExplanationFactContract({
+        mode: "comparison",
+        activity: laterActivity,
+        statementPeriod: comparison.currentPeriod,
+        comparison,
+      }),
+    [laterActivity, comparison]
+  );
+
   return (
     <div className="space-y-6">
       <p className="text-base leading-relaxed text-white/85">
@@ -454,6 +482,12 @@ function ComparisonResults({
                 {askAnswer}
               </p>
             ) : null}
+
+            <ExplainWithAiPanel
+              variant="comparison"
+              contract={explainContract}
+              periodLabel={comparePeriodLabel}
+            />
           </div>
         </>
       ) : null}

@@ -27,6 +27,8 @@ export function truncateForLog(value: string, maxChars: number): string {
 export const MAX_STATEMENT_UPLOAD_BYTES = 12 * 1024 * 1024;
 export const MAX_COMPARE_BODY_BYTES = 64 * 1024;
 export const MAX_SHOPPING_BODY_BYTES = 8 * 1024;
+/** Sanitized explanation fact contract only — never PDFs or full activity trees. */
+export const MAX_STATEMENT_EXPLAIN_BODY_BYTES = 16 * 1024;
 export const MAX_COMPARE_INPUT_CHARS = 2_000;
 export const MAX_SHOPPING_REQUEST_CHARS = 500;
 export const MAX_MANUAL_FIELD_CHARS = 500;
