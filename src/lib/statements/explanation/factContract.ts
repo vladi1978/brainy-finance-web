@@ -522,31 +522,73 @@ export function sanitizeIncomingFactContract(
     }
   }
 
+  const reconciliationStatus =
+    typeof raw.reconciliationStatus === "string"
+      ? sanitizeLabel(raw.reconciliationStatus, 40)
+      : "unknown";
+  const analysisConfidence =
+    typeof raw.analysisConfidence === "string"
+      ? sanitizeLabel(raw.analysisConfidence, 40)
+      : "low";
+  const comparisonStatus =
+    typeof raw.comparisonStatus === "string"
+      ? sanitizeLabel(raw.comparisonStatus, 40)
+      : null;
+
+  // Server-derived provisional: never lose caution when status fields say so.
+  // Client `isProvisional: false` cannot clear derived provisional signals.
+  const derivedProvisional = deriveProvisionalFlag({
+    mode,
+    reconciliationStatus,
+    analysisConfidence,
+    comparisonStatus,
+    reliabilityNotices: notices,
+  });
+  const isProvisional = derivedProvisional || Boolean(raw.isProvisional);
+
   return {
     ok: true,
     contract: {
       mode,
       currency,
       periods,
-      reconciliationStatus:
-        typeof raw.reconciliationStatus === "string"
-          ? sanitizeLabel(raw.reconciliationStatus, 40)
-          : "unknown",
-      analysisConfidence:
-        typeof raw.analysisConfidence === "string"
-          ? sanitizeLabel(raw.analysisConfidence, 40)
-          : "low",
-      comparisonStatus:
-        typeof raw.comparisonStatus === "string"
-          ? sanitizeLabel(raw.comparisonStatus, 40)
-          : raw.comparisonStatus === null
-            ? null
-            : null,
-      isProvisional: Boolean(raw.isProvisional),
+      reconciliationStatus,
+      analysisConfidence,
+      comparisonStatus,
+      isProvisional,
       facts,
       reliabilityNotices: notices,
     },
   };
+}
+
+/**
+ * Derive provisional caution from contract status fields and notices.
+ * Pure — does not trust client isProvisional alone.
+ */
+export function deriveProvisionalFlag(args: {
+  mode: ExplanationMode;
+  reconciliationStatus: string;
+  analysisConfidence: string;
+  comparisonStatus: string | null;
+  reliabilityNotices: string[];
+}): boolean {
+  const recon = args.reconciliationStatus.toLowerCase();
+  if (recon !== "reconciled") return true;
+
+  const confidence = args.analysisConfidence.toLowerCase();
+  if (confidence === "low" || confidence === "none") return true;
+  if (args.mode === "comparison" && confidence === "medium") return true;
+
+  const status = (args.comparisonStatus || "").toLowerCase();
+  if (status === "provisional" || status === "unavailable") return true;
+
+  for (const note of args.reliabilityNotices) {
+    if (/provisional|not reliable|incomplete|unreconciled|carefully/i.test(note)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Collect numeric money/percent values allowed in model output. */

@@ -7,15 +7,39 @@ const EMAIL_RE =
   /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu;
 const PHONE_RE =
   /(?:\+?\d{1,3}[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}\b/gu;
-/** Long digit runs (accounts, auth, reference, card-like). */
+/** Contiguous long digit runs (accounts, auth, reference, card-like). */
 const LONG_DIGITS_RE = /\b\d{6,}\b/gu;
+/** Digits separated by spaces/hyphens that still form 6+ digit values. */
+const SPACED_OR_HYPHENATED_DIGITS_RE =
+  /\b(?:\d[\d\s*-]*){5,}\d\b/gu;
+/** Masked account/card tails. */
+const MASKED_NUMBER_RE =
+  /(?:\*+|x+|X+|•+)[\s*-]*(?:\d[\s*-]*){3,}\d|\b(?:ending|last)\s*(?:in|digits?)?:?\s*\*{0,4}\d{3,5}\b/giu;
 const ROUTING_ACCOUNT_RE =
-  /\b(?:routing|account|acct|ref(?:erence)?|auth(?:orization)?|trace)\s*[#:.-]?\s*\d{4,}\b/giu;
+  /\b(?:routing|account|acct|ref(?:erence)?|auth(?:orization)?|trace)\s*[#:.-]?\s*[\d\s*-]{4,}\b/giu;
 const BANK_TOKEN_RE =
   /\b(?:ID|INDN|DES|CO\s*ID|TRACE|REF|AUTH)\s*[:#.-]\s*[A-Z0-9*]{3,}\b/giu;
 const CONTROL_INJECTION_RE =
   /\b(?:ignore\s+(?:all\s+)?(?:previous|prior|above)\s+instructions?|system\s*prompt|developer\s*message|jailbreak|exfiltrat(?:e|ion)|reveal\s+(?:the\s+)?(?:api|secret|key))\b/giu;
 const HTML_TAG_RE = /<\/?[a-z][^>]*>/giu;
+const HTML_ENTITY_RE =
+  /&(?:#x?[0-9a-f]+|#\d+|nbsp|lt|gt|amp|quot|apos|mdash|ndash);/giu;
+/** Zero-width / bidi / control characters used to smuggle instructions. */
+const INVISIBLE_CHARS_RE =
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]/gu;
+
+const HTML_NAMED: Record<string, string> = {
+  nbsp: " ",
+  lt: "<",
+  gt: ">",
+  amp: "&",
+  quot: '"',
+  apos: "'",
+  mdash: "-",
+  ndash: "-",
+};
+
+const ISO_DATE_RE = /\b\d{4}-\d{2}-\d{2}\b/gu;
 
 export type RedactionResult = {
   text: string;
@@ -26,6 +50,89 @@ export type RedactionResult = {
 
 function collapseWs(s: string): string {
   return s.replace(/\s+/gu, " ").trim();
+}
+
+/** Decode a subset of HTML entities so injection cannot hide behind &#32;. */
+export function decodeBasicHtmlEntities(input: string): string {
+  return input.replace(HTML_ENTITY_RE, (entity) => {
+    const inner = entity.slice(1, -1);
+    if (inner[0] === "#") {
+      const hex = inner[1]?.toLowerCase() === "x";
+      const num = hex
+        ? Number.parseInt(inner.slice(2), 16)
+        : Number.parseInt(inner.slice(1), 10);
+      if (!Number.isFinite(num) || num < 0 || num > 0x10ffff) return " ";
+      try {
+        return String.fromCodePoint(num);
+      } catch {
+        return " ";
+      }
+    }
+    return HTML_NAMED[inner.toLowerCase()] ?? " ";
+  });
+}
+
+/** Base cleanup without punctuation softening (preserves emails / DES: tokens). */
+export function prepareExplanationTextBase(input: string): string {
+  let text = input.normalize("NFKC");
+  text = decodeBasicHtmlEntities(text);
+  text = text.replace(INVISIBLE_CHARS_RE, " ");
+  text = text.replace(HTML_TAG_RE, " ");
+  return collapseWs(text);
+}
+
+/** Soften punctuation gaps used to split injection phrases (scan-only). */
+export function softenPunctuationForInjectionScan(input: string): string {
+  return collapseWs(input.replace(/[._/\\|;,:]+/gu, " "));
+}
+
+/**
+ * Normalize adversarial text before injection matching:
+ * NFKC, strip invisible controls, decode entities, soften punctuation gaps.
+ */
+export function normalizeAdversarialText(input: string): string {
+  return softenPunctuationForInjectionScan(prepareExplanationTextBase(input));
+}
+
+function countDigits(s: string): number {
+  let n = 0;
+  for (const ch of s) {
+    if (ch >= "0" && ch <= "9") n += 1;
+  }
+  return n;
+}
+
+function withIsoDatesMasked(text: string): {
+  masked: string;
+  restore: (s: string) => string;
+} {
+  const dates: string[] = [];
+  const masked = text.replace(ISO_DATE_RE, (m) => {
+    const idx = dates.length;
+    dates.push(m);
+    return `[iso${idx}]`;
+  });
+  return {
+    masked,
+    restore: (s: string) =>
+      s.replace(/\[iso(\d+)\]/gu, (_, i) => dates[Number(i)] ?? ""),
+  };
+}
+
+function redactSpacedOrHyphenatedDigits(text: string): string {
+  const { masked, restore } = withIsoDatesMasked(text);
+  const redacted = masked.replace(SPACED_OR_HYPHENATED_DIGITS_RE, (match) => {
+    if (countDigits(match) < 6) return match;
+    // Placeholder-only spans are ISO dates — keep.
+    if (/^\[iso\d+\]$/.test(match.trim())) return match;
+    return "[redacted-id]";
+  });
+  return restore(redacted);
+}
+
+function hasInjectionIntent(normalized: string): boolean {
+  CONTROL_INJECTION_RE.lastIndex = 0;
+  return CONTROL_INJECTION_RE.test(normalized);
 }
 
 /**
@@ -40,11 +147,13 @@ export function redactExplanationText(
     return { text: "", changed: true, rejected: true, reason: "non_string" };
   }
 
-  let text = input;
-  const original = text;
+  const original = input;
+  const base = prepareExplanationTextBase(input);
 
-  if (CONTROL_INJECTION_RE.test(original)) {
-    CONTROL_INJECTION_RE.lastIndex = 0;
+  if (
+    hasInjectionIntent(base) ||
+    hasInjectionIntent(softenPunctuationForInjectionScan(base))
+  ) {
     return {
       text: "",
       changed: true,
@@ -52,14 +161,15 @@ export function redactExplanationText(
       reason: "injection",
     };
   }
-  CONTROL_INJECTION_RE.lastIndex = 0;
 
-  text = text.replace(HTML_TAG_RE, " ");
+  let text = base;
   text = text.replace(EMAIL_RE, "[redacted-email]");
   text = text.replace(PHONE_RE, "[redacted-phone]");
+  text = text.replace(MASKED_NUMBER_RE, "[redacted-id]");
   text = text.replace(ROUTING_ACCOUNT_RE, "[redacted-ref]");
   text = text.replace(BANK_TOKEN_RE, "[redacted-token]");
   text = text.replace(LONG_DIGITS_RE, "[redacted-id]");
+  text = redactSpacedOrHyphenatedDigits(text);
   text = collapseWs(text);
 
   // Residual long alnum tokens that look like auth/account blobs
@@ -72,7 +182,19 @@ export function redactExplanationText(
     text = collapseWs(text.slice(0, maxChars));
   }
 
-  const changed = text !== collapseWs(original);
+  if (
+    hasInjectionIntent(text) ||
+    hasInjectionIntent(softenPunctuationForInjectionScan(text))
+  ) {
+    return {
+      text: "",
+      changed: true,
+      rejected: true,
+      reason: "injection_residue",
+    };
+  }
+
+  const changed = text !== collapseWs(prepareExplanationTextBase(original));
   if (!text) {
     return {
       text: "",
@@ -88,16 +210,45 @@ export function redactExplanationText(
 /** True when a string still contains patterns that must never reach OpenAI. */
 export function containsProhibitedSensitiveResidue(text: string): boolean {
   if (!text) return false;
-  if (EMAIL_RE.test(text)) return true;
+  const base = prepareExplanationTextBase(text);
+  if (
+    hasInjectionIntent(base) ||
+    hasInjectionIntent(softenPunctuationForInjectionScan(base))
+  ) {
+    return true;
+  }
+  const { masked } = withIsoDatesMasked(base);
+  if (EMAIL_RE.test(masked)) {
+    EMAIL_RE.lastIndex = 0;
+    return true;
+  }
   EMAIL_RE.lastIndex = 0;
-  if (PHONE_RE.test(text)) return true;
+  if (PHONE_RE.test(masked)) {
+    PHONE_RE.lastIndex = 0;
+    return true;
+  }
   PHONE_RE.lastIndex = 0;
-  if (LONG_DIGITS_RE.test(text)) return true;
+  if (LONG_DIGITS_RE.test(masked)) {
+    LONG_DIGITS_RE.lastIndex = 0;
+    return true;
+  }
   LONG_DIGITS_RE.lastIndex = 0;
-  if (BANK_TOKEN_RE.test(text)) return true;
+  if (BANK_TOKEN_RE.test(masked)) {
+    BANK_TOKEN_RE.lastIndex = 0;
+    return true;
+  }
   BANK_TOKEN_RE.lastIndex = 0;
-  if (CONTROL_INJECTION_RE.test(text)) return true;
-  CONTROL_INJECTION_RE.lastIndex = 0;
+  if (MASKED_NUMBER_RE.test(masked)) {
+    MASKED_NUMBER_RE.lastIndex = 0;
+    return true;
+  }
+  MASKED_NUMBER_RE.lastIndex = 0;
+  SPACED_OR_HYPHENATED_DIGITS_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = SPACED_OR_HYPHENATED_DIGITS_RE.exec(masked))) {
+    if (/^\[iso\d+\]$/.test(m[0].trim())) continue;
+    if (countDigits(m[0]) >= 6) return true;
+  }
   return false;
 }
 

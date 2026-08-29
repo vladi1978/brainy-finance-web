@@ -22,9 +22,19 @@ export const EXPLANATION_MAX_FACT_IDS_PER_OBS = 6;
 /** Soft rate limit (per-instance memory — see docs). */
 export const EXPLANATION_RATE_LIMIT_WINDOW_MS = 60_000;
 export const EXPLANATION_RATE_LIMIT_MAX = 8;
+/** Cap distinct client keys retained in memory after expiry eviction. */
+export const EXPLANATION_RATE_LIMIT_KEY_CAP = 2_000;
+
+/** Hard OpenAI completion budget for explanation JSON. */
+export const EXPLANATION_OPENAI_MAX_OUTPUT_TOKENS = 700;
+export const EXPLANATION_OPENAI_TEMPERATURE = 0.2;
 
 export const AI_EXPLANATION_DISCLOSURE =
   "AI explains Brainy’s verified statement facts. It does not change transactions, totals, categories, Statement Health, or comparison calculations.";
 
 export const AI_EXPLANATION_EDUCATIONAL_DISCLAIMER =
   "Educational explanation only — not financial, legal, tax, credit, debt-settlement, or accounting advice. Brainy’s deterministic totals remain authoritative.";
+
+/** Shown when the explanation feature flag is off (not a provider failure). */
+export const AI_EXPLANATION_DISABLED_SUMMARY_LABEL =
+  "AI explanation is off — showing Brainy’s verified summary.";

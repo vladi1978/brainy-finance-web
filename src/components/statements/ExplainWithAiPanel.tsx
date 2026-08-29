@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { ExplanationFactContract } from "@/lib/statements/explanation/factContract";
 import type { ExplanationAiResponse } from "@/lib/statements/explanation/responseSchema";
 import {
+  AI_EXPLANATION_DISABLED_SUMMARY_LABEL,
   AI_EXPLANATION_DISCLOSURE,
   AI_EXPLANATION_EDUCATIONAL_DISCLAIMER,
 } from "@/lib/statements/explanation/constants";
@@ -47,16 +48,37 @@ export function ExplainWithAiPanel({
   const [disclaimer, setDisclaimer] = useState(
     AI_EXPLANATION_EDUCATIONAL_DISCLAIMER
   );
+  const [fallbackReason, setFallbackReason] = useState<string | null>(null);
+  const requestIdRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+      abortRef.current = null;
+      // Invalidate any in-flight response handlers.
+      requestIdRef.current += 1;
+    };
+  }, []);
 
   async function onExplain() {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const requestId = ++requestIdRef.current;
+
     setState("explaining");
     setExplanation(null);
+    setFallbackReason(null);
     try {
       const res = await fetch("/api/statements/explain", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ contract }),
+        signal: controller.signal,
       });
+
+      if (requestId !== requestIdRef.current) return;
 
       let json: unknown = null;
       try {
@@ -64,6 +86,8 @@ export function ExplainWithAiPanel({
       } catch {
         json = null;
       }
+
+      if (requestId !== requestIdRef.current) return;
 
       if (
         json &&
@@ -75,6 +99,7 @@ export function ExplainWithAiPanel({
         setExplanation(body.explanation);
         if (body.disclosure) setDisclosure(body.disclosure);
         if (body.educationalDisclaimer) setDisclaimer(body.educationalDisclaimer);
+        setFallbackReason(body.fallbackReason ?? null);
         setState(body.source === "ai" ? "ai" : "deterministic");
         return;
       }
@@ -82,9 +107,13 @@ export function ExplainWithAiPanel({
       // Fail closed to local deterministic copy — never show provider errors.
       const local = buildDeterministicExplanationFallback(contract);
       setExplanation(local);
+      setFallbackReason(null);
       setState(res.status >= 500 ? "unavailable" : "deterministic");
-    } catch {
+    } catch (error) {
+      if (requestId !== requestIdRef.current) return;
+      if (error instanceof DOMException && error.name === "AbortError") return;
       setExplanation(buildDeterministicExplanationFallback(contract));
+      setFallbackReason(null);
       setState("unavailable");
     }
   }
@@ -94,11 +123,17 @@ export function ExplainWithAiPanel({
       ? "ai-explain-comparison-heading"
       : "ai-explain-single-heading";
 
+  const deterministicLabel =
+    fallbackReason === "disabled"
+      ? AI_EXPLANATION_DISABLED_SUMMARY_LABEL
+      : "Verified summary (AI unavailable)";
+
   return (
     <div
       className="mt-4 rounded-2xl border border-white/10 bg-black/25 p-4"
       data-explain-variant={variant}
       data-explain-state={state}
+      data-fallback-reason={fallbackReason ?? ""}
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
@@ -145,7 +180,7 @@ export function ExplainWithAiPanel({
             </p>
           ) : (
             <p className="text-xs font-medium uppercase tracking-wider text-white/50">
-              Verified summary (AI unavailable)
+              {deterministicLabel}
             </p>
           )}
           <p className="text-base font-semibold text-white">{explanation.headline}</p>

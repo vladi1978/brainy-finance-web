@@ -3,13 +3,9 @@
  * Not a substitute for auth — statements remain session-local in the browser.
  */
 
-export function isAllowedExplainOrigin(req: Request): boolean {
-  const origin = req.headers.get("origin");
-  if (!origin) {
-    // Non-browser or same-origin navigations may omit Origin; allow with Host match via referer optional.
-    return true;
-  }
+import { isOpenAiStatementExplanationEnabled } from "@/lib/ai/openaiExplanationGate";
 
+function originMatchesRequest(origin: string, req: Request): boolean {
   let originUrl: URL;
   try {
     originUrl = new URL(origin);
@@ -37,6 +33,24 @@ export function isAllowedExplainOrigin(req: Request): boolean {
   }
 
   return false;
+}
+
+/**
+ * Origin policy:
+ * - Explanation enabled: Origin required and must match Host / VERCEL_URL.
+ * - Explanation disabled: missing Origin allowed (deterministic fallback only);
+ *   mismatched Origin still rejected.
+ */
+export function isAllowedExplainOrigin(req: Request): boolean {
+  const origin = req.headers.get("origin");
+  const enabled = isOpenAiStatementExplanationEnabled();
+
+  if (!origin) {
+    // When paid AI can run, refuse anonymous/cross-tool calls without Origin.
+    return !enabled;
+  }
+
+  return originMatchesRequest(origin, req);
 }
 
 export function isJsonContentType(req: Request): boolean {

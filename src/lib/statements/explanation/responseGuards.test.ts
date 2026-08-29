@@ -125,6 +125,23 @@ describe("explanation response schema and grounding", () => {
     assert.equal(assertGroundedExplanation(pct.value, baseContract()).ok, false);
   });
 
+  it("does not misread ISO dates as invented currency", () => {
+    const parsed = parseExplanationAiResponse({
+      headline: "Date safe",
+      summary: "For 2026-06-10 → 2026-07-09 flexible spending was $200.00.",
+      observations: [
+        {
+          factIds: ["commitments.flexible"],
+          explanation: "Flexible spending was $200.00.",
+        },
+      ],
+      questionsToConsider: [],
+    });
+    assert.equal(parsed.ok, true);
+    if (!parsed.ok) return;
+    assert.equal(assertGroundedExplanation(parsed.value, baseContract()).ok, true);
+  });
+
   it("rejects prohibited claims and stop-paying-debt language", () => {
     const claim = parseExplanationAiResponse({
       headline: "Guaranteed path",

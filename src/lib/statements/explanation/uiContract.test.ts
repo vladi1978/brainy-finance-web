@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  AI_EXPLANATION_DISABLED_SUMMARY_LABEL,
   AI_EXPLANATION_DISCLOSURE,
   AI_EXPLANATION_EDUCATIONAL_DISCLAIMER,
 } from "./constants";
@@ -12,6 +13,10 @@ describe("Explain with AI UI contracts", () => {
   it("does not auto-invoke OpenAI — disclosure and disclaimer are static", () => {
     assert.match(AI_EXPLANATION_DISCLOSURE, /does not change transactions/i);
     assert.match(AI_EXPLANATION_EDUCATIONAL_DISCLAIMER, /not financial/i);
+    assert.equal(
+      AI_EXPLANATION_DISABLED_SUMMARY_LABEL,
+      "AI explanation is off — showing Brainy’s verified summary."
+    );
   });
 
   it("keeps single and comparison fallbacks distinct", () => {

@@ -10,6 +10,10 @@ import {
   getStatementExplanationTimeoutMs,
   isOpenAiStatementExplanationEnabled,
 } from "@/lib/ai/openaiExplanationGate";
+import {
+  EXPLANATION_OPENAI_MAX_OUTPUT_TOKENS,
+  EXPLANATION_OPENAI_TEMPERATURE,
+} from "./constants";
 import type { ExplanationFactContract } from "./factContract";
 import { buildDeterministicExplanationFallback } from "./deterministicFallback";
 import { assertGroundedExplanation } from "./groundedGuards";
@@ -103,7 +107,8 @@ export async function explainStatementFacts(
     const completion = await client.chat.completions.create(
       {
         model,
-        temperature: 0.2,
+        temperature: EXPLANATION_OPENAI_TEMPERATURE,
+        max_tokens: EXPLANATION_OPENAI_MAX_OUTPUT_TOKENS,
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: systemPrompt(contract) },
