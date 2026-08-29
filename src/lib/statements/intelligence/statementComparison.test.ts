@@ -295,7 +295,7 @@ describe("UX step 4 statement comparison", () => {
     });
     const gone = cmp.merchantChanges.find((m) => m.kind === "bill_not_observed");
     assert.ok(gone);
-    assert.match(gone!.evidence, /Not observed/i);
+    assert.match(gone!.evidence, /Not observed in the current period/i);
     assert.doesNotMatch(gone!.evidence, /cancel/i);
   });
 
@@ -530,6 +530,220 @@ describe("UX step 4 statement comparison", () => {
       answerComparisonQuestion(cmp, "subscriptions_appeared"),
       /peacock/i
     );
+  });
+});
+
+describe("UX step 4 chronological period ordering", () => {
+  const EARLIER_PERIOD = { start: "2026-06-08", end: "2026-07-09" };
+  const LATER_PERIOD = { start: "2026-07-10", end: "2026-08-07" };
+
+  function earlierTxns(): Transaction[] {
+    return [
+      txn("2026-06-12", "JCWLLC DES:PAYROLL", 3200, "credit"),
+      txn("2026-06-15", "US BANK MORTGAGE PAYMENT", 1100),
+      txn(
+        "2026-06-16",
+        "ATT DES:PAYMENT ID:XXXXXXXXXEPAYP INDN:CUSTOMER CO ID:123 PPD",
+        338.19
+      ),
+      txn("2026-06-16", "PURCHASE 0611 ATT*BILL PAYMENT 8002882020 TX", 70.22),
+      txn("2026-06-18", "CHECKCARD SAMSCLUB", 944.42),
+      txn("2026-06-20", "SHELL OIL", 60),
+      txn("2026-06-22", "PURCHASE NETFLIX.COM", 15.49),
+    ];
+  }
+
+  function laterTxns(): Transaction[] {
+    return [
+      txn("2026-07-12", "JCWLLC DES:PAYROLL", 3200, "credit"),
+      txn(
+        "2026-07-16",
+        "ATT DES:PAYMENT ID:XXXXXXXXXEPAYP INDN:CUSTOMER CO ID:123 PPD",
+        320.54
+      ),
+      txn("2026-07-16", "PURCHASE 0611 ATT*BILL PAYMENT 8002882020 TX", 70.22),
+      txn("2026-07-18", "CHECKCARD SAMSCLUB", 124.56),
+      txn("2026-07-20", "SHELL OIL", 60),
+      txn("2026-07-22", "PURCHASE NETFLIX.COM", 15.49),
+      txn("2026-07-23", "CHECKCARD Peacock TV LLC", 11.58),
+    ];
+  }
+
+  function comparablePair() {
+    return {
+      earlier: activityFor(earlierTxns(), EARLIER_PERIOD),
+      later: activityFor(laterTxns(), LATER_PERIOD),
+    };
+  }
+
+  function assertCoreDeltas(cmp: ReturnType<typeof buildStatementComparison>) {
+    assert.equal(cmp.status, "ready");
+    assert.deepEqual(cmp.previousPeriod, EARLIER_PERIOD);
+    assert.deepEqual(cmp.currentPeriod, LATER_PERIOD);
+
+    const att = cmp.merchantChanges.find(
+      (m) => /AT&T/i.test(m.displayName) && m.kind === "bill_decreased"
+    );
+    assert.ok(att);
+    assert.equal(att!.previous, 408.41);
+    assert.equal(att!.current, 390.76);
+    assert.equal(att!.dollarDelta, -17.65);
+
+    const shopping = cmp.categories.find((c) => c.id === "shopping");
+    assert.ok(shopping);
+    assert.equal(shopping!.previous, 944.42);
+    assert.equal(shopping!.current, 124.56);
+    assert.equal(shopping!.dollarDelta, -819.86);
+    assert.equal(shopping!.direction, "decreased");
+  }
+
+  it("A: upload later first + earlier second still orders by chronology", () => {
+    const { earlier, later } = comparablePair();
+    // Upload slots reversed vs true chronology
+    const cmp = buildStatementComparison({
+      previous: later,
+      current: earlier,
+      previousPeriod: LATER_PERIOD,
+      currentPeriod: EARLIER_PERIOD,
+    });
+    assert.equal(cmp.uploadMatchedChronology, false);
+    assert.ok(cmp.chronologyNote);
+    assertCoreDeltas(cmp);
+  });
+
+  it("B/C: upload earlier first + later second yields identical comparison", () => {
+    const { earlier, later } = comparablePair();
+    const forward = buildStatementComparison({
+      previous: earlier,
+      current: later,
+      previousPeriod: EARLIER_PERIOD,
+      currentPeriod: LATER_PERIOD,
+    });
+    const reversed = buildStatementComparison({
+      previous: later,
+      current: earlier,
+      previousPeriod: LATER_PERIOD,
+      currentPeriod: EARLIER_PERIOD,
+    });
+    assert.equal(forward.uploadMatchedChronology, true);
+    assertCoreDeltas(forward);
+    assertCoreDeltas(reversed);
+    assert.equal(forward.summarySentence, reversed.summarySentence);
+    assert.deepEqual(forward.moneyReceived, reversed.moneyReceived);
+    assert.deepEqual(forward.moneySpent, reversed.moneySpent);
+    assert.deepEqual(forward.netCashFlow, reversed.netCashFlow);
+    assert.deepEqual(
+      forward.categories.map((c) => [c.id, c.dollarDelta, c.direction]),
+      reversed.categories.map((c) => [c.id, c.dollarDelta, c.direction])
+    );
+    assert.deepEqual(
+      forward.merchantChanges.map((m) => [
+        m.id,
+        m.kind,
+        m.dollarDelta,
+        m.evidence,
+      ]),
+      reversed.merchantChanges.map((m) => [
+        m.id,
+        m.kind,
+        m.dollarDelta,
+        m.evidence,
+      ])
+    );
+  });
+
+  it("D: merchant only in earlier period is not observed, not new", () => {
+    const { earlier, later } = comparablePair();
+    const cmp = buildStatementComparison({
+      previous: later,
+      current: earlier,
+      previousPeriod: LATER_PERIOD,
+      currentPeriod: EARLIER_PERIOD,
+    });
+    const mortgage = cmp.merchantChanges.find(
+      (m) =>
+        /mortgage|u\.?s\.?\s*bank/i.test(m.displayName) ||
+        m.kind === "bill_not_observed"
+    );
+    // Housing may appear as category no-longer-observed or bill not observed
+    const housing = cmp.categories.find((c) => c.id === "housing");
+    assert.ok(housing);
+    assert.equal(housing!.direction, "no-longer-observed");
+    assert.ok(housing!.previous > 0);
+    assert.equal(housing!.current, 0);
+    if (mortgage) {
+      assert.equal(mortgage.kind, "bill_not_observed");
+      assert.match(mortgage.evidence, /Not observed in the current period/i);
+      assert.doesNotMatch(mortgage.evidence, /cancel|newly observed/i);
+    }
+  });
+
+  it("E: merchant only in later period is newly observed", () => {
+    const { earlier, later } = comparablePair();
+    const cmp = buildStatementComparison({
+      previous: later,
+      current: earlier,
+      previousPeriod: LATER_PERIOD,
+      currentPeriod: EARLIER_PERIOD,
+    });
+    const peacock = cmp.merchantChanges.find(
+      (m) =>
+        m.kind === "subscription_new" && /peacock/i.test(m.displayName)
+    );
+    assert.ok(peacock);
+    assert.match(peacock!.evidence, /Newly observed/i);
+  });
+
+  it("F/G: AT&T and shopping deltas match chronological decrease", () => {
+    const { earlier, later } = comparablePair();
+    const cmp = buildStatementComparison({
+      previous: later,
+      current: earlier,
+      previousPeriod: LATER_PERIOD,
+      currentPeriod: EARLIER_PERIOD,
+    });
+    assertCoreDeltas(cmp);
+  });
+
+  it("H: overlapping or identical periods fail safely", () => {
+    const { earlier, later } = comparablePair();
+    const overlap = buildStatementComparison({
+      previous: earlier,
+      current: later,
+      previousPeriod: { start: "2026-06-01", end: "2026-07-15" },
+      currentPeriod: { start: "2026-07-01", end: "2026-08-01" },
+    });
+    assert.equal(overlap.status, "unavailable");
+    assert.match(overlap.statusReason, /overlap/i);
+    assert.equal(overlap.categories.length, 0);
+
+    const identical = buildStatementComparison({
+      previous: earlier,
+      current: later,
+      previousPeriod: EARLIER_PERIOD,
+      currentPeriod: EARLIER_PERIOD,
+    });
+    assert.equal(identical.status, "unavailable");
+    assert.match(identical.statusReason, /same|identical|earlier/i);
+  });
+
+  it("I: provisional reconciliation behavior remains unchanged", () => {
+    const { earlier } = comparablePair();
+    const laterUnrecon = activityFor(laterTxns(), LATER_PERIOD, {
+      deposits: 9000,
+      withdrawals: 9000,
+    });
+    const cmp = buildStatementComparison({
+      previous: laterUnrecon,
+      current: earlier,
+      previousPeriod: LATER_PERIOD,
+      currentPeriod: EARLIER_PERIOD,
+    });
+    assert.notEqual(cmp.status, "ready");
+    assert.equal(cmp.netCashFlow.available, false);
+    assert.deepEqual(cmp.previousPeriod, EARLIER_PERIOD);
+    assert.deepEqual(cmp.currentPeriod, LATER_PERIOD);
+    assert.match(cmp.summarySentence, /Observed|cannot|provisional/i);
   });
 });
 

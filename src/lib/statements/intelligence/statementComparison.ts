@@ -118,6 +118,10 @@ export type StatementHealthSnapshot = {
 };
 
 export type StatementComparisonInput = {
+  /**
+   * Upload-slot sides. Labels do not imply chronology — Brainy reorders by
+   * normalized period dates before any delta is computed.
+   */
   previous: StatementActivitySummary;
   current: StatementActivitySummary;
   previousPeriod: StatementPeriod | null;
@@ -126,6 +130,25 @@ export type StatementComparisonInput = {
   previousHealth?: StatementHealthSnapshot | null;
   currentHealth?: StatementHealthSnapshot | null;
 };
+
+export type ChronologyOrderedSide = {
+  activity: StatementActivitySummary;
+  period: StatementPeriod;
+  health: StatementHealthSnapshot | null;
+};
+
+export type ChronologyResolution =
+  | {
+      ok: true;
+      earlier: ChronologyOrderedSide;
+      later: ChronologyOrderedSide;
+      /** False when the upload "previous" slot was actually the later period. */
+      uploadMatchedChronology: boolean;
+    }
+  | {
+      ok: false;
+      reason: string;
+    };
 
 export type StatementComparisonResult = {
   status: ComparisonStatus;
@@ -137,6 +160,9 @@ export type StatementComparisonResult = {
   currentDays: number | null;
   previousFingerprint: string;
   currentFingerprint: string;
+  /** True when upload slots already matched earlier→later chronology. */
+  uploadMatchedChronology: boolean;
+  chronologyNote: string | null;
   moneyReceived: MoneyDelta;
   moneySpent: MoneyDelta;
   netCashFlow: {
@@ -198,6 +224,110 @@ function periodDays(period: StatementPeriod | null): number | null {
 
 function hasValidPeriod(period: StatementPeriod | null): boolean {
   return Boolean(period?.start && period?.end && period.start <= period.end);
+}
+
+/** Normalize so start ≤ end without inventing missing dates. */
+export function normalizePeriodBounds(
+  period: StatementPeriod | null
+): StatementPeriod | null {
+  if (!period?.start || !period?.end) return null;
+  if (period.start <= period.end) {
+    return { start: period.start, end: period.end };
+  }
+  return { start: period.end, end: period.start };
+}
+
+function inclusiveOverlapDays(a: StatementPeriod, b: StatementPeriod): number {
+  const start = a.start > b.start ? a.start : b.start;
+  const end = a.end < b.end ? a.end : b.end;
+  if (start > end) return 0;
+  const ms =
+    Date.parse(`${end}T12:00:00Z`) - Date.parse(`${start}T12:00:00Z`);
+  if (!Number.isFinite(ms)) return 0;
+  return Math.floor(ms / 86_400_000) + 1;
+}
+
+/**
+ * Resolve earlier/later sides from period dates. Upload slot order is ignored.
+ * Overlapping, identical, or unorderable periods fail closed.
+ */
+export function resolveComparisonChronology(
+  input: StatementComparisonInput
+): ChronologyResolution {
+  const slotPrevious = normalizePeriodBounds(input.previousPeriod);
+  const slotCurrent = normalizePeriodBounds(input.currentPeriod);
+
+  if (!slotPrevious || !slotCurrent) {
+    return {
+      ok: false,
+      reason:
+        "Both statements need a detectable start and end date before Brainy can order them chronologically.",
+    };
+  }
+
+  if (
+    slotPrevious.start === slotCurrent.start &&
+    slotPrevious.end === slotCurrent.end
+  ) {
+    return {
+      ok: false,
+      reason:
+        "These statement periods look the same, so Brainy cannot tell which is earlier. Upload two different periods.",
+    };
+  }
+
+  const overlap = inclusiveOverlapDays(slotPrevious, slotCurrent);
+  if (overlap > 0) {
+    return {
+      ok: false,
+      reason:
+        "These statement periods overlap, so Brainy cannot safely decide which is earlier or later. Upload two non-overlapping periods.",
+    };
+  }
+
+  // Strict chronological order: earlier ends before later starts.
+  const previousEndsBeforeCurrent = slotPrevious.end < slotCurrent.start;
+  const currentEndsBeforePrevious = slotCurrent.end < slotPrevious.start;
+
+  if (previousEndsBeforeCurrent) {
+    return {
+      ok: true,
+      uploadMatchedChronology: true,
+      earlier: {
+        activity: input.previous,
+        period: slotPrevious,
+        health: input.previousHealth ?? null,
+      },
+      later: {
+        activity: input.current,
+        period: slotCurrent,
+        health: input.currentHealth ?? null,
+      },
+    };
+  }
+
+  if (currentEndsBeforePrevious) {
+    return {
+      ok: true,
+      uploadMatchedChronology: false,
+      earlier: {
+        activity: input.current,
+        period: slotCurrent,
+        health: input.currentHealth ?? null,
+      },
+      later: {
+        activity: input.previous,
+        period: slotPrevious,
+        health: input.previousHealth ?? null,
+      },
+    };
+  }
+
+  return {
+    ok: false,
+    reason:
+      "Brainy could not safely order these statement periods by date. Upload two clearly sequential periods.",
+  };
 }
 
 /**
@@ -480,7 +610,7 @@ function buildMerchantChanges(
         previous: p.totalObserved,
         current: null,
         dollarDelta: null,
-        evidence: `Not observed in this statement (was ${p.totalObserved.toFixed(2)} ${p.currency}).`,
+        evidence: `Not observed in the current period (was ${p.totalObserved.toFixed(2)} ${p.currency}).`,
         nextStep: "Confirm whether the bill posts on a different date or account.",
       });
       continue;
@@ -494,7 +624,7 @@ function buildMerchantChanges(
         current: c.totalObserved,
         dollarDelta: c.totalObserved,
         evidence: `Newly observed in this period · ${c.totalObserved.toFixed(2)} ${c.currency}.`,
-        nextStep: "Check whether this is a expected household bill for this period.",
+        nextStep: "Check whether this is an expected household bill for this period.",
       });
       continue;
     }
@@ -536,7 +666,7 @@ function buildMerchantChanges(
         previous: p.periodTotal,
         current: null,
         dollarDelta: null,
-        evidence: "Not observed in this statement.",
+        evidence: "Not observed in the current period.",
         nextStep: null,
       });
       continue;
@@ -788,25 +918,132 @@ function buildSummarySentence(args: {
 
 /**
  * Pure comparison entry point.
+ * Upload-slot names are ignored for chronology — earlier/later come from dates.
  */
 export function buildStatementComparison(
   input: StatementComparisonInput
 ): StatementComparisonResult {
-  const eligibility = evaluateComparisonEligibility(input);
-  const moneyReceived = moneyDelta(input.previous.moneyIn, input.current.moneyIn);
-  const moneySpent = moneyDelta(input.previous.moneyOut, input.current.moneyOut);
+  const healthNote =
+    "Statement Health is calculated independently for each document and is not a measure of overall financial wellbeing.";
+
+  const emptyMoney = moneyDelta(0, 0);
+  const previousFingerprint = buildStatementFingerprint(
+    input.previous,
+    input.previousPeriod
+  );
+  const currentFingerprint = buildStatementFingerprint(
+    input.current,
+    input.currentPeriod
+  );
+
+  if (previousFingerprint === currentFingerprint) {
+    return {
+      status: "same_statement",
+      confidence: "none",
+      statusReason:
+        "These uploads look like the same statement. Upload a different previous period to compare.",
+      previousPeriod: normalizePeriodBounds(input.previousPeriod),
+      currentPeriod: normalizePeriodBounds(input.currentPeriod),
+      previousDays: periodDays(normalizePeriodBounds(input.previousPeriod)),
+      currentDays: periodDays(normalizePeriodBounds(input.currentPeriod)),
+      previousFingerprint,
+      currentFingerprint,
+      uploadMatchedChronology: true,
+      chronologyNote: null,
+      moneyReceived: emptyMoney,
+      moneySpent: emptyMoney,
+      netCashFlow: {
+        available: false,
+        previous: null,
+        current: null,
+        dollarDelta: null,
+        percentDelta: null,
+        direction: null,
+        unavailableReason:
+          "Net cash-flow comparison is hidden until both statements are distinct and reliably reconciled.",
+      },
+      categories: [],
+      merchantChanges: [],
+      rankedFindings: [],
+      summarySentence:
+        "Brainy cannot compare these uploads because they look like the same statement.",
+      healthNote,
+      previousHealth: input.previousHealth ?? null,
+      currentHealth: input.currentHealth ?? null,
+      provisionalNotes: [],
+      educationalFlexibleNotes: [],
+    };
+  }
+
+  const chronology = resolveComparisonChronology(input);
+
+  if (!chronology.ok) {
+    return {
+      status: "unavailable",
+      confidence: "none",
+      statusReason: chronology.reason,
+      previousPeriod: normalizePeriodBounds(input.previousPeriod),
+      currentPeriod: normalizePeriodBounds(input.currentPeriod),
+      previousDays: periodDays(normalizePeriodBounds(input.previousPeriod)),
+      currentDays: periodDays(normalizePeriodBounds(input.currentPeriod)),
+      previousFingerprint,
+      currentFingerprint,
+      uploadMatchedChronology: true,
+      chronologyNote: null,
+      moneyReceived: emptyMoney,
+      moneySpent: emptyMoney,
+      netCashFlow: {
+        available: false,
+        previous: null,
+        current: null,
+        dollarDelta: null,
+        percentDelta: null,
+        direction: null,
+        unavailableReason: chronology.reason,
+      },
+      categories: [],
+      merchantChanges: [],
+      rankedFindings: [],
+      summarySentence:
+        "Brainy cannot produce a reliable comparison until both statement periods can be ordered by date.",
+      healthNote,
+      previousHealth: input.previousHealth ?? null,
+      currentHealth: input.currentHealth ?? null,
+      provisionalNotes: [],
+      educationalFlexibleNotes: [],
+    };
+  }
+
+  const orderedInput: StatementComparisonInput = {
+    previous: chronology.earlier.activity,
+    current: chronology.later.activity,
+    previousPeriod: chronology.earlier.period,
+    currentPeriod: chronology.later.period,
+    previousHealth: chronology.earlier.health,
+    currentHealth: chronology.later.health,
+  };
+
+  const eligibility = evaluateComparisonEligibility(orderedInput);
+  const moneyReceived = moneyDelta(
+    orderedInput.previous.moneyIn,
+    orderedInput.current.moneyIn
+  );
+  const moneySpent = moneyDelta(
+    orderedInput.previous.moneyOut,
+    orderedInput.current.moneyOut
+  );
 
   const bothNetReliable =
-    input.previous.cashFlowReliable &&
-    input.current.cashFlowReliable &&
-    input.previous.netCashFlow != null &&
-    input.current.netCashFlow != null &&
+    orderedInput.previous.cashFlowReliable &&
+    orderedInput.current.cashFlowReliable &&
+    orderedInput.previous.netCashFlow != null &&
+    orderedInput.current.netCashFlow != null &&
     eligibility.status === "ready";
 
   const netCashFlow: StatementComparisonResult["netCashFlow"] = bothNetReliable
     ? (() => {
-        const previous = roundMoney(input.previous.netCashFlow!);
-        const current = roundMoney(input.current.netCashFlow!);
+        const previous = roundMoney(orderedInput.previous.netCashFlow!);
+        const current = roundMoney(orderedInput.current.netCashFlow!);
         const delta = moneyDelta(previous, current);
         return {
           available: true,
@@ -820,8 +1057,8 @@ export function buildStatementComparison(
       })()
     : {
         available: false,
-        previous: input.previous.netCashFlow,
-        current: input.current.netCashFlow,
+        previous: orderedInput.previous.netCashFlow,
+        current: orderedInput.current.netCashFlow,
         dollarDelta: null,
         percentDelta: null,
         direction: null,
@@ -835,13 +1072,13 @@ export function buildStatementComparison(
     eligibility.status === "unavailable" ||
     eligibility.status === "same_statement"
       ? []
-      : buildCategoryChanges(input.previous, input.current);
+      : buildCategoryChanges(orderedInput.previous, orderedInput.current);
 
   const merchantChanges =
     eligibility.status === "unavailable" ||
     eligibility.status === "same_statement"
       ? []
-      : buildMerchantChanges(input.previous, input.current);
+      : buildMerchantChanges(orderedInput.previous, orderedInput.current);
 
   const rankedFindings =
     eligibility.status === "unavailable" ||
@@ -872,19 +1109,22 @@ export function buildStatementComparison(
     }
   }
 
-  const healthNote =
-    "Statement Health is calculated independently for each document and is not a measure of overall financial wellbeing.";
+  const chronologyNote = chronology.uploadMatchedChronology
+    ? null
+    : "Brainy ordered these statements by date. Previous is the earlier period; current is the later period—upload order does not change the comparison.";
 
   return {
     status: eligibility.status,
     confidence: eligibility.confidence,
     statusReason: eligibility.reason,
-    previousPeriod: input.previousPeriod,
-    currentPeriod: input.currentPeriod,
-    previousDays: periodDays(input.previousPeriod),
-    currentDays: periodDays(input.currentPeriod),
+    previousPeriod: orderedInput.previousPeriod,
+    currentPeriod: orderedInput.currentPeriod,
+    previousDays: periodDays(orderedInput.previousPeriod),
+    currentDays: periodDays(orderedInput.currentPeriod),
     previousFingerprint: eligibility.previousFingerprint,
     currentFingerprint: eligibility.currentFingerprint,
+    uploadMatchedChronology: chronology.uploadMatchedChronology,
+    chronologyNote,
     moneyReceived,
     moneySpent,
     netCashFlow,
@@ -898,8 +1138,8 @@ export function buildStatementComparison(
       net: netCashFlow,
     }),
     healthNote,
-    previousHealth: input.previousHealth ?? null,
-    currentHealth: input.currentHealth ?? null,
+    previousHealth: orderedInput.previousHealth ?? null,
+    currentHealth: orderedInput.currentHealth ?? null,
     provisionalNotes: eligibility.provisionalNotes,
     educationalFlexibleNotes,
   };

@@ -108,26 +108,62 @@ export function StatementComparisonPanel({
           What changed since your previous statement
         </h2>
         <p className="mt-2 max-w-3xl text-sm leading-relaxed text-white/55">
-          Upload one earlier text-selectable PDF from the same account. Both
-          documents stay in this browser session only—Brainy does not store
-          them. No OpenAI is used for this comparison.
+          Upload one additional text-selectable PDF from the same account. Brainy
+          orders the two periods by date automatically. Both documents stay in
+          this browser session only—Brainy does not store them. No OpenAI is used
+          for this comparison.
         </p>
       </div>
 
       <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-        <p className="text-sm text-white/70">
-          <span className="font-medium text-white">Current statement: </span>
-          {periodLabel(currentPeriod)}
-        </p>
-        {previousActivity ? (
-          <p className="mt-1 text-sm text-white/70">
-            <span className="font-medium text-white">Previous statement: </span>
-            {periodLabel(previousPeriod)}
-          </p>
+        {comparison &&
+        comparison.status !== "unavailable" &&
+        comparison.previousPeriod &&
+        comparison.currentPeriod ? (
+          <>
+            <p className="text-sm text-white/70">
+              <span className="font-medium text-white">
+                Previous (earlier period):{" "}
+              </span>
+              {periodLabel(comparison.previousPeriod)}
+            </p>
+            <p className="mt-1 text-sm text-white/70">
+              <span className="font-medium text-white">
+                Current (later period):{" "}
+              </span>
+              {periodLabel(comparison.currentPeriod)}
+            </p>
+            {comparison.chronologyNote ? (
+              <p className="mt-2 text-xs leading-relaxed text-sky-100/70">
+                {comparison.chronologyNote}
+              </p>
+            ) : null}
+          </>
         ) : (
-          <p className="mt-1 text-sm text-white/50">
-            Previous statement: not uploaded yet
-          </p>
+          <>
+            <p className="text-sm text-white/70">
+              <span className="font-medium text-white">
+                First uploaded statement:{" "}
+              </span>
+              {periodLabel(currentPeriod)}
+            </p>
+            {previousActivity ? (
+              <p className="mt-1 text-sm text-white/70">
+                <span className="font-medium text-white">
+                  Second uploaded statement:{" "}
+                </span>
+                {periodLabel(previousPeriod)}
+              </p>
+            ) : (
+              <p className="mt-1 text-sm text-white/50">
+                Second statement: not uploaded yet
+              </p>
+            )}
+            <p className="mt-2 text-xs leading-relaxed text-white/45">
+              After both uploads, Brainy labels Previous and Current by statement
+              dates—not by upload order.
+            </p>
+          </>
         )}
       </div>
 
@@ -141,7 +177,7 @@ export function StatementComparisonPanel({
               onChange={(e) => onPreviousConsentChange(e.target.checked)}
             />
             <span>
-              I own or have permission to analyze this previous statement PDF.
+              I own or have permission to analyze this additional statement PDF.
               Consent is recorded only in this browser session.
             </span>
           </label>
@@ -157,7 +193,7 @@ export function StatementComparisonPanel({
             >
               {previousBusy
                 ? "Analyzing previous statement…"
-                : "Upload previous statement (PDF, max 12 MB)"}
+                : "Upload another statement (PDF, max 12 MB)"}
             </label>
             <input
               id={fileInputId}
