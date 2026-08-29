@@ -14,6 +14,11 @@ import {
   buildMonthlyExplanation,
   buildSpendingScenario,
 } from "@/lib/statements/intelligence/monthlyExplanation";
+import {
+  answerComparisonQuestion,
+  buildStatementComparison,
+  type StatementComparisonResult,
+} from "@/lib/statements/intelligence/statementComparison";
 import { presentationMerchantDisplayName } from "@/lib/statements/presentationMerchantDisplay";
 
 type OverviewGroups = {
@@ -44,6 +49,12 @@ type Props = {
   formatMoney: (amount: number, currency: string) => string;
   /** Detailed intelligence / presentation sections rendered inside progressive disclosure. */
   detailedAnalysis?: ReactNode;
+  /** Focus/scroll to the second-statement upload comparison flow. */
+  onRequestComparison?: () => void;
+  /** Comparison upload + results slot (session-only previous statement). */
+  comparisonSlot?: ReactNode;
+  previousActivity?: StatementActivitySummary | null;
+  previousPeriod?: StatementPeriod | null;
 };
 
 type HouseholdBucketId =
@@ -290,6 +301,10 @@ export function StatementOverview({
   healthScore,
   formatMoney,
   detailedAnalysis,
+  onRequestComparison,
+  comparisonSlot,
+  previousActivity = null,
+  previousPeriod = null,
 }: Props) {
   const [expandedBucket, setExpandedBucket] = useState<string | null>(null);
   const [askChoice, setAskChoice] = useState<AskChoiceId | null>(null);
@@ -304,6 +319,31 @@ export function StatementOverview({
     () => (activity ? buildAttentionFindings(activity, formatMoney) : []),
     [activity, formatMoney]
   );
+
+  const comparison = useMemo((): StatementComparisonResult | null => {
+    if (!activity || !previousActivity) return null;
+    return buildStatementComparison({
+      previous: previousActivity,
+      current: activity,
+      previousPeriod,
+      currentPeriod: statementPeriod,
+      previousHealth: null,
+      currentHealth: healthScore
+        ? {
+            score: healthScore.score,
+            label: healthScore.label,
+            provisional: healthScore.provisional,
+            displayMode: healthScore.displayMode,
+          }
+        : null,
+    });
+  }, [
+    activity,
+    previousActivity,
+    previousPeriod,
+    statementPeriod,
+    healthScore,
+  ]);
 
   if (!activity) return null;
 
@@ -333,6 +373,8 @@ export function StatementOverview({
     confirmedCount: confirmedSubs.length,
     possibleCount: possibleSubs.length,
     findings,
+    comparison,
+    onRequestComparison,
   });
 
   return (
@@ -419,7 +461,15 @@ export function StatementOverview({
         statementPeriod={statementPeriod}
         healthScore={healthScore?.score ?? null}
         formatMoney={formatMoney}
+        onRequestComparison={onRequestComparison}
+        comparisonReady={Boolean(
+          comparison &&
+            comparison.status !== "unavailable" &&
+            comparison.status !== "same_statement"
+        )}
       />
+
+      {comparisonSlot}
 
       {/* 2. Attention */}
       <section>
@@ -589,12 +639,23 @@ export function StatementOverview({
                 </Link>
               </p>
             ) : null}
+            {askResponse.actionLabel && askResponse.onAction ? (
+              <p className="mt-3">
+                <button
+                  type="button"
+                  onClick={askResponse.onAction}
+                  className="rounded-full border border-emerald-400/40 bg-emerald-500/15 px-4 py-2 text-sm font-medium text-emerald-100 transition hover:bg-emerald-500/25 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+                >
+                  {askResponse.actionLabel}
+                </button>
+              </p>
+            ) : null}
             {askResponse.openDetails ? (
               <p className="mt-3">
                 <button
                   type="button"
                   onClick={() => setDetailsOpen(true)}
-                  className="rounded-full border border-white/20 px-4 py-2 text-sm text-white/80 transition hover:border-white/35"
+                  className="rounded-full border border-white/20 px-4 py-2 text-sm text-white/80 transition hover:border-white/35 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
                 >
                   Open detailed analysis
                 </button>
@@ -676,11 +737,15 @@ function buildAskResponse(args: {
   confirmedCount: number;
   possibleCount: number;
   findings: AttentionFinding[];
+  comparison?: StatementComparisonResult | null;
+  onRequestComparison?: () => void;
 }): {
   body: ReactNode;
   href?: string;
   linkLabel?: string;
   openDetails?: boolean;
+  actionLabel?: string;
+  onAction?: () => void;
 } | null {
   if (!args.choice) return null;
   const { activity, formatMoney } = args;
@@ -781,17 +846,42 @@ function buildAskResponse(args: {
         openDetails: true,
       };
     }
-    case "changed":
+    case "changed": {
+      if (
+        args.comparison &&
+        args.comparison.status !== "unavailable" &&
+        args.comparison.status !== "same_statement"
+      ) {
+        return {
+          body: (
+            <>
+              {answerComparisonQuestion(args.comparison, "what_changed")}
+            </>
+          ),
+          actionLabel: "Jump to comparison details",
+          onAction: args.onRequestComparison,
+        };
+      }
+      if (args.comparison?.status === "same_statement") {
+        return {
+          body: <>{args.comparison.statusReason}</>,
+          actionLabel: "Upload a different previous statement",
+          onAction: args.onRequestComparison,
+        };
+      }
       return {
         body: (
           <>
             To see what changed, upload the previous statement from the same
-            account. Brainy has not calculated a comparison yet—two-statement
-            comparison is being prepared. Use “Compare with another statement”
-            when you are ready to upload the earlier PDF.
+            account. Brainy compares money received, money spent, bills, and
+            possible subscriptions only after both PDFs are analyzed in this
+            session.
           </>
         ),
+        actionLabel: "Compare with another statement",
+        onAction: args.onRequestComparison,
       };
+    }
     case "unusual": {
       const otherCount = activity.uncategorized.length;
       const attentionCount = args.findings.length;

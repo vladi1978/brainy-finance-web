@@ -83,7 +83,7 @@ describe("monthly explanation", () => {
       /does not mean the month had a positive cash flow/i
     );
     assert.equal(expl.compareLastMonth.comparisonCalculated, false);
-    assert.match(expl.compareLastMonth.message, /no comparison has been calculated/i);
+    assert.match(expl.compareLastMonth.message, /browser session only/i);
   });
 
   it("explains a reconciled positive month", () => {

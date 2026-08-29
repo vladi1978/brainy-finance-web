@@ -83,7 +83,7 @@ export type MonthlyExplanation = {
   compareLastMonth: {
     ctaLabel: string;
     message: string;
-    comparisonCalculated: false;
+    comparisonCalculated: boolean;
   };
 };
 
@@ -247,8 +247,8 @@ export function buildMonthlyExplanation(input: {
   const compareLastMonth = {
     ctaLabel: "Compare with another statement",
     message:
-      "Upload the previous statement from the same account. Brainy will compare money in, money out, bills, subscriptions, debt payments and flexible spending. Two-statement comparison is being prepared — no comparison has been calculated yet.",
-    comparisonCalculated: false as const,
+      "Upload the previous statement from the same account below. Brainy will compare money in, money out, bills, subscriptions, debt payments and flexible spending. Both PDFs stay in this browser session only.",
+    comparisonCalculated: false as boolean,
   };
 
   const reliable =

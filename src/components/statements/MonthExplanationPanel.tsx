@@ -16,6 +16,8 @@ type Props = {
   statementPeriod: StatementPeriod | null;
   healthScore: number | null;
   formatMoney: (amount: number, currency: string) => string;
+  onRequestComparison?: () => void;
+  comparisonReady?: boolean;
 };
 
 export function MonthExplanationPanel({
@@ -23,6 +25,8 @@ export function MonthExplanationPanel({
   statementPeriod,
   healthScore,
   formatMoney,
+  onRequestComparison,
+  comparisonReady = false,
 }: Props) {
   const { currency } = activity;
   const explanation = buildMonthlyExplanation({
@@ -149,13 +153,18 @@ export function MonthExplanationPanel({
             type="button"
             className="rounded-full border border-white/20 bg-black/25 px-4 py-2 text-sm text-white/80 transition hover:border-white/35 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
             aria-expanded={showCompareMonth}
-            onClick={() => setShowCompareMonth((v) => !v)}
+            onClick={() => {
+              setShowCompareMonth((v) => !v);
+              onRequestComparison?.();
+            }}
           >
             {explanation.compareLastMonth.ctaLabel}
           </button>
           {showCompareMonth ? (
             <p className="mt-3 max-w-2xl text-sm leading-relaxed text-white/55">
-              {explanation.compareLastMonth.message}
+              {comparisonReady
+                ? "Comparison results are shown below once both statements are analyzed in this session."
+                : explanation.compareLastMonth.message}
             </p>
           ) : null}
         </div>

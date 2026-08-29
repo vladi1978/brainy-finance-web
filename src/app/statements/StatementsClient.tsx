@@ -5,6 +5,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { CopilotFeedSection } from "@/components/statements/copilot/CopilotFeedSection";
 import { GuidedStatementStart } from "@/components/statements/GuidedStatementStart";
 import { FinancialIntelligenceSummaryPanel } from "@/components/statements/FinancialIntelligenceSummary";
+import { StatementComparisonPanel } from "@/components/statements/StatementComparisonPanel";
 import { StatementOverview } from "@/components/statements/StatementOverview";
 import type { FinancialIntelligenceSummary } from "@/lib/statements/intelligence/financialCategories";
 import type { CopilotAssistantContext } from "@/lib/statements/copilot/types";
@@ -417,9 +418,14 @@ export default function StatementsClient() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<AnalyzeOk | null>(null);
+  const [previousData, setPreviousData] = useState<AnalyzeOk | null>(null);
   const [documentConsent, setDocumentConsent] = useState(false);
+  const [previousConsent, setPreviousConsent] = useState(false);
+  const [previousBusy, setPreviousBusy] = useState(false);
+  const [previousError, setPreviousError] = useState<string | null>(null);
   const [highlightedClusterId, setHighlightedClusterId] = useState<string | null>(null);
   const activityCardRefs = useRef(new Map<string, HTMLDivElement>());
+  const comparisonSectionRef = useRef<HTMLElement | null>(null);
   const [actions, setActions] = useState<
     Record<
       string,
@@ -444,6 +450,16 @@ export default function StatementsClient() {
     getLastActionId,
   } = useRecommendationActions(recommendationInputs);
 
+  const focusComparison = useCallback(() => {
+    const el = comparisonSectionRef.current;
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    const focusable = el.querySelector<HTMLElement>(
+      'input[type="checkbox"], input[type="file"], button'
+    );
+    focusable?.focus();
+  }, []);
+
   const onFile = useCallback(async (file: File | null) => {
     if (!file) return;
     if (!documentConsent) {
@@ -456,6 +472,9 @@ export default function StatementsClient() {
     setActions({});
     setError(null);
     setData(null);
+    setPreviousData(null);
+    setPreviousConsent(false);
+    setPreviousError(null);
     setBusy(true);
     try {
       const fd = new FormData();
@@ -483,6 +502,44 @@ export default function StatementsClient() {
     }
   }, [documentConsent, resetRecommendationActions]);
 
+  const onPreviousFile = useCallback(async (file: File | null) => {
+    if (!file) return;
+    if (!data) {
+      setPreviousError("Upload and analyze your current statement first.");
+      return;
+    }
+    if (!previousConsent) {
+      setPreviousError(
+        "Confirm document ownership and analysis permission before uploading the previous statement."
+      );
+      return;
+    }
+    setPreviousError(null);
+    setPreviousBusy(true);
+    try {
+      const fd = new FormData();
+      fd.set("file", file);
+      const res = await fetch("/api/statements/analyze", {
+        method: "POST",
+        body: fd,
+      });
+      const json = (await res.json()) as AnalyzeOk & {
+        ok?: boolean;
+        error?: string;
+      };
+      if (!res.ok || !json.ok) {
+        setPreviousError(json.error ?? "Could not analyze the previous PDF.");
+        return;
+      }
+      setPreviousData(json as AnalyzeOk);
+      setPreviousConsent(false);
+    } catch {
+      setPreviousError("Upload failed — check your network and try again.");
+    } finally {
+      setPreviousBusy(false);
+    }
+  }, [data, previousConsent]);
+
   const periodLabel = useMemo(() => {
     if (!data?.meta.statementPeriod) return null;
     const { start, end } = data.meta.statementPeriod;
@@ -505,6 +562,7 @@ export default function StatementsClient() {
   }, [data]);
 
   const intelligence = data?.intelligence;
+  const previousIntelligence = previousData?.intelligence;
 
   const displayRecurring = useMemo(
     () => intelligence?.visibleRecurring ?? data?.recurringExpenses ?? [],
@@ -661,6 +719,57 @@ export default function StatementsClient() {
               healthScore={intelligence?.healthScore}
               groups={presentationGroups}
               formatMoney={formatMoney}
+              onRequestComparison={focusComparison}
+              previousActivity={
+                previousIntelligence?.statementActivity ?? null
+              }
+              previousPeriod={previousData?.meta.statementPeriod ?? null}
+              comparisonSlot={
+                intelligence?.statementActivity ? (
+                  <StatementComparisonPanel
+                    sectionRef={comparisonSectionRef}
+                    currentActivity={intelligence.statementActivity}
+                    currentPeriod={data.meta.statementPeriod}
+                    currentHealth={
+                      intelligence.healthScore
+                        ? {
+                            score: intelligence.healthScore.score,
+                            label: intelligence.healthScore.label,
+                            provisional: intelligence.healthScore.provisional,
+                            displayMode: intelligence.healthScore.displayMode,
+                          }
+                        : null
+                    }
+                    previousActivity={
+                      previousIntelligence?.statementActivity ?? null
+                    }
+                    previousPeriod={previousData?.meta.statementPeriod ?? null}
+                    previousHealth={
+                      previousIntelligence?.healthScore
+                        ? {
+                            score: previousIntelligence.healthScore.score,
+                            label: previousIntelligence.healthScore.label,
+                            provisional:
+                              previousIntelligence.healthScore.provisional,
+                            displayMode:
+                              previousIntelligence.healthScore.displayMode,
+                          }
+                        : null
+                    }
+                    previousBusy={previousBusy}
+                    previousError={previousError}
+                    previousConsent={previousConsent}
+                    onPreviousConsentChange={setPreviousConsent}
+                    onPreviousFile={(file) => void onPreviousFile(file)}
+                    onClearPrevious={() => {
+                      setPreviousData(null);
+                      setPreviousError(null);
+                      setPreviousConsent(false);
+                    }}
+                    formatMoney={formatMoney}
+                  />
+                ) : null
+              }
               detailedAnalysis={
                 <>
                   {intelligence ? (
