@@ -10,6 +10,7 @@ import {
   type StatementComparisonResult,
   type StatementHealthSnapshot,
 } from "@/lib/statements/intelligence/statementComparison";
+import { REMOVE_COMPARISON_STATEMENT_LABEL } from "@/lib/statements/intelligence/statementScopePresentation";
 
 type Props = {
   currentActivity: StatementActivitySummary;
@@ -220,7 +221,7 @@ export function StatementComparisonPanel({
             onClick={onClearPrevious}
             className="rounded-full border border-white/20 px-4 py-2 text-sm text-white/75 transition hover:border-white/35 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-300"
           >
-            Remove previous statement
+            {REMOVE_COMPARISON_STATEMENT_LABEL}
           </button>
         </div>
       )}

@@ -18,6 +18,8 @@ type Props = {
   formatMoney: (amount: number, currency: string) => string;
   onRequestComparison?: () => void;
   comparisonReady?: boolean;
+  /** When a second PDF is loaded, identify which period this panel uses. */
+  detailPeriodRange?: string | null;
 };
 
 export function MonthExplanationPanel({
@@ -27,6 +29,7 @@ export function MonthExplanationPanel({
   formatMoney,
   onRequestComparison,
   comparisonReady = false,
+  detailPeriodRange = null,
 }: Props) {
   const { currency } = activity;
   const explanation = buildMonthlyExplanation({
@@ -83,6 +86,11 @@ export function MonthExplanationPanel({
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-300/80">
           This month in plain English
         </p>
+        {detailPeriodRange ? (
+          <p className="mt-1 text-xs text-white/45">
+            Single-statement explanation for {detailPeriodRange}
+          </p>
+        ) : null}
         <h2
           id="plain-english-heading"
           className="mt-2 text-xl font-semibold tracking-tight text-white sm:text-2xl"

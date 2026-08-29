@@ -19,6 +19,12 @@ import {
   buildStatementComparison,
   type StatementComparisonResult,
 } from "@/lib/statements/intelligence/statementComparison";
+import {
+  askBrainySingleStatementPreface,
+  formatStatementPeriodRange,
+  singleStatementScopeNotice,
+  singleStatementSectionCaption,
+} from "@/lib/statements/intelligence/statementScopePresentation";
 import { presentationMerchantDisplayName } from "@/lib/statements/presentationMerchantDisplay";
 
 type OverviewGroups = {
@@ -366,6 +372,14 @@ export function StatementOverview({
     (s) => s.status === "possible"
   );
 
+  // Preserve the primary uploaded analysis; label it when a second PDF is present.
+  // Do not auto-swap to the chronological later statement (avoids dual-state bugs).
+  const showComparisonScope = Boolean(previousActivity && comparison);
+  const detailPeriodRange = formatStatementPeriodRange(
+    statementPeriod,
+    periodLabel
+  );
+
   const askResponse = buildAskResponse({
     choice: askChoice,
     activity,
@@ -375,6 +389,7 @@ export function StatementOverview({
     findings,
     comparison,
     onRequestComparison,
+    detailPeriodRange: showComparisonScope ? detailPeriodRange : null,
   });
 
   return (
@@ -400,6 +415,13 @@ export function StatementOverview({
               {" · "}
               {pageCount} page{pageCount === 1 ? "" : "s"}
             </p>
+            {showComparisonScope ? (
+              <p className="mt-2 max-w-2xl text-xs leading-relaxed text-amber-100/75">
+                Single-statement view for {detailPeriodRange}. After you compare
+                two PDFs, the comparison panel orders periods by date separately
+                from this section.
+              </p>
+            ) : null}
           </div>
           {showHealth ? (
             <div className="min-w-[8.5rem] rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-center">
@@ -467,9 +489,24 @@ export function StatementOverview({
             comparison.status !== "unavailable" &&
             comparison.status !== "same_statement"
         )}
+        detailPeriodRange={showComparisonScope ? detailPeriodRange : null}
       />
 
       {comparisonSlot}
+
+      {showComparisonScope ? (
+        <div
+          className="rounded-2xl border border-amber-400/25 bg-amber-500/[0.08] px-4 py-3 text-sm leading-relaxed text-amber-50/90"
+          role="note"
+        >
+          <p>{singleStatementScopeNotice(detailPeriodRange)}</p>
+          <p className="mt-1 text-xs text-amber-100/70">
+            Attention, spending categories, Health, and Ask Brainy below refer
+            only to this uploaded PDF—not automatically to the chronological
+            Current period in the comparison.
+          </p>
+        </div>
+      ) : null}
 
       {/* 2. Attention */}
       <section>
@@ -477,9 +514,16 @@ export function StatementOverview({
           What deserves your attention
         </h2>
         <p className="mt-1 max-w-2xl text-sm text-white/50">
-          Brainy found a few items worth a calm look. You decide what still
-          provides value.
+          {showComparisonScope
+            ? singleStatementSectionCaption(detailPeriodRange)
+            : "Brainy found a few items worth a calm look. You decide what still provides value."}
         </p>
+        {showComparisonScope ? (
+          <p className="mt-1 max-w-2xl text-sm text-white/45">
+            Brainy found a few items worth a calm look on this PDF. You decide
+            what still provides value.
+          </p>
+        ) : null}
         {findings.length ? (
           <ul className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {findings.map((f) => (
@@ -517,9 +561,16 @@ export function StatementOverview({
           Where your money went
         </h2>
         <p className="mt-1 max-w-2xl text-sm text-white/50">
-          Spending categories from this statement. Totals match the money Brainy
-          read from your PDF.
+          {showComparisonScope
+            ? singleStatementSectionCaption(detailPeriodRange)
+            : "Spending categories from this statement. Totals match the money Brainy read from your PDF."}
         </p>
+        {showComparisonScope ? (
+          <p className="mt-1 max-w-2xl text-sm text-white/45">
+            Spending categories from this PDF. Totals match the money Brainy
+            read here—not the comparison Current period unless they match.
+          </p>
+        ) : null}
         <ul className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {householdRows.map((row) => {
             const open = expandedBucket === row.id;
@@ -603,7 +654,9 @@ export function StatementOverview({
           Ask Brainy
         </h2>
         <p className="mt-1 text-sm text-white/50">
-          What would you like Brainy to help you with?
+          {showComparisonScope
+            ? `Questions about the single statement for ${detailPeriodRange}. For both periods, use “Ask about this comparison” above.`
+            : "What would you like Brainy to help you with?"}
         </p>
         <div className="mt-4 flex flex-wrap gap-2">
           {ASK_CHOICES.map((choice) => {
@@ -683,10 +736,12 @@ export function StatementOverview({
             <div>
               <p className="text-base font-semibold text-white">
                 View detailed financial analysis
+                {showComparisonScope ? ` · ${detailPeriodRange}` : ""}
               </p>
               <p className="mt-1 text-sm text-white/45">
-                Bills, subscriptions, money received, Health factors, and
-                diagnostics—kept out of the way until you want them.
+                {showComparisonScope
+                  ? singleStatementSectionCaption(detailPeriodRange)
+                  : "Bills, subscriptions, money received, Health factors, and diagnostics—kept out of the way until you want them."}
               </p>
             </div>
             <span className="rounded-full border border-white/10 px-3 py-1 text-xs text-white/55 transition group-open:rotate-180">
@@ -739,6 +794,7 @@ function buildAskResponse(args: {
   findings: AttentionFinding[];
   comparison?: StatementComparisonResult | null;
   onRequestComparison?: () => void;
+  detailPeriodRange?: string | null;
 }): {
   body: ReactNode;
   href?: string;
@@ -750,6 +806,19 @@ function buildAskResponse(args: {
   if (!args.choice) return null;
   const { activity, formatMoney } = args;
   const { currency } = activity;
+  const periodPreface =
+    args.detailPeriodRange && args.choice !== "changed"
+      ? askBrainySingleStatementPreface(args.detailPeriodRange)
+      : null;
+
+  const withPeriod = (content: ReactNode): ReactNode =>
+    periodPreface ? (
+      <>
+        {periodPreface} {content}
+      </>
+    ) : (
+      content
+    );
 
   switch (args.choice) {
     case "understand": {
@@ -762,7 +831,7 @@ function buildAskResponse(args: {
       const essential = expl.commitmentGroups.find((g) => g.id === "essential");
       const financial = expl.commitmentGroups.find((g) => g.id === "financial");
       return {
-        body: (
+        body: withPeriod(
           <>
             {expl.headline} Essential commitments:{" "}
             {formatMoney(essential?.total ?? 0, currency)}. Debt and financing:{" "}
@@ -788,7 +857,7 @@ function buildAskResponse(args: {
       });
       const flexibleBase = scenario10.flexibleBase;
       return {
-        body: (
+        body: withPeriod(
           <>
             Brainy can only illustrate changes to flexible spending (currently{" "}
             {formatMoney(flexibleBase, currency)}). Try the 5%, 10%, or 15%
@@ -802,7 +871,7 @@ function buildAskResponse(args: {
     }
     case "subscriptions":
       return {
-        body: (
+        body: withPeriod(
           <>
             Confirmed subscriptions: {args.confirmedCount}. Possible
             subscriptions (recurrence not confirmed): {args.possibleCount}.
@@ -817,7 +886,7 @@ function buildAskResponse(args: {
       const groups = activity.billProviderGroups;
       if (!groups.length) {
         return {
-          body: (
+          body: withPeriod(
             <>
               Brainy did not separate household bill providers on this upload.
               Open details to scan related categories.
@@ -827,7 +896,7 @@ function buildAskResponse(args: {
         };
       }
       return {
-        body: (
+        body: withPeriod(
           <>
             Brainy found {groups.length} bill provider
             {groups.length === 1 ? "" : "s"} on this statement
@@ -886,7 +955,7 @@ function buildAskResponse(args: {
       const otherCount = activity.uncategorized.length;
       const attentionCount = args.findings.length;
       return {
-        body: (
+        body: withPeriod(
           <>
             Brainy flagged {attentionCount} attention item
             {attentionCount === 1 ? "" : "s"} and {otherCount} other /
@@ -899,7 +968,7 @@ function buildAskResponse(args: {
     }
     case "buy":
       return {
-        body: (
+        body: withPeriod(
           <>
             Shopping Assistant can help you find a product while keeping your
             lifestyle in mind. This uses a separate shopping flow—not statement
