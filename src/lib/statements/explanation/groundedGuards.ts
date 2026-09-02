@@ -40,6 +40,41 @@ export type GroundingResult =
   | { ok: true }
   | { ok: false; reason: string };
 
+/** Fixed allowlist for server-only grounding diagnostics — never include matched content. */
+export const GROUNDING_DIAGNOSTIC_CODES = [
+  "unknown_fact_id",
+  "sensitive_residue",
+  "prohibited_claim",
+  "stop_paying_debt",
+  "definitive_on_provisional",
+  "worded_currency",
+  "worded_percent",
+  "invented_currency",
+  "invented_percent",
+  "unknown_grounding_failure",
+] as const;
+
+export type GroundingDiagnosticCode =
+  (typeof GROUNDING_DIAGNOSTIC_CODES)[number];
+
+const GROUNDING_DIAGNOSTIC_CODE_SET = new Set<string>(GROUNDING_DIAGNOSTIC_CODES);
+
+/**
+ * Map a detailed grounding failure reason to a non-sensitive diagnostic bucket.
+ * Strips suffixes and matched content (e.g. `invented_currency:$900` → `invented_currency`).
+ */
+export function toGroundingDiagnosticCode(
+  reason: string | null | undefined
+): GroundingDiagnosticCode {
+  if (!reason) return "unknown_grounding_failure";
+  const colon = reason.indexOf(":");
+  const bucket = (colon === -1 ? reason : reason.slice(0, colon)).trim();
+  if (GROUNDING_DIAGNOSTIC_CODE_SET.has(bucket)) {
+    return bucket as GroundingDiagnosticCode;
+  }
+  return "unknown_grounding_failure";
+}
+
 function normalizeAmountToken(raw: string): string[] {
   const cleaned = raw.replace(/[$,\s]|USD/giu, "");
   const n = Number(cleaned);

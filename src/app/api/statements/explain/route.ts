@@ -4,7 +4,10 @@ import {
   contentLengthExceeds,
 } from "@/lib/api/publicRequestGuards";
 import { sanitizeIncomingFactContract } from "@/lib/statements/explanation/factContract";
-import { explainStatementFacts } from "@/lib/statements/explanation/explainStatement";
+import {
+  explainStatementFacts,
+  type ExplainStatementResult,
+} from "@/lib/statements/explanation/explainStatement";
 import {
   AI_EXPLANATION_DISCLOSURE,
   AI_EXPLANATION_EDUCATIONAL_DISCLAIMER,
@@ -19,6 +22,7 @@ import {
   isJsonContentType,
 } from "@/lib/statements/explanation/requestGuards";
 import { buildDeterministicExplanationFallback } from "@/lib/statements/explanation/deterministicFallback";
+import type { GroundingDiagnosticCode } from "@/lib/statements/explanation/groundedGuards";
 
 export const runtime = "nodejs";
 
@@ -28,15 +32,38 @@ function metaLog(payload: {
   latencyMs: number;
   model: string | null;
   fallbackReason: string | null;
+  groundingCode?: GroundingDiagnosticCode | null;
 }): void {
-  // Metadata only — never log amounts, names, periods, or explanation text.
-  console.log("[statements/explain]", {
+  // Metadata only — never log amounts, names, periods, explanation text, or matched grounding content.
+  const line: Record<string, string | number | boolean | null> = {
     ok: payload.ok,
     mode: payload.mode,
     latencyMs: payload.latencyMs,
     model: payload.model,
     fallbackReason: payload.fallbackReason,
-  });
+  };
+  if (payload.groundingCode) {
+    line.groundingCode = payload.groundingCode;
+  }
+  console.log("[statements/explain]", line);
+}
+
+/** Explicit client serialization — omits any internal diagnostic properties. */
+export function buildExplainClientSuccessBody(
+  result: ExplainStatementResult,
+  mode: string
+): Record<string, unknown> {
+  return {
+    ok: true,
+    source: result.source,
+    mode,
+    explanation: result.explanation,
+    disclosure: AI_EXPLANATION_DISCLOSURE,
+    educationalDisclaimer: AI_EXPLANATION_EDUCATIONAL_DISCLAIMER,
+    fallback: result.source !== "ai",
+    fallbackReason: result.fallbackReason,
+    latencyMs: result.latencyMs,
+  };
 }
 
 export async function POST(req: Request) {
@@ -206,19 +233,12 @@ export async function POST(req: Request) {
       latencyMs: result.latencyMs,
       model: result.model,
       fallbackReason: result.fallbackReason,
+      groundingCode: result.groundingCode ?? null,
     });
 
-    return NextResponse.json({
-      ok: true,
-      source: result.source,
-      mode: sanitized.contract.mode,
-      explanation: result.explanation,
-      disclosure: AI_EXPLANATION_DISCLOSURE,
-      educationalDisclaimer: AI_EXPLANATION_EDUCATIONAL_DISCLAIMER,
-      fallback: result.source !== "ai",
-      fallbackReason: result.fallbackReason,
-      latencyMs: result.latencyMs,
-    });
+    return NextResponse.json(
+      buildExplainClientSuccessBody(result, sanitized.contract.mode)
+    );
   } catch {
     metaLog({
       ok: false,
